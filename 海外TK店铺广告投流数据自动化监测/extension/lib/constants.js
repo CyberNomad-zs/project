@@ -1,0 +1,188 @@
+/** 扩展常量与默认配置 */
+
+export const STORAGE_KEYS = {
+  CONFIG: 'tk_ad_config',
+  LOGS: 'tk_ad_logs',
+  LAST_RESULT: 'tk_ad_last_result',
+  FEISHU_TOKEN: 'tk_ad_feishu_token',
+  API_CACHE: 'tk_ad_api_cache'
+};
+
+export const DEFAULT_CONFIG = {
+  feishu: {
+    appId: '',
+    appSecret: '',
+    appToken: '',
+    tableId: ''
+  },
+  schedule: {
+    enabled: false,
+    // 中国 17:20 ≈ 英国 10:20（夏令）/ 09:20（冬令）；抓「昨天」时英国日已完整
+    // 切勿设到中国早上 7–9 点：那时英国日刚开始，花费是半截数据
+    hour: 17,
+    minute: 20
+  },
+  dateMode: 'yesterday', // yesterday | today | custom（业务日按 bizTimeZone）
+  customDate: '', // YYYY-MM-DD when dateMode=custom
+  bizTimeZone: 'Europe/London', // 英区广告后台时区；业务日/「昨天」按此时区
+  minUkHourForToday: 20, // dateMode=today 时，英国时 < 此时刻则拒绝（防早抓）
+  setPageDateRange: true, // 抓取前把广告面板日期快捷项切到 dateMode（避免默认近 7 天）
+  waitAfterDateChangeMs: 5000, // 切日期后等待表格重载
+  storeMappings: [
+    { alias: 'Deal to deal', name: 'Deal to deal' },
+    { alias: 'SHOP INOUT', name: 'SHOP INOUT' },
+    { alias: 'Gardena', name: 'Gardena' },
+    { alias: 'HL-ZK', name: 'Deal to deal' },
+    { alias: '南京特米', name: 'Deal to deal' }
+  ],
+  dryRun: true,
+  writeMode: 'append', // append | replace-day
+  defaultStoreName: ''
+};
+
+export const ALARM_NAME = 'tk_ad_daily_scrape';
+
+export const MSG = {
+  SCRAPE_PAGE: 'SCRAPE_PAGE',
+  SCRAPE_RESULT: 'SCRAPE_RESULT',
+  RUN_FULL: 'RUN_FULL',
+  WRITE_FEISHU: 'WRITE_FEISHU',
+  GET_CONFIG: 'GET_CONFIG',
+  SAVE_CONFIG: 'SAVE_CONFIG',
+  GET_LOGS: 'GET_LOGS',
+  CLEAR_LOGS: 'CLEAR_LOGS',
+  GET_LAST_RESULT: 'GET_LAST_RESULT',
+  TEST_FEISHU: 'TEST_FEISHU',
+  API_PAYLOAD: 'API_PAYLOAD',
+  PING: 'PING'
+};
+
+/** 表头同义词：中英文，用于 DOM 列匹配 */
+export const HEADER_ALIASES = {
+  planStatus: ['开关', '投放开关', 'enable', 'enabled', 'switch', 'on/off', 'toggle'],
+  campaign: [
+    '品名',
+    '广告计划名称',
+    '广告系列',
+    '广告系列名称',
+    '系列名称',
+    'campaign',
+    'campaign name',
+    'ad group',
+    'product',
+    '产品',
+    '名称',
+    'name'
+  ],
+  spend: [
+    '广告花费',
+    '广告成本',
+    '花费',
+    '成本',
+    '消耗',
+    'cost',
+    'spend',
+    'ad spend',
+    'ad cost',
+    'amount spent',
+    'budget spent',
+    'stat cost'
+  ],
+  orders: [
+    '销量',
+    '订单',
+    '订单数',
+    'sku 订单',
+    'sku订单',
+    'sku 订单数',
+    'sku订单数',
+    'sku orders',
+    'orders',
+    'units',
+    'units sold',
+    'sold',
+    'conversions',
+    'purchases'
+  ],
+  roi: [
+    'roi',
+    'roas',
+    '投资回报率',
+    '投资回报',
+    '回报率',
+    'return on ad spend',
+    'return on investment'
+  ],
+  revenue: [
+    '销售额',
+    '总收入',
+    '销售收入',
+    '收入',
+    'gmv',
+    'revenue',
+    'gross revenue',
+    'ads gross revenue',
+    'gross merchandise',
+    'sales'
+  ]
+};
+
+export const FEISHU = {
+  TOKEN_URL: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+  BITABLE_BATCH_CREATE: (appToken, tableId) =>
+    `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`,
+  BITABLE_LIST: (appToken, tableId) =>
+    `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`,
+  BITABLE_FIELDS: (appToken, tableId) =>
+    `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/fields`,
+  BATCH_SIZE: 500,
+  MAX_RETRIES: 3
+};
+
+export const LOG_LIMIT = 200;
+
+/** 飞书多维表格字段名（对齐「TK运营日报简版」表头） */
+export const BITABLE_FIELDS = {
+  date: '日期',
+  store: '店铺',
+  storeId: '店铺ID',
+  campaign: '品名', // 日报列「品名」= 广告系列/活动名
+  spend: '广告花费',
+  orders: '销量',
+  roi: 'ROI',
+  revenue: '销售额', // 日报列「销售额」
+  scrapedAt: '抓取时间',
+  sourceUrl: '数据源URL',
+  status: '状态',
+  planStatus: '计划状态' // 投放开关：投放中 / 已关闭 / 未知（≠ 抓取状态）
+};
+
+/**
+ * 逻辑字段 → 表头别名（按优先级匹配真实表字段名）
+ * 兼容「品名/广告系列名称」「销售额/总收入」等改名
+ */
+export const BITABLE_FIELD_ALIASES = {
+  date: ['日期', '业务日期', '统计日期'],
+  store: ['店铺', '店铺名称', '商店'],
+  storeId: ['店铺ID', '店铺Id', '店铺id'],
+  campaign: ['品名', '广告系列名称', '广告系列', '系列名称', '活动名称', '广告计划名称'],
+  spend: ['广告花费', '花费', '成本', '广告成本'],
+  orders: ['销量', '订单数', '订单', 'SKU订单数'],
+  roi: ['ROI', 'RoI', '投资回报率', 'ROAS'],
+  revenue: ['销售额', '总收入', '收入', 'GMV', '销售收入'],
+  scrapedAt: ['抓取时间', '写入时间', '采集时间'],
+  sourceUrl: ['数据源URL', '数据源', '来源链接', 'URL'],
+  status: ['状态', '抓取状态'],
+  planStatus: ['计划状态', '投放状态', '开关']
+};
+
+/** 写入时必填的逻辑字段；缺失则报错 */
+export const BITABLE_REQUIRED_KEYS = [
+  'date',
+  'store',
+  'campaign',
+  'spend',
+  'orders',
+  'roi',
+  'revenue'
+];

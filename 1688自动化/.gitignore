@@ -1,0 +1,11 @@
+# 敏感凭证，禁止提交
+config/
+*.json
+!input/**/meta.json
+
+# 运行产物
+output/
+.venv/
+__pycache__/
+.playwright-mcp/
+.DS_Store

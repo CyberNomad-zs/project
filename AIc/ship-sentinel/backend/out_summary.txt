@@ -1,0 +1,10 @@
+DIST platform: {"TikTok": 165, "Amazon": 176, "Temu半托管": 154, "SHEIN": 10}
+DIST warehouse: {"昇新仓库": 500, "虚拟仓库": 5}
+DIST channel: {"昇新海外仓-昇新海外仓-RM": 246, "昇新海外仓-昇新海外仓-DPD": 128, "昇新海外仓-BLACKCAT-RM": 58, "∅": 38, "昇新海外仓-BLACKCAT-EH": 34, "昇新海外仓-BLACKCAT-DPD": 1}
+DIST state: {"pending": 16, "shipped": 480, "void": 9}
+n orders sev>=40: 4
+{"pkg": "P2AL6TCD63006", "plat": "Amazon", "wh": "昇新仓库", "chan": "昇新海外仓-昇新海外仓-DPD", "rem": 15.43, "anom": ["due_soon", "master_missing"], "sev": 80, "sku": "UK-NVL-WB 90x60CM"}
+{"pkg": "P2AL6TCD63005", "plat": "Amazon", "wh": "虚拟仓库", "chan": "", "rem": 15.43, "anom": ["due_soon", "stuck_virtual", "no_channel", "master_missing"], "sev": 80, "sku": "UK-CS-MB-120CM"}
+{"pkg": "P2AL6TCD63004", "plat": "Amazon", "wh": "昇新仓库", "chan": "昇新海外仓-昇新海外仓-DPD", "rem": 15.43, "anom": ["due_soon", "master_missing"], "sev": 80, "sku": "UK-NVL-WB 90x60CM"}
+{"pkg": "P2AL6TCD63000", "plat": "Amazon", "wh": "昇新仓库", "chan": "昇新海外仓-昇新海外仓-DPD", "rem": 15.43, "anom": ["due_soon", "master_missing"], "sev": 80, "sku": "VIPPBNL"}
+total orders in json: 505

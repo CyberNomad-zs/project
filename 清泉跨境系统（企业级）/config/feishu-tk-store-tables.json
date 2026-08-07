@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "app_token": "C1iHbw6TVad6rUsbZnbc2gSDnHg",
+  "stores": [
+    {
+      "name": "Deal to deal",
+      "slug": "deal-to-deal",
+      "aliases": [
+        "Deal to deal",
+        "Deal to Deal"
+      ]
+    },
+    {
+      "name": "Gardena",
+      "slug": "gardena",
+      "aliases": [
+        "Gardena",
+        "TikTok - Pop",
+        "TikTok-Pop",
+        "pop店"
+      ]
+    },
+    {
+      "name": "SHOP INOUT",
+      "slug": "shop-inout",
+      "aliases": [
+        "SHOP INOUT",
+        "Tiktok - KK Seagull",
+        "TikTok - KK Seagull"
+      ]
+    }
+  ],
+  "tables": {
+    "Deal to deal": {
+      "tk_shop_daily": "tbl0vrrh77ZtMa0A",
+      "tk_ads_campaign": "tblmYZLlr959f8VS",
+      "tk_anomaly_task": "tblpJr54Y4yKqRLd",
+      "tk_content_daily": "tblatrkWWjDgYvOT"
+    },
+    "Gardena": {
+      "tk_shop_daily": "tblmhcA1bct2gB9L",
+      "tk_ads_campaign": "tbl706YSOtTX5MUk",
+      "tk_anomaly_task": "tbl3LdPV4ft6YI7m",
+      "tk_content_daily": "tblL6XF9Al8E1Q1Z"
+    },
+    "SHOP INOUT": {
+      "tk_shop_daily": "tbl2K9rzOuQe4XaU",
+      "tk_ads_campaign": "tblLWm0S1qVPJMIG",
+      "tk_anomaly_task": "tbloKDuvAgFtBDlY",
+      "tk_content_daily": "tbl1CBhVWei6uXef"
+    }
+  }
+}

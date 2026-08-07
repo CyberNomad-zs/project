@@ -1,0 +1,127 @@
+﻿{
+    "feishu":  {
+                   "appId":  "cli_aae1a925e9fa9bed",
+                   "appSecret":  "PSkubOEHzRkPkOl55gTsFb1O2Ql51fYD",
+                   "appToken":  "C1iHbw6TVad6rUsbZnbc2gSDnHg",
+                   "tableId":  "tblmr3ayTmWF3G7J",
+                   "writeMode":  "dual",
+                   "_note":  "TK广告日报 tblmr3ayTmWF3G7J；P0+P1 列"
+               },
+    "qingquan":  {
+                     "enabled":  true,
+                     "baseUrl":  "https://qingquan.jmzlai.com",
+                     "apiKey":  "2badba5de266ed9c749307ddb252b8a5",
+                     "source":  "tiktok_ads",
+                     "failOpen":  true,
+                     "timeoutSec":  30
+                 },
+    "filter":  {
+                   "platformContains":  [
+                                            "TikTok"
+                                        ],
+                   "nameContains":  [
+
+                                    ],
+                   "nameExclude":  [
+
+                                   ],
+                   "requireIp":  true,
+                   "includeStoreIds":  [
+                                           "27328767468273"
+                                       ],
+                   "excludeStoreIds":  [
+
+                                       ],
+                   "_note":  "广告默认三店都跑（含欧盟 Pop）。Nookora 核验未完成仍排除。"
+               },
+    "adsUrl":  {
+                   "default":  "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+                   "byPlatform":  {
+                                      "TikTok Shop-英国-本土":  "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+                                      "TikTok Shop-欧盟":  "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+                                  }
+               },
+    "orderUrl":  {
+                     "default":  "https://seller-uk.tiktok.com/order?selected_sort=6\u0026tab=all",
+                     "byPlatform":  {
+                                        "TikTok Shop-英国-本土":  "https://seller-uk.tiktok.com/order?selected_sort=6\u0026tab=all",
+                                        "TikTok Shop-欧盟":  "https://seller.eu.tiktokshopglobalselling.com/order?selected_sort=6\u0026tab=all"
+                                    }
+                 },
+    "modules":  {
+                    "ads":  true,
+                    "orders":  true,
+                    "ordersExcludeStoreIds":  [
+
+                                              ],
+                    "ordersExcludePlatformContains":  [
+                                                          "欧盟"
+                                                      ],
+                    "_orders_note":  "欧盟 Pop 订单页常出拼图验证，订单模块先排除；广告仍采集 Pop",
+                    "products":  true
+                },
+    "storeNameMap":  {
+                         "Tiktok_Shop2":  "Deal to deal",
+                         "Nookora Home":  "Nookora Home",
+                         "Tiktok - KK Seagull": "SHOP INOUT",
+                         "TikTok - Pop": "Gardena",
+                         "TT-L":  "TT-L"
+                     },
+    "options":  {
+                    "dryRun":  false,
+                    "dateMode":  "yesterday",
+                    "setPageDateRange":  true,
+                    "waitAfterDateChangeMs":  8000,
+                    "closeAfter":  true,
+                    "waitAfterOpenMs":  40000,
+                    "waitAfterVisitMs":  25000,
+                    "delayBetweenStoresMs":  5000,
+                    "scrapeRetries":  4,
+                    "scrapeRetryWaitMs":  15000,
+                    "reopenOnBlank":  true,
+                    "bridgeRetryWaitMs":  60000,
+                    "maximizeWindow":  true,
+                    "windowRatio":  "full",
+                    "skipZeroDisabledCampaigns":  true,
+                    "orderMaxPages":  8,
+                    "orderPageWaitMs":  4500,
+                    "_window_note":  "maximizeWindow=开店后 Win32+页面 resize 拉大窗口；windowRatio 传给 ziniao store open --window-ratio（none 可关闭）",
+                    "_skipZeroDisabled_note":  "策略C：计划开关=关 且 花费=0 且 销售额=0 时跳过；关停但仍有花费/销售额的计划仍写入",
+                    "_order_paging_note":  "订单列表翻页：最多 orderMaxPages 页，页间等待 orderPageWaitMs",
+                    "productMaxPages":  3,
+                    "productPageWaitMs":  5000
+                },
+    "analysis":  {
+                     "enabled":  true,
+                     "lowRoiThreshold":  3,
+                     "writeSummaryToFeishu":  true
+                 },
+    "currency":  {
+                     "target":  "USD",
+                     "pageDefault":  "USD",
+                     "convert":  true,
+                     "ratesToUsd":  {
+                                        "USD":  1,
+                                        "GBP":  1.27,
+                                        "EUR":  1.08,
+                                        "CNY":  0.14
+                                    },
+                     "_comment":  "广告花费/销售额与 TikTok 广告后台一致，统一按美金(USD)。"
+                 },
+    "productUrl":  {
+                       "default":  "https://seller-uk.tiktok.com/product/manage",
+                       "byPlatform":  {
+                                          "TikTok Shop-英国-本土":  "https://seller-uk.tiktok.com/product/manage",
+                                          "TikTok Shop-欧盟":  "https://seller.eu.tiktokshopglobalselling.com/product/manage"
+                                      }
+                   },
+    "shopDailyUrl":  {
+                         "default":  "https://seller-uk.tiktok.com/compass/data-overview"
+                     },
+    "healthUrl":  {
+                      "default":  "https://seller-uk.tiktok.com/shop/health-score"
+                  },
+    "financeUrl":  {
+                       "default":  "https://seller-uk.tiktok.com/finance/bills"
+                   }
+}

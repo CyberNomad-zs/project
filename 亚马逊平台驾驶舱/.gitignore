@@ -1,0 +1,31 @@
+# Secrets & local config
+.env
+.env.*
+!.env.example
+config/config.yaml
+
+# Runtime / local data
+data/
+*.xlsx
+*.xls
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+
+# Editor / OS
+~$*
+.DS_Store
+Thumbs.db
+
+# Local tooling / API dumps
+.playwright-mcp/
+_api_docs/
+_api_index.tsv
+_llms_raw.txt

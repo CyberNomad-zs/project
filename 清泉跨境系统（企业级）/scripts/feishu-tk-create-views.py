@@ -1,0 +1,127 @@
+# -*- coding: utf-8 -*-
+"""为 TK 驾驶舱 T1/T2/T6 创建推荐网格视图（筛选需在飞书 UI 按说明补）。"""
+from __future__ import annotations
+
+import json
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+# 读仓库根 .env（不打印 secret）
+ROOT = Path(__file__).resolve().parents[1]
+env: dict[str, str] = {}
+for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    env[k.strip()] = v.strip().strip('"').strip("'")
+
+APP_ID = env.get("FEISHU_APP_ID") or ""
+APP_SECRET = env.get("FEISHU_APP_SECRET") or ""
+APP_TOKEN = (
+    env.get("FEISHU_BITABLE_APP_TOKEN_TK")
+    or env.get("FEISHU_BITABLE_APP_TOKEN")
+    or ""
+)
+T1 = env.get("FEISHU_BITABLE_TABLE_TK_SHOP_DAILY") or ""
+T2 = env.get("FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN") or ""
+T6 = env.get("FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY") or ""
+
+VIEWS = {
+    "T1店铺日经营": (
+        T1,
+        ["昨日全店", "近7日明细", "低ROI店", "健康预警"],
+    ),
+    "T2广告活动日明细": (
+        T2,
+        ["昨日花费Top", "低效亏损", "高ROI", "预算将尽"],
+    ),
+    "T6内容日": (
+        T6,
+        ["近窗明细", "有曝无单", "归因GMV Top", "高播放"],
+    ),
+}
+
+
+def req(method: str, url: str, body=None, token: str | None = None) -> dict:
+    data = None
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    r = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"code": e.code, "msg": raw}
+
+
+def main() -> int:
+    if not all([APP_ID, APP_SECRET, APP_TOKEN]):
+        print("missing FEISHU_APP_ID / SECRET / APP_TOKEN in .env")
+        return 1
+    if not any([T1, T2, T6]):
+        print("missing at least one of T1/T2/T6 table ids in .env")
+        return 1
+    tok = req(
+        "POST",
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": APP_ID, "app_secret": APP_SECRET},
+    )
+    if tok.get("code") != 0:
+        print("token fail", tok)
+        return 1
+    token = tok["tenant_access_token"]
+    print("token ok")
+
+    for label, (tid, names) in VIEWS.items():
+        if not tid:
+            print(f"\n=== {label} (skip, no table id) ===")
+            continue
+        print(f"\n=== {label} {tid} ===")
+        listed = req(
+            "GET",
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{tid}/views",
+            token=token,
+        )
+        if listed.get("code") != 0:
+            print("  list views fail", listed)
+            continue
+        existing = {
+            (v.get("view_name") or "")
+            for v in (listed.get("data") or {}).get("items") or []
+        }
+        print("  existing:", sorted(existing) or "(none)")
+        for name in names:
+            if name in existing:
+                print(f"  skip {name}")
+                continue
+            r = req(
+                "POST",
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{tid}/views",
+                {"view_name": name, "view_type": "grid"},
+                token,
+            )
+            if r.get("code") == 0:
+                vid = (r.get("data") or {}).get("view_id") or (
+                    (r.get("data") or {}).get("view") or {}
+                ).get("view_id")
+                print(f"  OK   {name}  view_id={vid}")
+                existing.add(name)
+            else:
+                print(f"  FAIL {name} {r.get('code')} {r.get('msg')}")
+            time.sleep(0.3)
+    print("\nDONE — 筛选/排序请在飞书 UI 按 docs/TK-飞书驾驶舱仪表盘搭法.md 补")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

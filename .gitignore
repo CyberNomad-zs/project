@@ -1,0 +1,92 @@
+# ===== Dependencies & virtual envs =====
+node_modules/
+.venv/
+.venv-*/
+venv/
+env/
+*.egg-info/
+.python-version
+
+# ===== Build / cache / IDE =====
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+.turbo/
+.next/
+.nuxt/
+dist/
+build/
+_dist/
+dist-pack/
+*.tsbuildinfo
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+.playwright-mcp/
+.pytest_cache/
+
+# ===== Secrets & credentials (NEVER commit) =====
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*credentials*.json
+*credential*
+secrets.py
+**/secrets.py
+**/sellfox.config.json
+**/*with-secrets*
+*_feishu_env_patch.env
+.id_rsa*
+*.keystore
+
+# ===== Nested local git backups (kept on disk, not uploaded) =====
+.git.bak/
+.git_backup_local/
+
+# ===== Large / generated data (too big for GitHub) =====
+# 1688 automation bulk assets
+1688自动化/文件/
+1688自动化/商品数据/
+1688自动化/output/
+
+# EasyHermes installers & attachments
+EasyHermes-飞书表格，本地干活/图片和附件/
+
+# Runtime / browser profiles / logs / samples
+**/.userdata/
+**/logs/
+**/data/
+AIc/ship-sentinel/samples/
+AIc/_shots/
+**/capture/
+
+# Pack / temp / extract dirs
+**/_pack_tmp*/
+**/_xmind_*/
+**/*-full-with-secrets-*.zip
+
+# Large binaries commonly produced locally
+*.crx
+*.zip
+!**/package-lock.json
+
+# Excel dumps that may contain operational data (keep code only)
+# Uncomment if you also want to skip workbooks:
+# *.xlsx
+# *.xls
+
+# OS / misc
+*.log
+*.tmp
+*.bak
+*~

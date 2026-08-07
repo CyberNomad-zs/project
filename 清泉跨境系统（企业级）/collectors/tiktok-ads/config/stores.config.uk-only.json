@@ -1,0 +1,98 @@
+﻿{
+    "feishu":  {
+                   "appId":  "cli_aae1a925e9fa9bed",
+                   "appSecret":  "PSkubOEHzRkPkOl55gTsFb1O2Ql51fYD",
+                   "appToken":  "C1iHbw6TVad6rUsbZnbc2gSDnHg",
+                   "tableId":  "tblmr3ayTmWF3G7J",
+                   "writeMode":  "dual",
+                   "_note":  "TK广告日报 tblmr3ayTmWF3G7J；P0 列脚本已写；P1(日预算/目标ROI/净成本/平均下单成本/投放状态) 表已建，写入映射可后补"
+               },
+    "qingquan":  {
+                     "enabled":  true,
+                     "baseUrl":  "https://qingquan.jmzlai.com",
+                     "apiKey":  "2badba5de266ed9c749307ddb252b8a5",
+                     "source":  "tiktok_ads",
+                     "failOpen":  true,
+                     "timeoutSec":  30
+                 },
+    "filter":  {
+                   "platformContains":  [
+                                            "TikTok"
+                                        ],
+                   "nameContains":  [
+
+                                    ],
+                   "nameExclude":  [
+
+                                   ],
+                   "requireIp":  true,
+                   "includeStoreIds":  [
+
+                                       ],
+                   "excludeStoreIds":  [
+                                           "27841084722470",
+                                           "27758103898326"
+                                       ]
+               },
+    "adsUrl":  {
+                   "default":  "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+                   "byPlatform":  {
+                                      "TikTok Shop-英国-本土":  "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+                                      "TikTok Shop-欧盟":  "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+                                  }
+               },
+    "orderUrl":  {
+                     "default":  "https://seller-uk.tiktok.com/order?selected_sort=6\u0026tab=all",
+                     "byPlatform":  {
+                                        "TikTok Shop-英国-本土":  "https://seller-uk.tiktok.com/order?selected_sort=6\u0026tab=all",
+                                        "TikTok Shop-欧盟":  "https://seller.eu.tiktokshopglobalselling.com/order?selected_sort=6\u0026tab=all"
+                                    }
+                 },
+    "modules":  {
+                    "ads":  true,
+                    "orders":  true
+                },
+    "storeNameMap":  {
+                         "Tiktok_Shop2":  "Deal to deal",
+                         "Nookora Home":  "Nookora Home",
+                         "Tiktok - KK Seagull":  "SHOP INOUT",
+                         "TikTok - Pop": "Gardena",
+                         "TT-L":  "TT-L"
+                     },
+    "options":  {
+                    "dryRun":  false,
+                    "dateMode":  "yesterday",
+                    "setPageDateRange":  true,
+                    "waitAfterDateChangeMs":  8000,
+                    "closeAfter":  true,
+                    "waitAfterOpenMs":  25000,
+                    "waitAfterVisitMs":  25000,
+                    "delayBetweenStoresMs":  5000,
+                    "scrapeRetries":  3,
+                    "scrapeRetryWaitMs":  15000,
+                    "reopenOnBlank":  true,
+                    "bridgeRetryWaitMs":  20000,
+                    "maximizeWindow":  true,
+                    "windowRatio":  "full",
+                    "skipZeroDisabledCampaigns":  true,
+                    "_window_note":  "maximizeWindow=开店后 Win32+页面 resize 拉大窗口；windowRatio 传给 ziniao store open --window-ratio（none 可关闭）",
+                    "_skipZeroDisabled_note":  "策略C：计划开关=关 且 花费=0 且 销售额=0 时跳过；关停但仍有花费/销售额的计划仍写入"
+                },
+    "analysis":  {
+                     "enabled":  true,
+                     "lowRoiThreshold":  3,
+                     "writeSummaryToFeishu":  true
+                 },
+    "currency":  {
+                     "target":  "USD",
+                     "pageDefault":  "USD",
+                     "convert":  true,
+                     "ratesToUsd":  {
+                                        "USD":  1,
+                                        "GBP":  1.27,
+                                        "EUR":  1.08,
+                                        "CNY":  0.14
+                                    },
+                     "_comment":  "广告花费/销售额与 TikTok 广告后台一致，统一按美金(USD)。pageDefault=页面未识别到币种符号时的假设；仅当检测到 GBP/EUR 等且 convert=true 时才按 ratesToUsd 换算。"
+                 }
+}

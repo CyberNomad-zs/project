@@ -1,0 +1,46 @@
+# Temp & pack
+.uploads/
+_pack_tmp_*/
+
+# Zip archives (keep source only)
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude
+.claude/
+
+# Logs & DB
+logs/
+*.log
+*.db
+*.db-journal
+
+# Browser profiles
+.browser_profile/
+
+# Secrets & credentials
+secrets.py
+config.yaml
+
+# Debug dumps
+automation/capture/dumps/
+
+# State files
+erp_state.json
+
+# Colleague data
+同事的运行日志/
+
+# OS
+Thumbs.db
+Desktop.ini

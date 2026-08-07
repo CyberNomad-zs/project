@@ -1,0 +1,31 @@
+﻿{
+    "bizDate":  "2026-07-30",
+    "totalSpend":  45.89,
+    "totalOrders":  30,
+    "totalRevenue":  504.09,
+    "totalCampaigns":  1,
+    "overallRoi":  10.98,
+    "highlights":  [
+                       "销售额最高店铺：Gardena（销售额 504.09，花费 45.89，综合 ROI 10.98）",
+                       "综合 ROI 最高店铺：Gardena（ROI 10.98，花费 45.89）",
+                       "单系列销售额 TOP1：[Gardena] 热销品7/15（销售额 504.09，ROI 10.98）"
+                   ],
+    "risks":  [
+                  "未发现明显异常（按当前阈值）。"
+              ],
+    "storeRollups":  [
+                         {
+                             "store":  "Gardena",
+                             "storeId":  "27758103898326",
+                             "campaigns":  1,
+                             "spend":  45.89,
+                             "orders":  30,
+                             "revenue":  504.09,
+                             "topCampaign":  "热销品7/15",
+                             "topRevenue":  504.09,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  0,
+                             "roi":  10.98
+                         }
+                     ]
+}

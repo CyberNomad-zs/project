@@ -1,0 +1,187 @@
+import { writeFileSync, readFileSync, unlinkSync, existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { loadConfig, ROOT } from './config.js';
+import { launchBrowser } from './browser.js';
+import { calibrate } from './calibrate.js';
+import { runOnce } from './run.js';
+import { sendFeishu } from './feishu.js';
+import { log } from './logger.js';
+
+const cmd = process.argv[2] || 'once';
+const cfg = loadConfig();
+// 启动即告知日志路径（同事常以为没写文件，实际在 data/ 与 logs/）
+log.announcePaths();
+
+/** 常驻双开会抢 .userdata →「Target page/browser has been closed」。pid 锁防并行 start。 */
+const START_LOCK = resolve(ROOT, 'data', 'start.lock');
+
+/** @returns {{alive:boolean, pid?:number}} 是否有别的 start 进程持锁 */
+function readStartLockHolder() {
+  try {
+    if (!existsSync(START_LOCK)) return { alive: false };
+    const prev = Number(readFileSync(START_LOCK, 'utf8').trim());
+    if (!prev || prev === process.pid) return { alive: false };
+    try {
+      process.kill(prev, 0); // 存在性探测
+      return { alive: true, pid: prev };
+    } catch {
+      return { alive: false }; // stale
+    }
+  } catch {
+    return { alive: false };
+  }
+}
+
+function tryAcquireStartLock() {
+  try {
+    const holder = readStartLockHolder();
+    if (holder.alive) return { ok: false, pid: holder.pid };
+    writeFileSync(START_LOCK, String(process.pid), 'utf8');
+    const release = () => { try { unlinkSync(START_LOCK); } catch {} };
+    process.on('exit', release);
+    process.on('SIGINT', () => { release(); process.exit(0); });
+    process.on('SIGTERM', () => { release(); process.exit(0); });
+    return { ok: true };
+  } catch (e) {
+    log.warn('start.lock 写入失败（忽略）：', e.message);
+    return { ok: true };
+  }
+}
+
+async function loginFlow() {
+  // login 与 start 共用 .userdata：常驻在跑时再 login 会把监测的 Chrome 挤掉
+  const holder = readStartLockHolder();
+  if (holder.alive) {
+    log.error(
+      `检测到常驻监测正在运行（pid=${holder.pid}）。` +
+        `请先关掉「流量常驻/守护」窗口，再点登录——否则会抢 .userdata，把正在扫的浏览器挤崩。`,
+    );
+    log.error(
+      `若只是要进 Temu 后台人工操作：用你日常的 Chrome 打开即可，不必点本工具的「登录」。` +
+        `本工具「登录」只给监测专用档案用。`,
+    );
+    process.exit(3);
+  }
+  log.info('打开浏览器，请在窗口中完成登录（手机号 + 密码，如需短信验证码请手动输入）。');
+  log.info('注意：这是监测专用浏览器档案（.userdata），不是你日常 Chrome。');
+  const { context, page } = await launchBrowser(cfg, { headless: false });
+  await page.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  log.info('等待登录完成…（最多 5 分钟）。登录并看到商品列表后即可，无需手动关闭窗口。');
+
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let ok = false;
+  while (Date.now() < deadline) {
+    // 窗口被手动关闭则提前结束
+    if (page.isClosed()) { log.warn('检测到浏览器窗口已关闭，结束等待。'); break; }
+    try {
+      await page.waitForTimeout(3000);
+      const url = page.url();
+      const loggedIn = await page
+        .getByText(/商品列表|在售中|全部\s*\d+/)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (loggedIn && !/login|signin/i.test(url)) { ok = true; break; }
+    } catch (e) {
+      // 登录页重定向/刷新期间的瞬时错误，忽略后继续轮询
+      if (page.isClosed()) { log.warn('浏览器窗口已关闭，结束等待。'); break; }
+      log.warn('轮询瞬时错误（忽略）：', e.message);
+    }
+  }
+  if (ok) log.info('✅ 登录成功，session 已保存。之后可运行 npm run once / npm start。');
+  else log.warn('⌛ 超时未检测到登录成功。若已登录可忽略；否则重试 npm run login。');
+  await page.waitForTimeout(1500);
+  await context.close().catch(() => {});
+}
+
+async function startLoop() {
+  log.info(`常驻监测启动，间隔 ${cfg.intervalMinutes} 分钟。Ctrl+C 退出。`);
+  let loginFailStreak = 0; // 连续「未登录」轮次
+  let loginAlertedAt = 0;  // 上次就登录过期发告警时的连续轮次（0 = 尚未告警）
+  // 立即先跑一轮
+  for (;;) {
+    const t0 = Date.now();
+    try {
+      await runOnce(cfg);
+      if (loginFailStreak > 0) {
+        log.info('登录态已恢复，监测正常。');
+        loginFailStreak = 0;
+        loginAlertedAt = 0;
+      }
+    } catch (e) {
+      log.error('本轮监测失败：', e.message);
+      if (e.code === 'NOT_LOGGED_IN') {
+        loginFailStreak++;
+        await maybeAlertLoginExpiry(loginFailStreak, loginAlertedAt).then((sent) => {
+          if (sent) loginAlertedAt = loginFailStreak;
+        });
+      } else {
+        // 非登录类错误（导航/网关抖动等）不计入登录连续失败，避免误报登录过期
+        loginFailStreak = 0;
+      }
+    }
+    const elapsed = Date.now() - t0;
+    const waitMs = Math.max(60_000, cfg.intervalMinutes * 60_000 - elapsed);
+    log.info(`本轮结束，${Math.round(waitMs / 1000)} 秒后进入下一轮。`);
+    await sleep(waitMs);
+  }
+}
+
+/**
+ * 登录连续失败达到阈值时发飞书提醒；仍不恢复则每隔 loginRealertRounds 轮再提醒一次。
+ * @returns {Promise<boolean>} 本轮是否发送了告警
+ */
+async function maybeAlertLoginExpiry(streak, alertedAt) {
+  if (!cfg.alerts.loginExpiry) return false;
+  const first = alertedAt === 0 && streak >= cfg.loginAlertAfterRounds;
+  const repeat = alertedAt > 0 && (streak - alertedAt) >= cfg.loginRealertRounds;
+  if (!first && !repeat) return false;
+  const mins = streak * cfg.intervalMinutes;
+  const ok = await sendFeishu(cfg, {
+    title: '⚠️ Temu 监测中断：登录已过期',
+    template: 'orange',
+    lines: [
+      `监测已连续 **${streak}** 轮（约 ${mins} 分钟）无法登录 Temu 后台，当前**没有在出数据**。`,
+      '',
+      '请到运行监测的电脑上：',
+      '1. 先关掉「流量常驻 / 守护」窗口',
+      '2. `npm run login` 或启动器「登录 Temu」（监测专用档案）',
+      '3. 登完再开常驻；登录后会自动恢复',
+      '',
+      '说明：若刚在**日常 Chrome**用同一账号登录过，有可能是服务端踢了监测会话（两套浏览器、同一账号）。',
+      '人工要大改后台时也可先停监测，做完再开，减少互踢。',
+      '',
+      `_时间：${new Date().toLocaleString('zh-CN')}_`,
+    ],
+  }).catch(() => false);
+  if (ok) log.info(`已发送登录过期飞书提醒（连续失败 ${streak} 轮）。`);
+  return ok;
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+(async () => {
+  switch (cmd) {
+    case 'login': await loginFlow(); break;
+    case 'calibrate': await calibrate(cfg); break;
+    case 'once': await runOnce(cfg); break;
+    case 'start': {
+      const lock = tryAcquireStartLock();
+      if (!lock.ok) {
+        log.error(
+          `常驻已在运行（pid=${lock.pid}）。请勿同时开「前台常驻」和「守护常驻」，` +
+            `也不要开两个守护——会抢浏览器导致 page/browser has been closed。`,
+        );
+        process.exit(3);
+      }
+      await startLoop();
+      break;
+    }
+    default:
+      log.error(
+        `未知命令：${cmd}。可用：login | calibrate | once | start` +
+          `\n  once/start 默认全量（赛狐下架+浏览器流量，等同插件，无需扩展）` +
+          `\n  FULL_RUN=0 可退回仅浏览器`,
+      );
+  }
+})().then(() => process.exit(0)).catch((e) => { log.error(e); process.exit(1); });

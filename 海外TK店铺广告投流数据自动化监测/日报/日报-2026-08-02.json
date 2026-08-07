@@ -1,0 +1,57 @@
+﻿{
+    "bizDate":  "2026-08-02",
+    "totalSpend":  145.05,
+    "totalOrders":  80,
+    "totalRevenue":  1356.28,
+    "totalCampaigns":  11,
+    "overallRoi":  9.35,
+    "highlights":  [
+                       "销售额最高店铺：SHOP INOUT（销售额 866.73，花费 92.72，综合 ROI 9.35）",
+                       "综合 ROI 最高店铺：Deal to deal（ROI 10.14，花费 17.93）",
+                       "单系列销售额 TOP1：[SHOP INOUT] 活动品（销售额 464.58，ROI 11.95）"
+                   ],
+    "risks":  [
+                  "店铺 SHOP INOUT 有 2 个系列花费\u003e0 但销售额为 0"
+              ],
+    "storeRollups":  [
+                         {
+                             "store":  "Deal to deal",
+                             "storeId":  "27501502216807",
+                             "campaigns":  1,
+                             "spend":  17.93,
+                             "orders":  12,
+                             "revenue":  181.82,
+                             "topCampaign":  "全店商品7/27",
+                             "topRevenue":  181.82,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  0,
+                             "roi":  10.14
+                         },
+                         {
+                             "store":  "Gardena",
+                             "storeId":  "27758103898326",
+                             "campaigns":  1,
+                             "spend":  34.4,
+                             "orders":  16,
+                             "revenue":  307.73,
+                             "topCampaign":  "热销品7/15",
+                             "topRevenue":  307.73,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  0,
+                             "roi":  8.95
+                         },
+                         {
+                             "store":  "SHOP INOUT",
+                             "storeId":  "27328767468273",
+                             "campaigns":  9,
+                             "spend":  92.72,
+                             "orders":  52,
+                             "revenue":  866.73,
+                             "topCampaign":  "活动品",
+                             "topRevenue":  464.58,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  2,
+                             "roi":  9.35
+                         }
+                     ]
+}

@@ -1,0 +1,9 @@
+﻿【TK广告日报 2026-07-22】
+总览：店铺 1/4 成功 · 系列 2 · 花费 161.45 · 销量 54 · 销售额 1226.38 · 综合ROI 7.6
+亮点：销售额最高店铺：Deal to deal（销售额 1226.38，花费 161.45，综合 ROI 7.6）
+亮点：综合 ROI 最高店铺：Deal to deal（ROI 7.6，花费 161.45）
+亮点：单系列销售额 TOP1：[Deal to deal] 鑺卞洯鎷遍棬7/17（销售额 698.53，ROI 8.39）
+关注：抓取失败：Nookora Home — scrape failed: empty payload
+关注：抓取失败：TikTok - Pop — scrape failed: empty payload
+关注：抓取失败：Gardena — scrape failed: empty payload
+

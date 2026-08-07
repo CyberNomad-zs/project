@@ -1,0 +1,6 @@
+active(non-void): 496
+orders with 订单商品编码 populated: 505
+orders matched to inv: 48
+pending: 16
+orders with 订单备注 nonempty: 33
+matched codes: ["JMCATDHL8", "JMCATHL15", "JMCATKXXL", "JMCATLLDC", "JMCATTBBS", "JMCATTBHS", "VIP2WCX"]

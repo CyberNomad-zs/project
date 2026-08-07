@@ -1,0 +1,232 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+from app.rules.engine import evaluate_row
+from app.rules.tasks import apply_anomalies_to_tasks
+from app.store.db import Database
+from app.sync.feishu_schema import task_to_fields
+
+
+def load_rules():
+    path = Path(__file__).resolve().parents[1] / "config" / "rules.default.yaml"
+    with path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def test_sales_drop_orange():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米",
+        "asin": "B0TESTORANGE",
+        "title": "demo",
+        "product_grade": "B",
+        "sale_price": 7000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.30,
+        "order_num": 50,
+    }
+    anomalies = evaluate_row(row, rules)
+    sales = [a for a in anomalies if a.anomaly_type == "sales_drop"]
+    assert sales, anomalies
+    assert sales[0].level == "orange"
+
+
+def test_sales_drop_red_for_sa():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米",
+        "asin": "B0TESTRED",
+        "title": "core",
+        "product_grade": "S",
+        "sale_price": 5000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.45,
+    }
+    anomalies = evaluate_row(row, rules)
+    sales = [a for a in anomalies if a.anomaly_type == "sales_drop"]
+    assert sales and sales[0].level == "red"
+
+
+def test_inventory_low_red_stockout():
+    rules = load_rules()
+    # 有动销 + 断货才报红；无动销断货默认跳过
+    row = {
+        "shop_name": "NOTTAC",
+        "asin": "B0STOCKOUT",
+        "available": 0,
+        "available_days": 0,
+        "sale_num": 5,
+        "order_num": 3,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_low"]
+    assert inv and inv[0].level == "red"
+    assert inv[0].current_value == 0
+    assert inv[0].current_label == "FBA可售件数"
+    assert inv[0].value_summary and "FBA可售" in inv[0].value_summary
+
+
+def test_acos_labels_and_summary():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米-UK",
+        "asin": "B0ACOS",
+        "acos": 0.55,
+        "target_acos": 0.35,
+        "ad_cost": 50,
+    }
+    anomalies = evaluate_row(row, rules)
+    acos = [a for a in anomalies if a.anomaly_type == "acos_abnormal"]
+    assert acos, anomalies
+    a = acos[0]
+    assert a.current_label == "当前ACOS"
+    assert a.baseline_label == "目标ACOS"
+    assert a.change_label == "高于目标"
+    assert a.value_summary and "ACOS" in a.value_summary
+
+
+def test_inventory_low_skip_inactive_stockout():
+    rules = load_rules()
+    row = {
+        "shop_name": "NOTTAC",
+        "asin": "B0INACTIVE",
+        "available": 0,
+        "available_days": 0,
+        "sale_num": 0,
+        "order_num": 0,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_low"]
+    assert not inv
+
+
+def test_inventory_high_skip_inactive_long_days():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米-UK",
+        "asin": "B0HIGH",
+        "available": 100,
+        "available_days": 400,
+        "sale_num": 0,
+        "order_num": 0,
+        "inv_age_365_plus": 0,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_high"]
+    assert not inv
+
+
+def test_inventory_high_orange_when_active():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米-UK",
+        "asin": "B0HIGH2",
+        "available": 100,
+        "available_days": 400,
+        "sale_num": 10,
+        "order_num": 5,
+        "inv_age_365_plus": 0,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_high"]
+    assert inv and inv[0].level == "orange"
+
+
+def test_inventory_high_not_orange_under_240_days():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米-UK",
+        "asin": "B0MID",
+        "available": 100,
+        "available_days": 200,
+        "sale_num": 10,
+        "order_num": 5,
+        "inv_age_365_plus": 0,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_high"]
+    # 200 天落在 yellow 180-240
+    assert inv and inv[0].level == "yellow"
+
+
+def test_task_dedup(tmp_path):
+    rules = load_rules()
+    db = Database(tmp_path / "t.db")
+    row = {
+        "shop_name": "特米",
+        "asin": "B0DEDUP",
+        "title": "x",
+        "product_grade": "B",
+        "sale_price": 7000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.30,
+        "owner": "潘启豪",
+    }
+    a1 = evaluate_row(row, rules)
+    s1 = apply_anomalies_to_tasks(a1, biz_date="2026-07-20", db=db, rules_cfg=rules)
+    s2 = apply_anomalies_to_tasks(a1, biz_date="2026-07-21", db=db, rules_cfg=rules)
+    tasks = db.list_tasks()
+    open_sales = [
+        t
+        for t in tasks
+        if t["asin"] == "B0DEDUP" and t["anomaly_type"] == "sales_drop"
+    ]
+    assert len(open_sales) == 1
+    assert open_sales[0]["streak"] >= 2
+    assert s1["orange_new"] + s1["red_new"] >= 1
+    assert s2["orange_updated"] + s2["red_updated"] >= 1
+    # 语义字段应落库并可映射到飞书
+    t = open_sales[0]
+    assert t.get("current_label") == "当日销售额"
+    fields = task_to_fields(t)
+    assert fields.get("当前值含义") == "当日销售额"
+    assert fields.get("说明")
+    assert fields.get("指标摘要")
+
+
+def test_enrich_open_task_metrics_no_streak_bump(tmp_path):
+    """回填语义不应抬高连续异常次数。"""
+    from app.rules.tasks import enrich_open_task_metrics
+
+    rules = load_rules()
+    db = Database(tmp_path / "t.db")
+    row = {
+        "shop_name": "特米",
+        "shop_id": "s1",
+        "asin": "B0ENRICH",
+        "title": "x",
+        "product_grade": "B",
+        "sale_price": 7000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.30,
+        "owner": "潘启豪",
+        "biz_date": "2026-07-21",
+        "marketplace": "UK",
+        # 日表不落 baseline 列；enrich 重算依赖 raw_json 的 momValue
+        "raw_json": {
+            "fieldsMap": {
+                "salePrice": {"momValue": 10000, "momPercent": -30},
+            }
+        },
+    }
+    # 落一条日数据 + 建任务
+    db.upsert_asin_rows([row], sync_run_id=1)
+    a1 = evaluate_row(row, rules)
+    apply_anomalies_to_tasks(a1, biz_date="2026-07-21", db=db, rules_cfg=rules)
+    before = db.list_tasks()[0]
+    streak_before = int(before.get("streak") or 1)
+
+    tasks, stats = enrich_open_task_metrics(
+        db, biz_date="2026-07-21", rules_cfg=rules
+    )
+    assert stats["matched_anomaly"] >= 1 or any(
+        t.get("current_label") for t in tasks
+    )
+    after = db.list_tasks()[0]
+    assert int(after.get("streak") or 1) == streak_before
+    assert after.get("current_label") == "当日销售额"
+    assert after.get("value_summary")
+    assert tasks[0].get("value_summary")

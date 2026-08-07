@@ -1,0 +1,448 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>发货哨兵 · 内部汇报</title>
+<style>
+:root{
+  --bg:#0C1117; --panel:#141A22; --panel-2:#1A212B; --panel-3:#212a35;
+  --ink:#E9EEF3; --ink-2:#99A5B3; --ink-3:#5E6A78;
+  --line:#242D38; --line-2:#1D2530;
+  --accent:#3AA4E6; --accent-2:#3FC0D4;
+  --crit:#EF565C; --crit-bg:rgba(239,86,92,.15); --crit-line:rgba(239,86,92,.5);
+  --warn:#E0A63B; --warn-bg:rgba(224,166,59,.15); --warn-line:rgba(224,166,59,.45);
+  --good:#41BF89; --good-bg:rgba(65,191,137,.14); --good-line:rgba(65,191,137,.45);
+  --info:#9085e9; --info-bg:rgba(144,133,233,.16);
+  --p-amazon:#3987e5; --p-tiktok:#199e70; --p-temu:#c98500; --p-shein:#33a033;
+  --font-sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei","PingFang SC",sans-serif;
+  --font-mono:"SF Mono",ui-monospace,"Cascadia Code","Consolas",monospace;
+  --shadow:0 8px 30px rgba(0,0,0,.35);
+}
+html[data-theme="light"]{
+  --bg:#EBEEF2; --panel:#FBFCFD; --panel-2:#F0F3F6; --panel-3:#E9EDF1;
+  --ink:#131A22; --ink-2:#4A5563; --ink-3:#8A94A2;
+  --line:#D6DDE5; --line-2:#E6EBF0;
+  --accent:#1B7FC4; --accent-2:#1C9BB8;
+  --crit:#D03B3B; --crit-bg:rgba(208,59,59,.11); --crit-line:rgba(208,59,59,.42);
+  --warn:#B5770E; --warn-bg:rgba(200,130,20,.14); --warn-line:rgba(200,130,20,.42);
+  --good:#0C8A3C; --good-bg:rgba(12,138,60,.12); --good-line:rgba(12,138,60,.4);
+  --info:#5B5AA6; --info-bg:rgba(91,90,166,.12);
+  --p-amazon:#2a78d6; --p-tiktok:#1baf7a; --p-temu:#eda100; --p-shein:#008300;
+  --shadow:0 8px 30px rgba(70,90,120,.14);
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{background:var(--bg);color:var(--ink);font-family:var(--font-sans);-webkit-font-smoothing:antialiased;overflow:hidden;}
+.mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+
+/* ---------- stage ---------- */
+#stage{position:fixed;inset:0;display:grid;place-items:center;}
+.deck{
+  position:relative;width:min(96vw,calc(92vh*16/9));aspect-ratio:16/9;
+  background:var(--panel);border:1px solid var(--line);border-radius:18px;
+  box-shadow:var(--shadow);overflow:hidden;
+}
+.slide{
+  position:absolute;inset:0;padding:clamp(28px,4.2vh,58px) clamp(34px,4.6vw,72px);
+  display:flex;flex-direction:column;opacity:0;transform:translateY(14px);
+  transition:opacity .42s cubic-bezier(.22,.61,.36,1),transform .42s cubic-bezier(.22,.61,.36,1);
+  pointer-events:none;
+}
+.slide.on{opacity:1;transform:none;pointer-events:auto;}
+.slide.prev{transform:translateY(-14px);}
+
+/* container-query driven text scale so slides fit any deck size */
+.deck{container-type:size;}
+.slide{font-size:clamp(11px,1.7cqw,21px);}
+
+/* ---------- shared bits ---------- */
+.kick{font-family:var(--font-mono);font-size:.62em;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:700;}
+.title{font-size:2.05em;font-weight:800;line-height:1.12;letter-spacing:-.01em;}
+.title.sm{font-size:1.7em;}
+.sub{color:var(--ink-2);font-size:1em;line-height:1.55;}
+.hd{display:flex;align-items:baseline;gap:.7em;margin-bottom:.85em;}
+.hd .num{font-family:var(--font-mono);font-size:.7em;color:var(--ink-3);font-weight:700;}
+.grow{flex:1;min-height:0;}
+.em{color:var(--accent);font-weight:700;}
+.crit{color:var(--crit);} .good{color:var(--good);} .warn{color:var(--warn);}
+.chip{display:inline-flex;align-items:center;gap:.4em;font-family:var(--font-mono);font-size:.6em;letter-spacing:.1em;text-transform:uppercase;font-weight:700;border-radius:6px;padding:.35em .7em;border:1px solid var(--good-line);background:var(--good-bg);color:var(--good);}
+
+.logo{width:2.4em;height:2.4em;border-radius:.6em;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;color:#fff;font-size:1em;flex-shrink:0;box-shadow:0 4px 16px rgba(58,164,230,.35);}
+
+.card{background:var(--panel-2);border:1px solid var(--line-2);border-radius:14px;padding:1.05em 1.2em;}
+.grid{display:grid;gap:.85em;}
+
+/* KPI */
+.kpi{background:var(--panel-2);border:1px solid var(--line-2);border-radius:13px;padding:.85em 1em;display:flex;flex-direction:column;gap:.15em;}
+.kpi .k{font-size:.62em;color:var(--ink-3);letter-spacing:.06em;text-transform:uppercase;font-weight:700;}
+.kpi .v{font-family:var(--font-mono);font-size:2em;font-weight:800;line-height:1;}
+.kpi .d{font-size:.62em;color:var(--ink-2);}
+
+/* flow / pipeline */
+.flow{display:flex;align-items:stretch;gap:.5em;}
+.node{flex:1;background:var(--panel-2);border:1px solid var(--line-2);border-radius:12px;padding:.9em .75em;text-align:center;display:flex;flex-direction:column;gap:.3em;justify-content:center;}
+.node .ic{font-size:1.4em;}
+.node .t{font-weight:700;font-size:.92em;}
+.node .s{font-size:.66em;color:var(--ink-2);line-height:1.4;}
+.arw{display:grid;place-items:center;color:var(--ink-3);font-size:1.2em;flex-shrink:0;}
+
+/* two col */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:1.1em;}
+.two.wide{grid-template-columns:1.15fr .85fr;}
+
+/* list */
+.li{display:flex;gap:.7em;align-items:flex-start;padding:.5em 0;border-bottom:1px solid var(--line-2);}
+.li:last-child{border-bottom:none;}
+.li .b{width:1.7em;height:1.7em;border-radius:8px;display:grid;place-items:center;flex-shrink:0;font-size:.9em;background:var(--crit-bg);color:var(--crit);border:1px solid var(--crit-line);}
+.li .tx{font-size:.9em;line-height:1.45;}
+.li .tx b{font-weight:700;}
+.li .tx span{color:var(--ink-2);}
+
+/* stat row */
+.bars{display:flex;flex-direction:column;gap:.6em;}
+.bar{display:flex;align-items:center;gap:.7em;font-size:.85em;}
+.bar .nm{width:5.5em;flex-shrink:0;color:var(--ink-2);}
+.bar .tr{flex:1;height:.7em;background:var(--panel-3);border-radius:99px;overflow:hidden;}
+.bar .fl{height:100%;border-radius:99px;}
+.bar .vl{font-family:var(--font-mono);width:5.5em;text-align:right;color:var(--ink-2);flex-shrink:0;}
+
+/* case / star order */
+.case{border-left:3px solid var(--crit);background:linear-gradient(100deg,var(--crit-bg),transparent 70%);border-radius:0 12px 12px 0;padding:1em 1.2em;}
+.case.g{border-left-color:var(--good);background:linear-gradient(100deg,var(--good-bg),transparent 70%);}
+.case.i{border-left-color:var(--info);background:linear-gradient(100deg,var(--info-bg),transparent 70%);}
+.pill{display:inline-block;font-family:var(--font-mono);font-size:.7em;padding:.2em .55em;border-radius:6px;background:var(--panel-3);border:1px solid var(--line-2);color:var(--ink);}
+
+/* footer of deck */
+.foot{display:flex;align-items:center;gap:.7em;font-size:.62em;color:var(--ink-3);font-family:var(--font-mono);letter-spacing:.04em;margin-top:auto;padding-top:.9em;}
+.foot .sp{flex:1;}
+
+/* ---------- controls ---------- */
+.ui{position:fixed;z-index:20;}
+#bar{left:0;right:0;top:0;height:3px;background:transparent;}
+#bar .p{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));transition:width .42s ease;box-shadow:0 0 10px var(--accent);}
+#ctl{bottom:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:6px 8px;box-shadow:var(--shadow);}
+#ctl button{background:var(--panel-2);border:1px solid var(--line-2);border-radius:8px;color:var(--ink);width:32px;height:30px;font-size:14px;cursor:pointer;display:grid;place-items:center;transition:.12s;}
+#ctl button:hover{background:var(--panel-3);border-color:var(--accent);}
+#ctl .ct{font-family:var(--font-mono);font-size:12px;color:var(--ink-2);min-width:52px;text-align:center;}
+.dots{position:fixed;right:16px;top:50%;transform:translateY(-50%);z-index:20;display:flex;flex-direction:column;gap:8px;}
+.dots i{width:8px;height:8px;border-radius:50%;background:var(--line);cursor:pointer;transition:.2s;display:block;}
+.dots i.on{background:var(--accent);transform:scale(1.3);box-shadow:0 0 8px var(--accent);}
+.hint{position:fixed;left:16px;bottom:18px;z-index:20;font-family:var(--font-mono);font-size:11px;color:var(--ink-3);letter-spacing:.05em;}
+@media (max-width:640px){.dots{display:none;} .hint{display:none;}}
+</style>
+</head>
+<body>
+<div id="bar" class="ui"><div class="p"></div></div>
+
+<div id="stage"><div class="deck" id="deck">
+
+<!-- 1 · COVER -->
+<section class="slide">
+  <div style="display:flex;align-items:center;gap:.7em;">
+    <div class="logo">🛰️</div>
+    <div>
+      <div style="font-weight:800;font-size:1.15em;">发货哨兵 <span class="mono" style="color:var(--ink-3);font-weight:600;font-size:.75em;">FulfillSentinel</span></div>
+      <div class="mono" style="font-size:.6em;letter-spacing:.18em;color:var(--ink-3);text-transform:uppercase;">Cross-Platform Fulfillment Watchtower</div>
+    </div>
+  </div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center;gap:.5em;">
+    <div class="kick">内部项目汇报</div>
+    <div class="title" style="font-size:2.9em;">一屏看穿<span class="em">三系统</span>发货,<br>把 <span class="mono">505</span> 单收敛成 <span class="crit mono">4</span> 单要动手。</div>
+    <div class="sub" style="max-width:80%;margin-top:.3em;">只读聚合 Temu · 赛狐 ERP · 海外仓 WMS,自动揪出跨系统才暴露的履约异常。<br>自包含单文件、断网可用、全程零写操作。</div>
+    <div style="display:flex;gap:.6em;margin-top:.7em;">
+      <span class="chip">只读 Read-only</span>
+      <span class="chip">PII 已脱敏</span>
+      <span class="chip">离线可用</span>
+    </div>
+  </div>
+  <div class="foot"><span>汇报人 · 独立完成</span><span class="sp"></span><span>数据快照 2026-07-16 14:31</span><span>·</span><span>公司 AI 自动化项目</span></div>
+</section>
+
+<!-- 2 · 痛点 -->
+<section class="slide">
+  <div class="hd"><span class="num">01</span><div class="title sm">每天早上,运营在<span class="em">三个系统之间</span>逐单核对</div></div>
+  <div class="two grow" style="align-items:center;">
+    <div>
+      <div class="sub" style="margin-bottom:1em;">跨境自发货,一个订单要在 <b class="mono">平台 → ERP → 海外仓</b> 之间流转。人工来回比对,最容易漏的是这五类:</div>
+      <div>
+        <div class="li"><div class="b">⏰</div><div class="tx"><b>履约超时</b> <span>— 平台罚款、店铺降权</span></div></div>
+        <div class="li"><div class="b">📦</div><div class="tx"><b>订单卡在仓</b> <span>— 已推仓却迟迟不出库</span></div></div>
+        <div class="li"><div class="b">🚚</div><div class="tx"><b>已出库没回填运单号</b> <span>— 买家查不到物流</span></div></div>
+        <div class="li"><div class="b">🔗</div><div class="tx"><b>平台单没同步进 ERP</b> <span>— 直接漏发</span></div></div>
+        <div class="li"><div class="b">📉</div><div class="tx"><b>库存 / 对账不一致</b> <span>— 超卖、断货发不出</span></div></div>
+      </div>
+    </div>
+    <div class="card" style="align-self:stretch;display:flex;flex-direction:column;justify-content:center;gap:1em;text-align:center;">
+      <div class="mono" style="font-size:.62em;color:var(--ink-3);letter-spacing:.14em;text-transform:uppercase;">今天的核对方式</div>
+      <div style="display:flex;justify-content:center;gap:.5em;align-items:center;font-size:1.1em;">
+        <span class="pill">赛狐 ERP</span><span style="color:var(--ink-3);">×</span><span class="pill">Temu</span><span style="color:var(--ink-3);">×</span><span class="pill">WMS</span>
+      </div>
+      <div style="font-size:2.4em;font-weight:800;" class="crit mono">3 个系统<br><span style="font-size:.5em;" class="ink">逐单肉眼比对</span></div>
+      <div class="sub" style="font-size:.85em;">哪些会漏发、卡仓、断货,<b class="crit">要拼三家数据才看得出来</b>——单看任何一个系统都发现不了。</div>
+    </div>
+  </div>
+</section>
+
+<!-- 3 · 我们做了什么 -->
+<section class="slide">
+  <div class="hd"><span class="num">02</span><div class="title sm">发货哨兵:把三家数据拉到一起,<span class="em">一屏看穿</span></div></div>
+  <div class="grid grow" style="grid-template-columns:repeat(3,1fr);align-content:center;">
+    <div class="card"><div style="font-size:1.7em;">🧭</div><div style="font-weight:800;font-size:1.05em;margin:.3em 0;">全链路状态</div><div class="sub" style="font-size:.86em;">每个订单在平台/ERP/仓的位置一目了然,异常按严重度顶到最前面。</div></div>
+    <div class="card"><div style="font-size:1.7em;">🚨</div><div style="font-weight:800;font-size:1.05em;margin:.3em 0;">8 类异常引擎</div><div class="sub" style="font-size:.86em;">规则 + 大模型,自动揪出超时/卡仓/缺渠道/断货/漏运单等跨系统矛盾。</div></div>
+    <div class="card"><div style="font-size:1.7em;">📋</div><div style="font-weight:800;font-size:1.05em;margin:.3em 0;">一键派活闭环</div><div class="sub" style="font-size:.86em;">导出催发清单 / 生成企微钉钉卡片,点包裹号深链回源系统去改。</div></div>
+    <div class="card" style="grid-column:span 3;display:flex;align-items:center;gap:1.2em;background:linear-gradient(100deg,var(--good-bg),transparent 60%);border-color:var(--good-line);">
+      <div style="font-size:1.9em;">🔒</div>
+      <div><div style="font-weight:800;font-size:1.05em;">刻意做成「只读」——这是安全边界,不是妥协</div><div class="sub" style="font-size:.88em;">全程无任何写操作,接进生产不动一条数据。打包成<b>双击即用的自包含 HTML</b>,断网照跑、零登录风险。</div></div>
+      <div style="margin-left:auto;display:flex;gap:.5em;flex-shrink:0;"><span class="chip">只读</span><span class="chip">离线</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 · 架构 -->
+<section class="slide">
+  <div class="hd"><span class="num">03</span><div class="title sm">怎么做到的:五步<span class="em">确定性管线</span></div></div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center;gap:1.4em;">
+    <div class="flow">
+      <div class="node"><div class="ic">📤</div><div class="t">三系统导出</div><div class="s">xlsx / csv<br>赛狐·Temu·WMS</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">🔧</div><div class="t">Ingest 适配器</div><div class="s">列名映射<br>货号对齐</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">🧩</div><div class="t">统一订单模型</div><div class="s">异构表头<br>归一化</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">🚨</div><div class="t">异常引擎</div><div class="s">规则 + LLM<br>8 类研判</div></div>
+      <div class="arw">→</div>
+      <div class="node" style="border-color:var(--accent);background:linear-gradient(160deg,var(--info-bg),var(--panel-2));"><div class="ic">🖥️</div><div class="t">自包含看板</div><div class="s">单文件<br>离线双击开</div></div>
+    </div>
+    <div class="two" style="gap:1em;">
+      <div class="card"><div style="font-weight:700;margin-bottom:.35em;">🔑 跨系统匹配键 = 内部货号</div><div class="sub" style="font-size:.86em;">用 <span class="mono">JMCAT* / VIP*</span> 内部货号把三家打通:<br>赛狐 SKU/MSKU <span class="mono">↔</span> Temu 货号 <span class="mono">↔</span> WMS 仓库代码。</div></div>
+      <div class="card"><div style="font-weight:700;margin-bottom:.35em;">🎯 判定层刻意做成确定、可复现</div><div class="sub" style="font-size:.86em;">履约场景比 LLM 现编更可靠——规则揪矛盾,大模型只在构建时生成处置建议,<b>运行时不联网、不调 API</b>。</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 5 · 真实快照 -->
+<section class="slide">
+  <div class="hd"><span class="num">04</span><div class="title sm">真实脱敏快照:<span class="em">505 单 × 4 平台</span>,一屏研判</div></div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center;gap:1.1em;">
+  <div class="grid" style="grid-template-columns:repeat(6,1fr);gap:.7em;">
+    <div class="kpi"><div class="k">订单总数</div><div class="v">505</div><div class="d">4 平台 · 10 店铺</div></div>
+    <div class="kpi"><div class="k">待处理</div><div class="v warn">16</div><div class="d">尚未发货</div></div>
+    <div class="kpi"><div class="k">需立即处理</div><div class="v crit">4</div><div class="d">可执行异常</div></div>
+    <div class="kpi"><div class="k">24h 内发货率</div><div class="v good">99.6%</div><div class="d">已发 479 · 中位 6.4h</div></div>
+    <div class="kpi"><div class="k">断货货号</div><div class="v crit">2</div><div class="d">1 个待急补</div></div>
+    <div class="kpi"><div class="k">已作废</div><div class="v">9</div><div class="d">不纳入履约</div></div>
+  </div>
+  <div class="two wide" style="align-items:center;">
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:.7em;font-size:.95em;">📊 平台分布 <span class="mono" style="color:var(--ink-3);font-size:.8em;float:right;">505 单</span></div>
+      <div class="bars">
+        <div class="bar"><div class="nm">Amazon</div><div class="tr"><div class="fl" style="width:35%;background:var(--p-amazon);"></div></div><div class="vl">176 · 35%</div></div>
+        <div class="bar"><div class="nm">TikTok</div><div class="tr"><div class="fl" style="width:33%;background:var(--p-tiktok);"></div></div><div class="vl">165 · 33%</div></div>
+        <div class="bar"><div class="nm">Temu 半托</div><div class="tr"><div class="fl" style="width:30%;background:var(--p-temu);"></div></div><div class="vl">154 · 30%</div></div>
+        <div class="bar"><div class="nm">SHEIN</div><div class="tr"><div class="fl" style="width:2%;background:var(--p-shein);"></div></div><div class="vl">10 · 2%</div></div>
+      </div>
+    </div>
+    <div class="case g" style="border-radius:12px;">
+      <div class="mono" style="font-size:.62em;letter-spacing:.12em;text-transform:uppercase;color:var(--good);font-weight:700;margin-bottom:.3em;">这就是「确定性」</div>
+      <div style="font-size:1.05em;line-height:1.4;"><b class="good mono" style="font-size:1.5em;">500 / 505</b> 单确定无恙<br><span class="sub">今天你不用看。哨兵把注意力从 505 单,<b class="crit">压缩到 4 单要动手、1 单绝对别漏。</b></span></div>
+    </div>
+  </div>
+  </div>
+</section>
+
+<!-- 6 · 明星单 -->
+<section class="slide">
+  <div class="hd"><span class="num">05</span><div class="title sm">价值一 · <span class="crit">卡在虚拟仓 + 缺渠道</span>:会静悄悄发不出去</div></div>
+  <div class="two wide grow" style="align-items:center;">
+    <div class="case">
+      <div style="display:flex;align-items:center;gap:.6em;margin-bottom:.6em;"><span class="pill">P2AL6TCD63005</span><span class="mono" style="font-size:.7em;color:var(--ink-3);">Amazon · 待处理</span></div>
+      <div style="font-size:1.15em;font-weight:700;line-height:1.4;">在赛狐里看<span class="good">一切正常</span>——<br>有订单、有 SKU、状态待处理。</div>
+      <div style="height:1px;background:var(--crit-line);margin:.9em 0;opacity:.5;"></div>
+      <div class="sub" style="font-size:.95em;line-height:1.55;">但哨兵拼上海外仓和 Temu 数据后发现:它落在<b class="crit">虚拟仓库</b>(没分配实仓),而且<b class="crit">发货渠道是空的</b>。</div>
+      <div style="margin-top:.8em;font-size:1.05em;font-weight:800;" class="crit">→ 虚拟仓 + 无渠道 = 会静悄悄发不出去,<br>等超时罚款才被发现。</div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:.9em;">
+      <div class="card" style="text-align:center;">
+        <div class="mono" style="font-size:.6em;color:var(--ink-3);letter-spacing:.12em;text-transform:uppercase;">单看一个系统</div>
+        <div style="font-size:1.5em;font-weight:800;margin:.2em 0;" class="crit">发现不了 ✗</div>
+        <div class="sub" style="font-size:.82em;">赛狐正常 · Temu 正常 · WMS 单看也正常</div>
+      </div>
+      <div class="arw" style="font-size:1.4em;">↓</div>
+      <div class="card" style="text-align:center;border-color:var(--accent);background:linear-gradient(160deg,var(--info-bg),var(--panel-2));">
+        <div class="mono" style="font-size:.6em;color:var(--accent);letter-spacing:.12em;text-transform:uppercase;">拼三家数据</div>
+        <div style="font-size:1.5em;font-weight:800;margin:.2em 0;" class="em">当场揪出 ✓</div>
+        <div class="sub" style="font-size:.82em;">这正是跨系统哨兵的护城河</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 7 · 断货 -->
+<section class="slide">
+  <div class="hd"><span class="num">06</span><div class="title sm">价值二 · <span class="crit">跨系统断货</span>:下一个订单就发不出</div></div>
+  <div class="two wide grow" style="align-items:center;">
+    <div class="case">
+      <div style="display:flex;align-items:center;gap:.6em;margin-bottom:.6em;"><span class="pill">VIP2WCX</span><span class="mono" style="font-size:.7em;color:var(--crit);">🔴 库存 0</span></div>
+      <div style="font-size:1.1em;font-weight:700;line-height:1.4;">赛狐里<span class="good">完全看不出问题</span>——<br>因为赛狐不知道 Temu 的库存。</div>
+      <div style="height:1px;background:var(--crit-line);margin:.85em 0;opacity:.5;"></div>
+      <div class="sub" style="font-size:.93em;line-height:1.55;">哨兵拼上 Temu 库存后发现:这个货号<b>昨天连发 6 单后已归零</b>,<b class="crit">下一个订单就会断货、发不出去。</b></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:.85em;">
+      <div class="card"><div style="display:flex;align-items:center;gap:.5em;"><span class="mono crit">●</span><b>VIP2WCX</b><span class="mono" style="margin-left:auto;font-size:.8em;color:var(--crit);">立即补货</span></div><div class="sub" style="font-size:.82em;margin-top:.25em;">近 6 单已发后归零 → 🔴 紧急</div></div>
+      <div class="card"><div style="display:flex;align-items:center;gap:.5em;"><span class="mono warn">●</span><b>VIPR956</b><span class="mono" style="margin-left:auto;font-size:.8em;color:var(--warn);">预防性</span></div><div class="sub" style="font-size:.82em;margin-top:.25em;">无动销 → 🟡 提示级(按动销排优先级)</div></div>
+      <div class="card" style="background:linear-gradient(100deg,var(--good-bg),transparent);border-color:var(--good-line);"><div class="sub" style="font-size:.86em;"><b class="good">护城河:</b>必须把 <b>赛狐订单 × Temu 库存</b> 拼起来才看得见,还会<b>按动销给补货排优先级</b>。</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 8 · AI 层 -->
+<section class="slide">
+  <div class="hd"><span class="num">07</span><div class="title sm">AI 落在两处:<span class="em">自动对齐</span> + <span class="em">自动研判</span></div></div>
+  <div class="two grow" style="align-items:center;">
+    <div style="display:flex;flex-direction:column;gap:.9em;">
+      <div class="card"><div style="font-weight:700;">① 跨系统自动对齐</div><div class="sub" style="font-size:.86em;margin-top:.25em;">把三家异构表头 / 货号归一成统一订单模型——<b>换平台改配置、不重写代码</b>。</div></div>
+      <div class="card"><div style="font-weight:700;">② 确定性异常研判</div><div class="sub" style="font-size:.86em;margin-top:.25em;">8 类规则把「拼三家才暴露」的矛盾自动揪出。<b>透视表只聚合单系统字段,发现不了跨系统矛盾。</b></div></div>
+      <div class="card"><div style="font-weight:700;">③ 大模型处置建议</div><div class="sub" style="font-size:.86em;margin-top:.25em;">构建时用 <span class="mono">claude-opus-4-8</span> 为「需立即处理」单预生成根因 + 处置 + 风险。</div></div>
+    </div>
+    <div class="case i" style="border-radius:12px;">
+      <div style="display:flex;align-items:center;gap:.5em;margin-bottom:.5em;"><span style="font-size:1.3em;">🤖</span><b>AI 处置建议</b><span class="pill" style="margin-left:auto;font-size:.62em;">大模型生成</span></div>
+      <div class="sub" style="font-size:.72em;color:var(--info);margin-bottom:.6em;">明星单 · P2AL6TCD63005</div>
+      <div style="font-size:.92em;line-height:1.6;">
+        <div><b class="warn">根因</b> · 订单落虚拟仓未分配实仓,发货渠道为空</div>
+        <div style="margin-top:.4em;"><b class="good">处置</b> · 改派实仓「昇新仓库」+ 指定皇家邮政渠道</div>
+        <div style="margin-top:.4em;"><b class="crit">风险</b> · 不处理将超时,面临平台罚款 / 降权</div>
+      </div>
+      <div class="mono" style="font-size:.62em;color:var(--ink-3);margin-top:.7em;padding-top:.6em;border-top:1px solid var(--line-2);">⚡ 仅构建时联网 · 运行时 / 演示全程离线,不调 API</div>
+    </div>
+  </div>
+</section>
+
+<!-- 9 · 闭环 + ROI -->
+<section class="slide">
+  <div class="hd"><span class="num">08</span><div class="title sm">从「<span class="em">发现问题</span>」到「<span class="em">派活给人</span>」——闭环 & 价值</div></div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center;gap:1.2em;">
+    <div class="flow" style="max-width:88%;margin:0 auto;">
+      <div class="node"><div class="ic">🔍</div><div class="t">哨兵研判</div><div class="s">揪出 4 单要动手</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">📋</div><div class="t">一键催发卡片</div><div class="s">复制进企微/钉钉群</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">⬇️</div><div class="t">导出催发清单</div><div class="s">CSV 下载</div></div>
+      <div class="arw">→</div>
+      <div class="node"><div class="ic">🔗</div><div class="t">深链回源系统</div><div class="s">点包裹号跳赛狐/Temu</div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr);">
+      <div class="kpi" style="align-items:flex-start;"><div class="k">省下的人工核对</div><div class="v em" style="font-size:1.7em;">~11 小时/月</div><div class="d">三系统逐单核对 35→5 分钟/天</div></div>
+      <div class="kpi" style="align-items:flex-start;"><div class="k">注意力聚焦</div><div class="v em" style="font-size:1.7em;">505 → 4 单</div><div class="d">99.2% 的单确定无恙,无需逐一核对</div></div>
+      <div class="kpi" style="align-items:flex-start;"><div class="k">提前拦下的风险</div><div class="v em" style="font-size:1.7em;">2 + 1 单</div><div class="d">断货预警 + 卡仓无法出库</div></div>
+    </div>
+    <div class="mono" style="font-size:.62em;color:var(--ink-3);text-align:center;">* 保守行业估算(核对时长/工作日数),非精确财务;接入真实基线后可替换为实际数字。</div>
+  </div>
+</section>
+
+<!-- 10 · 工程诚信 / 安全 -->
+<section class="slide">
+  <div class="hd"><span class="num">09</span><div class="title sm">工程诚信:<span class="em">只读、脱敏、离线</span>——物理上无法翻车</div></div>
+  <div class="grid grow" style="grid-template-columns:repeat(3,1fr);align-content:center;">
+    <div class="card" style="text-align:center;"><div style="font-size:2em;">🔒</div><div style="font-weight:800;margin:.35em 0;">只读零风险</div><div class="sub" style="font-size:.84em;">代码里无任何写 / 网络 API,接进生产不回写一条数据——物理上无法改动源系统。</div></div>
+    <div class="card" style="text-align:center;"><div style="font-size:2em;">🛡️</div><div style="font-weight:800;margin:.35em 0;">PII 已脱敏</div><div class="sub" style="font-size:.84em;">解析层白名单 + 黑名单双保险丢弃全部买家信息,含「订单备注」自由文本;成品全文扫描 <span class="mono good">0</span> 命中。</div></div>
+    <div class="card" style="text-align:center;"><div style="font-size:2em;">📴</div><div style="font-weight:800;margin:.35em 0;">断网可用</div><div class="sub" style="font-size:.84em;">单个自包含 HTML,无外部依赖、无 CDN;当众断网照跑,零登录风险。</div></div>
+  </div>
+  <div class="card" style="margin-top:.2em;display:flex;align-items:center;gap:1em;">
+    <div style="font-size:1.6em;">✅</div>
+    <div class="sub" style="font-size:.9em;"><b>诚实披露而非过度声明:</b>看板明标「库存可见性 <span class="mono">7/505</span>(样例主数据所限)」、「快照 2026-07-16 14:31」而非「现在」。<b>今天能用</b> 与 <b>接全量后能用</b> 清晰区分。</div>
+  </div>
+</section>
+
+<!-- 11 · 路线图 -->
+<section class="slide">
+  <div class="hd"><span class="num">10</span><div class="title sm">下一步:从「<span class="em">看板</span>」到「<span class="em">主动哨兵</span>」</div></div>
+  <div class="two grow" style="align-items:center;">
+    <div>
+      <div class="li"><div class="b" style="background:var(--info-bg);color:var(--info);border-color:var(--info);">1</div><div class="tx"><b>主动推送</b> <span>— Windows 计划任务定时跑,命中超期/临期/断货就推企微·钉钉卡片,截止前 ping 人(定时器 + webhook,不改核心逻辑)。</span></div></div>
+      <div class="li"><div class="b" style="background:var(--info-bg);color:var(--info);border-color:var(--info);">2</div><div class="tx"><b>接全量匹配键</b> <span>— 用 WMS「关联 ASIN」建桥表,把 Amazon 176 单接进匹配,库存可见性 7/505 → 接近全量。</span></div></div>
+      <div class="li"><div class="b" style="background:var(--info-bg);color:var(--info);border-color:var(--info);">3</div><div class="tx"><b>可复制到其他系统</b> <span>— 换一家 ERP、多接一个平台,改的是字段映射配置,不是重写。</span></div></div>
+    </div>
+    <div class="card" style="align-self:stretch;display:flex;flex-direction:column;justify-content:center;gap:.8em;">
+      <div class="mono" style="font-size:.62em;color:var(--ink-3);letter-spacing:.12em;text-transform:uppercase;">当前就绪度</div>
+      <div style="font-size:2.2em;font-weight:800;" class="good">代码侧 100% 就绪</div>
+      <div class="sub" style="font-size:.86em;">真实数据端到端管线 · 明暗双主题 · 投影演示态 · 一键催发闭环 · 离线 AI 处置建议,均已构建并验证。</div>
+      <div style="display:flex;gap:.5em;flex-wrap:wrap;margin-top:.2em;"><span class="chip">端到端管线</span><span class="chip">离线 AI</span><span class="chip">派活闭环</span></div>
+    </div>
+  </div>
+</section>
+
+<!-- 12 · 收尾 -->
+<section class="slide">
+  <div style="display:flex;align-items:center;gap:.7em;"><div class="logo">🛰️</div><div style="font-weight:800;font-size:1.05em;">发货哨兵 <span class="mono" style="color:var(--ink-3);font-weight:600;font-size:.72em;">FulfillSentinel</span></div></div>
+  <div class="grow" style="display:flex;flex-direction:column;justify-content:center;gap:1em;">
+    <div class="kick">一句话总结</div>
+    <div class="title" style="font-size:2.1em;line-height:1.25;">在 <span class="mono">505</span> 单的洪流里,哨兵先给你<span class="good">确定性</span>,<br>再把注意力压缩到真正要你动手的<span class="crit">少数单</span>。</div>
+    <div class="grid" style="grid-template-columns:repeat(2,1fr);margin-top:.6em;gap:.8em;max-width:90%;">
+      <div class="card"><b class="em">业务落地</b> · <span class="sub">每天省几十次三系统核对,505 单收敛成 4 单,1 单绝对别漏</span></div>
+      <div class="card"><b class="em">只读零风险</b> · <span class="sub">全程无写操作,接进生产不动任何数据</span></div>
+      <div class="card"><b class="em">断网可用</b> · <span class="sub">一个自包含单文件,离线照跑</span></div>
+      <div class="card"><b class="em">可复制</b> · <span class="sub">换 ERP / 加平台改的是配置,不是重写</span></div>
+    </div>
+  </div>
+  <div class="foot"><span>谢谢 · 欢迎提问</span><span class="sp"></span><span>发货哨兵 · FulfillSentinel</span></div>
+</section>
+
+</div></div>
+
+<!-- controls -->
+<div class="dots ui" id="dots"></div>
+<div id="ctl" class="ui">
+  <button id="prev" title="上一页 ←">‹</button>
+  <span class="ct mono"><span id="cur">1</span> / <span id="tot">12</span></span>
+  <button id="next" title="下一页 →">›</button>
+  <button id="theme" title="明暗切换">◐</button>
+  <button id="fs" title="全屏 F">⛶</button>
+</div>
+<div class="hint">← → 翻页 · F 全屏 · T 主题</div>
+
+<script>
+(function(){
+  var slides=[].slice.call(document.querySelectorAll('.slide'));
+  var i=0, N=slides.length;
+  var dots=document.getElementById('dots');
+  slides.forEach(function(s,k){var d=document.createElement('i');d.onclick=function(){go(k)};dots.appendChild(d);});
+  var di=[].slice.call(dots.children);
+  document.getElementById('tot').textContent=N;
+  function go(n){
+    n=Math.max(0,Math.min(N-1,n));
+    slides[i].classList.remove('on');slides[i].classList.toggle('prev',n>i);
+    i=n;
+    slides[i].classList.remove('prev');slides[i].classList.add('on');
+    di.forEach(function(d,k){d.classList.toggle('on',k===i);});
+    document.getElementById('cur').textContent=i+1;
+    document.querySelector('#bar .p').style.width=((i+1)/N*100)+'%';
+  }
+  document.getElementById('next').onclick=function(){go(i+1)};
+  document.getElementById('prev').onclick=function(){go(i-1)};
+  document.getElementById('theme').onclick=function(){
+    var h=document.documentElement;h.setAttribute('data-theme',h.getAttribute('data-theme')==='dark'?'light':'dark');
+  };
+  document.getElementById('fs').onclick=function(){
+    if(document.fullscreenElement)document.exitFullscreen();else document.documentElement.requestFullscreen();
+  };
+  document.addEventListener('keydown',function(e){
+    if(e.key==='ArrowRight'||e.key===' '||e.key==='PageDown'){go(i+1);e.preventDefault();}
+    else if(e.key==='ArrowLeft'||e.key==='PageUp'){go(i-1);e.preventDefault();}
+    else if(e.key==='Home'){go(0);}
+    else if(e.key==='End'){go(N-1);}
+    else if(e.key==='f'||e.key==='F'){document.getElementById('fs').click();}
+    else if(e.key==='t'||e.key==='T'){document.getElementById('theme').click();}
+  });
+  // swipe
+  var x0=null;
+  document.addEventListener('touchstart',function(e){x0=e.touches[0].clientX;});
+  document.addEventListener('touchend',function(e){
+    if(x0===null)return;var dx=e.changedTouches[0].clientX-x0;
+    if(Math.abs(dx)>50)go(i+(dx<0?1:-1));x0=null;
+  });
+  go(0);
+})();
+</script>
+</body>
+</html>

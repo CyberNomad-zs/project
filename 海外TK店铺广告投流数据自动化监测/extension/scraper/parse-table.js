@@ -1,0 +1,349 @@
+/**
+ * DOM 表格解析：按表头语义匹配列，抽取广告系列行
+ * 避免依赖哈希 class，适配 TikTok Seller / Ads 改版
+ */
+
+import { HEADER_ALIASES } from '../lib/constants.js';
+import { cleanText, parseNumber } from './normalize.js';
+
+/**
+ * 判断表头文本属于哪个业务字段
+ * @param {string} headerText
+ * @returns {keyof typeof HEADER_ALIASES|null}
+ */
+export function matchHeaderField(headerText) {
+  const t = cleanText(headerText).toLowerCase();
+  if (!t) return null;
+
+  // 优先更具体的匹配（开关 / roi 先于宽泛词）
+  const order = ['planStatus', 'roi', 'spend', 'orders', 'revenue', 'campaign'];
+  for (const field of order) {
+    const aliases = HEADER_ALIASES[field];
+    if (!aliases) continue;
+    for (const a of aliases) {
+      const al = a.toLowerCase();
+      if (!(t === al || t.includes(al) || (al.length >= 2 && al.includes(t)))) continue;
+      if (field === 'planStatus') {
+        if (/投放状态|计划状态|delivery|operation status/.test(t)) return field;
+        if (t === al || t === '开关' || t === 'switch' || t === 'enable' || t === 'enabled') {
+          return field;
+        }
+        if (/开关|switch|toggle|on\/off/.test(t) && t.length <= 12) return field;
+        continue;
+      }
+      if (field === 'spend') {
+        if (/平均下单|cost per|per order|\bcpc\b|\bcpa\b|\bcpm\b/.test(t)) continue;
+        if (
+          t.includes('budget') &&
+          !t.includes('spent') &&
+          !t.includes('spend') &&
+          !t.includes('cost') &&
+          !t.includes('成本')
+        ) {
+          continue;
+        }
+      }
+      if (field === 'campaign' && (al === '名称' || al === 'name')) {
+        if (
+          !/系列|campaign|广告|活动|product|品名|计划/.test(t) &&
+          t !== '名称' &&
+          t !== 'name'
+        ) {
+          continue;
+        }
+      }
+      return field;
+    }
+  }
+  return null;
+}
+
+/**
+ * 从单元格 / 行 DOM 识别开关 on|off
+ * @param {Element|null} el
+ * @returns {'on'|'off'|null}
+ */
+export function parseSwitchFromEl(el) {
+  if (!el) return null;
+  const input = el.matches?.('input')
+    ? el
+    : el.querySelector?.('input[type="checkbox"], input[role="switch"]');
+  if (input) {
+    const aria = input.getAttribute('aria-checked');
+    if (aria === 'true') return 'on';
+    if (aria === 'false') return 'off';
+    return input.checked ? 'on' : 'off';
+  }
+  const sw =
+    (el.matches?.('[role="switch"], [class*="switch"], [class*="Switch"]') && el) ||
+    el.querySelector?.(
+      '[role="switch"], [class*="switch"], [class*="Switch"], [class*="toggle"]'
+    );
+  if (sw) {
+    const aria = sw.getAttribute('aria-checked');
+    if (aria === 'true') return 'on';
+    if (aria === 'false') return 'off';
+    const cls = `${sw.className || ''} ${sw.parentElement?.className || ''}`;
+    if (
+      /\b(checked|is-checked|switch-checked|arco-switch-checked|ant-switch-checked|is-on)\b/i.test(
+        cls
+      )
+    ) {
+      return 'on';
+    }
+    if (/\b(unchecked|is-unchecked|is-off)\b/i.test(cls)) return 'off';
+  }
+  const text = cleanText((el.innerText || el.textContent || '').slice(0, 40));
+  if (/^(开|开启|on|enable|enabled|投放中|投放)$/i.test(text)) return 'on';
+  if (/^(关|关闭|off|disable|disabled|已关闭|暂停)$/i.test(text)) return 'off';
+  return null;
+}
+
+/**
+ * @param {Element} tr
+ * @param {Element[]} cells
+ * @param {number|null} switchColIndex
+ */
+export function detectPlanStatusFromRow(tr, cells, switchColIndex) {
+  if (switchColIndex != null && cells[switchColIndex]) {
+    const s = parseSwitchFromEl(cells[switchColIndex]);
+    if (s) return s;
+  }
+  for (const cell of cells) {
+    const s = parseSwitchFromEl(cell);
+    if (s) return s;
+  }
+  const sTr = parseSwitchFromEl(tr);
+  return sTr || 'unknown';
+}
+
+/**
+ * 从 thead / 首行收集表头
+ * @param {HTMLTableElement} table
+ * @returns {{cells: Element[], fields: (string|null)[]}}
+ */
+export function extractTableHeaders(table) {
+  let headerRow = table.querySelector('thead tr');
+  if (!headerRow) {
+    headerRow = table.querySelector('tr');
+  }
+  if (!headerRow) return { cells: [], fields: [] };
+
+  const cells = [...headerRow.querySelectorAll('th, td')];
+  const fields = cells.map((c) => matchHeaderField(c.innerText || c.textContent || ''));
+  return { cells, fields };
+}
+
+/**
+ * 解析原生 HTML table
+ * @param {HTMLTableElement} table
+ * @returns {object[]}
+ */
+export function parseHtmlTable(table) {
+  const { fields } = extractTableHeaders(table);
+  if (!fields.some(Boolean)) return [];
+
+  let switchColIndex = fields.indexOf('planStatus');
+  if (switchColIndex < 0) switchColIndex = null;
+
+  const bodyRows = table.querySelectorAll('tbody tr');
+  const rows = bodyRows.length
+    ? [...bodyRows]
+    : [...table.querySelectorAll('tr')].slice(1);
+
+  const results = [];
+  for (const tr of rows) {
+    const cells = [...tr.querySelectorAll('td, th')];
+    if (!cells.length) continue;
+    const row = {};
+    fields.forEach((field, i) => {
+      if (!field || !cells[i]) return;
+      if (field === 'planStatus') {
+        row.planStatus = parseSwitchFromEl(cells[i]) || 'unknown';
+        return;
+      }
+      const text = cleanText(cells[i].innerText || cells[i].textContent || '');
+      row[field] = text;
+    });
+    if (!row.planStatus) {
+      row.planStatus = detectPlanStatusFromRow(tr, cells, switchColIndex);
+    }
+    if (Object.keys(row).length) results.push(row);
+  }
+  return results;
+}
+
+/**
+ * 解析 div / role=table 的网格（常见于 Ant Design / 自定义表格）
+ * @param {Element} root
+ * @returns {object[]}
+ */
+export function parseRoleTable(root) {
+  const headerCells = [
+    ...root.querySelectorAll(
+      '[role="columnheader"], .ant-table-thead th, [class*="table-header"] th, [class*="TableHeader"]'
+    )
+  ];
+  if (!headerCells.length) return [];
+
+  const fields = headerCells.map((c) =>
+    matchHeaderField(c.innerText || c.textContent || '')
+  );
+  if (!fields.some(Boolean)) return [];
+
+  const dataRows = [
+    ...root.querySelectorAll(
+      '[role="row"]:not(:has([role="columnheader"])), .ant-table-tbody tr, tbody tr'
+    )
+  ].filter((r) => r.querySelectorAll('[role="cell"], td').length);
+
+  let switchColIndex = fields.indexOf('planStatus');
+  if (switchColIndex < 0) switchColIndex = null;
+
+  const results = [];
+  for (const tr of dataRows) {
+    const cells = [...tr.querySelectorAll('[role="cell"], td')];
+    if (!cells.length) continue;
+    const row = {};
+    fields.forEach((field, i) => {
+      if (!field || !cells[i]) return;
+      if (field === 'planStatus') {
+        row.planStatus = parseSwitchFromEl(cells[i]) || 'unknown';
+        return;
+      }
+      row[field] = cleanText(cells[i].innerText || cells[i].textContent || '');
+    });
+    if (!row.planStatus) {
+      row.planStatus = detectPlanStatusFromRow(tr, cells, switchColIndex);
+    }
+    if (Object.keys(row).length) results.push(row);
+  }
+  return results;
+}
+
+/**
+ * 启发式：页面上所有表格，取「匹配字段最多且行数最多」的一份
+ * @param {Document} doc
+ * @returns {{rows: object[], source: string}}
+ */
+export function scrapeTablesFromDocument(doc = document) {
+  const candidates = [];
+
+  const tables = [...doc.querySelectorAll('table')];
+  for (const table of tables) {
+    const rows = parseHtmlTable(table);
+    const score = scoreRows(rows);
+    if (score > 0) {
+      candidates.push({ rows, score, source: 'html-table' });
+    }
+  }
+
+  // 常见容器
+  const containers = [
+    ...doc.querySelectorAll(
+      '.ant-table, [class*="Table"], [class*="data-table"], [role="table"], [class*="campaign"]'
+    )
+  ];
+  for (const el of containers) {
+    const rows = parseRoleTable(el);
+    const score = scoreRows(rows);
+    if (score > 0) {
+      candidates.push({ rows, score, source: 'role-table' });
+    }
+  }
+
+  // 无 table 时：扫描「看起来像表头」的横向列表
+  if (!candidates.length) {
+    const heuristic = heuristicGridScan(doc);
+    if (heuristic.rows.length) candidates.push({ ...heuristic, source: 'heuristic' });
+  }
+
+  candidates.sort((a, b) => b.score - a.score);
+  if (!candidates.length) {
+    return { rows: [], source: 'none' };
+  }
+  return { rows: candidates[0].rows, source: candidates[0].source };
+}
+
+function scoreRows(rows) {
+  if (!rows?.length) return 0;
+  let score = rows.length;
+  const sample = rows.slice(0, 5);
+  for (const r of sample) {
+    if (r.campaign) score += 2;
+    if (r.spend != null && r.spend !== '') score += 2;
+    if (r.roi != null && r.roi !== '') score += 2;
+    if (r.revenue != null && r.revenue !== '') score += 2;
+    if (r.orders != null && r.orders !== '') score += 1;
+  }
+  return score;
+}
+
+/**
+ * 弱启发：找含多个表头关键词的行，下一行起当数据
+ * @param {Document} doc
+ */
+function heuristicGridScan(doc) {
+  const all = [...doc.querySelectorAll('div, tr, li')].slice(0, 2000);
+  for (const el of all) {
+    const children = [...el.children];
+    if (children.length < 3 || children.length > 20) continue;
+    const texts = children.map((c) => cleanText(c.innerText || '').slice(0, 40));
+    const fields = texts.map(matchHeaderField);
+    const hit = fields.filter(Boolean).length;
+    if (hit < 3) continue;
+
+    // 同级后续兄弟中找相似结构
+    const parent = el.parentElement;
+    if (!parent) continue;
+    const siblings = [...parent.children];
+    const start = siblings.indexOf(el);
+    const rows = [];
+    for (let i = start + 1; i < Math.min(siblings.length, start + 200); i++) {
+      const cells = [...siblings[i].children];
+      if (cells.length < 2) continue;
+      const row = {};
+      fields.forEach((field, idx) => {
+        if (!field || !cells[idx]) return;
+        row[field] = cleanText(cells[idx].innerText || '');
+      });
+      if (row.campaign || row.spend || row.revenue) rows.push(row);
+    }
+    if (rows.length >= 1) {
+      return { rows, score: scoreRows(rows) };
+    }
+  }
+  return { rows: [], score: 0 };
+}
+
+/**
+ * 尝试从页面探测店铺名
+ * @param {Document} doc
+ */
+export function detectStoreName(doc = document) {
+  const title = cleanText(doc.title || '');
+  // 常见：Shop name - TikTok ...
+  const parts = title.split(/[-|–—]/).map(cleanText).filter(Boolean);
+  if (parts.length >= 2) {
+    // 去掉纯品牌词
+    const skip = /tiktok|seller|ads|shop ads|campaign|dashboard/i;
+    for (const p of parts) {
+      if (!skip.test(p) && p.length > 1 && p.length < 80) return p;
+    }
+  }
+
+  // meta / 侧栏
+  const candidates = [
+    ...doc.querySelectorAll(
+      '[class*="shop-name"], [class*="store-name"], [class*="seller-name"], [data-e2e*="shop"]'
+    )
+  ];
+  for (const el of candidates) {
+    const t = cleanText(el.innerText || '');
+    if (t && t.length < 80) return t;
+  }
+  return '';
+}
+
+// re-export for content script convenience
+export { parseNumber };

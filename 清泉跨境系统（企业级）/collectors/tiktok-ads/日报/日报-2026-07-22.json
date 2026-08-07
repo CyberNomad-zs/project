@@ -1,0 +1,33 @@
+﻿{
+    "bizDate":  "2026-07-22",
+    "totalSpend":  161.45,
+    "totalOrders":  54,
+    "totalRevenue":  1226.38,
+    "totalCampaigns":  2,
+    "overallRoi":  7.6,
+    "highlights":  [
+                       "销售额最高店铺：Deal to deal（销售额 1226.38，花费 161.45，综合 ROI 7.6）",
+                       "综合 ROI 最高店铺：Deal to deal（ROI 7.6，花费 161.45）",
+                       "单系列销售额 TOP1：[Deal to deal] 鑺卞洯鎷遍棬7/17（销售额 698.53，ROI 8.39）"
+                   ],
+    "risks":  [
+                  "抓取失败：Nookora Home — scrape failed: empty payload",
+                  "抓取失败：TikTok - Pop — scrape failed: empty payload",
+                  "抓取失败：Gardena — scrape failed: empty payload"
+              ],
+    "storeRollups":  [
+                         {
+                             "store":  "Deal to deal",
+                             "storeId":  "27501502216807",
+                             "campaigns":  2,
+                             "spend":  161.45,
+                             "orders":  54,
+                             "revenue":  1226.38,
+                             "topCampaign":  "鑺卞洯鎷遍棬7/17",
+                             "topRevenue":  698.53,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  0,
+                             "roi":  7.6
+                         }
+                     ]
+}

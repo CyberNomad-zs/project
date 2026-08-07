@@ -1,0 +1,50 @@
+# TK 驾驶舱：PG → 飞书 T1/T2/T6/T7/异常任务 日更（薄封装 → Python）
+# 用法（仓库根）:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -LookbackDays 30 -DryRun
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AdsOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -ShopOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AnomalyOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -ContentOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AffiliateOnly
+
+param(
+  [int]$LookbackDays = 14,
+  [int]$Limit = 2000,
+  [switch]$DryRun,
+  [switch]$AdsOnly,
+  [switch]$ShopOnly,
+  [switch]$AnomalyOnly,
+  [switch]$ContentOnly,
+  [switch]$AffiliateOnly
+)
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$Py = Join-Path $Root 'backend\.venv\Scripts\python.exe'
+$Script = Join-Path $Root 'scripts\feishu_tk_daily_sync.py'
+
+if (-not (Test-Path $Py)) { throw "找不到 venv: $Py" }
+if (-not (Test-Path $Script)) { throw "找不到 $Script" }
+
+$onlyCount = @($AdsOnly, $ShopOnly, $AnomalyOnly, $ContentOnly, $AffiliateOnly) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
+if ($onlyCount -gt 1) {
+  throw "use only one of -AdsOnly / -ShopOnly / -AnomalyOnly / -ContentOnly / -AffiliateOnly"
+}
+
+$argv = @(
+  $Script,
+  '--lookback-days', "$LookbackDays",
+  '--limit', "$Limit"
+)
+if ($DryRun) { $argv += '--dry-run' }
+if ($AdsOnly) { $argv += '--ads-only' }
+if ($ShopOnly) { $argv += '--shop-only' }
+if ($AnomalyOnly) { $argv += '--anomaly-only' }
+if ($ContentOnly) { $argv += '--content-only' }
+if ($AffiliateOnly) { $argv += '--affiliate-only' }
+
+Write-Host "=== TK Feishu daily sync ==="
+Write-Host (& $Py --version)
+& $Py @argv
+exit $LASTEXITCODE

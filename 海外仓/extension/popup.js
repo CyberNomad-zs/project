@@ -1,0 +1,55 @@
+const out = document.getElementById("out");
+const runBtn = document.getElementById("run");
+const confirmBtn = document.getElementById("confirmShip");
+const dry = document.getElementById("dry");
+
+let running = false;
+
+function render(lines) {
+  out.textContent = lines.length ? lines.join("\n") : out.textContent;
+  out.scrollTop = out.scrollHeight;
+}
+function setRunning(v) {
+  running = v;
+  runBtn.disabled = v;
+  confirmBtn.disabled = v;
+  runBtn.textContent = v ? "运行中…" : "开始发货";
+  runBtn.classList.toggle("live", v && !dry.checked);
+}
+
+// 弹窗一打开就连后台，拿到完整日志缓冲重放（弹窗关了再开，日志不丢）。
+const port = chrome.runtime.connect({ name: "hwc" });
+let lines = [];
+port.onMessage.addListener((msg) => {
+  if (!msg) return;
+  if (msg.type === "buffer") { lines = msg.lines || []; render(lines); setRunning(!!msg.running); }
+  else if (msg.type === "log") { lines.push(msg.line); render(lines); }
+  else if (msg.type === "status") { setRunning(!!msg.running); }
+  else if (msg.type === "done") { setRunning(false); }
+});
+
+document.getElementById("probe").addEventListener("click", () => {
+  lines = [];
+  out.textContent = "▶ 正在探测 ERP 页面元素…";
+  port.postMessage({ cmd: "probe" });
+});
+
+runBtn.addEventListener("click", () => {
+  if (running) return;
+  const isDry = dry.checked;
+  if (!isDry && !confirm("⚠️ 真跑会【真实下单并发货】、不可撤销。确认继续？")) return;
+  setRunning(true);
+  lines = [];
+  out.textContent = "▶ 已发送开始指令…";
+  port.postMessage({ cmd: "run", dry: isDry });
+});
+
+confirmBtn.addEventListener("click", () => {
+  if (running) return;
+  const isDry = dry.checked;
+  if (!isDry && !confirm("⚠️ 真跑会对三方仓成功单【真实确认发货、扣库存并提交平台】、不可撤销。确认继续？")) return;
+  setRunning(true);
+  lines = [];
+  out.textContent = "▶ 已发送确认发货指令…";
+  port.postMessage({ cmd: "confirmShip", dry: isDry });
+});

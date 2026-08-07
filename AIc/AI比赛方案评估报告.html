@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>AI 自动化场景比赛 · 参赛方案评估报告</title>
+</head>
+<body>
+<style>
+  :root{
+    --ground:#EBEDEF; --surface:#FBFCFC; --surface-2:#F2F4F5;
+    --ink:#1A1D24; --ink-2:#535962; --ink-3:#868D97;
+    --line:#D9DCE1; --line-2:#E7E9ED;
+    --gold:#B0800C; --gold-bright:#CE9718;
+    --heat-rgb:183,131,10;
+    --good:#2E7D6B; --risk:#B45540;
+    --medal-1:#B98A15; --medal-2:#8B929B; --medal-3:#A9743C;
+    --shadow:0 1px 2px rgba(20,24,33,.04),0 8px 24px rgba(20,24,33,.06);
+    --font-sans:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Source Han Sans SC",-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:"Cascadia Code","JetBrains Mono","SF Mono","Consolas",ui-monospace,Menlo,monospace;
+    --maxw:1120px;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --ground:#101217; --surface:#181B21; --surface-2:#1F232B;
+      --ink:#ECEEF1; --ink-2:#A3A9B4; --ink-3:#6C727C;
+      --line:#2A2E37; --line-2:#22262E;
+      --gold:#E4B141; --gold-bright:#F1C55E;
+      --heat-rgb:228,177,65;
+      --good:#5FB39C; --risk:#D98066;
+      --medal-1:#E4B141; --medal-2:#9AA0A8; --medal-3:#BE8A54;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.34);
+    }
+  }
+  :root[data-theme="light"]{
+    --ground:#EBEDEF; --surface:#FBFCFC; --surface-2:#F2F4F5;
+    --ink:#1A1D24; --ink-2:#535962; --ink-3:#868D97;
+    --line:#D9DCE1; --line-2:#E7E9ED;
+    --gold:#B0800C; --gold-bright:#CE9718; --heat-rgb:183,131,10;
+    --good:#2E7D6B; --risk:#B45540;
+    --medal-1:#B98A15; --medal-2:#8B929B; --medal-3:#A9743C;
+    --shadow:0 1px 2px rgba(20,24,33,.04),0 8px 24px rgba(20,24,33,.06);
+  }
+  :root[data-theme="dark"]{
+    --ground:#101217; --surface:#181B21; --surface-2:#1F232B;
+    --ink:#ECEEF1; --ink-2:#A3A9B4; --ink-3:#6C727C;
+    --line:#2A2E37; --line-2:#22262E;
+    --gold:#E4B141; --gold-bright:#F1C55E; --heat-rgb:228,177,65;
+    --good:#5FB39C; --risk:#D98066;
+    --medal-1:#E4B141; --medal-2:#9AA0A8; --medal-3:#BE8A54;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 26px rgba(0,0,0,.34);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0;background:var(--ground);color:var(--ink);
+    font-family:var(--font-sans);line-height:1.7;
+    -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    font-size:16px;
+  }
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 clamp(18px,4vw,40px);}
+  section{padding-block:clamp(40px,6vw,72px);}
+  h1,h2,h3{margin:0;text-wrap:balance;line-height:1.22;font-weight:800;letter-spacing:-.01em;}
+  p{margin:0;}
+  a{color:var(--gold);}
+  ::selection{background:rgba(var(--heat-rgb),.28);}
+  :focus-visible{outline:2px solid var(--gold-bright);outline-offset:2px;border-radius:3px;}
+
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+  .eyebrow{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.22em;text-transform:uppercase;color:var(--gold);font-weight:600;}
+  .num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum";}
+
+  /* ---------- HERO ---------- */
+  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line);background:var(--surface);}
+  .hero::before{
+    content:"";position:absolute;inset:0;pointer-events:none;opacity:.55;
+    background-image:
+      linear-gradient(var(--line-2) 1px,transparent 1px),
+      linear-gradient(90deg,var(--line-2) 1px,transparent 1px);
+    background-size:34px 34px;
+    -webkit-mask-image:radial-gradient(120% 90% at 82% 0%,#000 0%,transparent 62%);
+    mask-image:radial-gradient(120% 90% at 82% 0%,#000 0%,transparent 62%);
+  }
+  .hero .wrap{position:relative;padding-block:clamp(44px,7vw,84px);}
+  .hero-top{display:flex;flex-wrap:wrap;gap:12px 20px;align-items:center;margin-bottom:28px;}
+  .badge{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-2);border:1px solid var(--line);border-radius:999px;padding:5px 12px;background:var(--ground);}
+  h1.title{font-size:clamp(2rem,5.4vw,3.4rem);letter-spacing:-.025em;max-width:16ch;}
+  .title .hl{color:var(--gold);}
+  .lede{margin-top:20px;max-width:52ch;color:var(--ink-2);font-size:clamp(1rem,1.6vw,1.14rem);}
+  .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:1px;margin-top:38px;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden;}
+  .stat{background:var(--surface);padding:16px 18px;}
+  .stat .k{font-family:var(--font-mono);font-size:1.7rem;font-weight:700;letter-spacing:-.02em;color:var(--ink);}
+  .stat .l{font-size:.76rem;color:var(--ink-3);margin-top:2px;letter-spacing:.02em;}
+
+  .rec{margin-top:34px;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;padding:18px 20px;border:1px solid var(--gold);border-radius:12px;background:linear-gradient(180deg,rgba(var(--heat-rgb),.09),rgba(var(--heat-rgb),.03));}
+  .rec .tag{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.18em;text-transform:uppercase;color:var(--gold);font-weight:700;}
+  .rec .name{font-size:1.5rem;font-weight:800;letter-spacing:-.01em;}
+  .rec .why{color:var(--ink-2);font-size:.95rem;flex:1 1 260px;min-width:240px;}
+
+  /* ---------- section head ---------- */
+  .shead{display:flex;align-items:baseline;gap:16px;margin-bottom:26px;flex-wrap:wrap;}
+  .shead h2{font-size:clamp(1.35rem,2.6vw,1.9rem);}
+  .shead .idx{font-family:var(--font-mono);font-size:.82rem;color:var(--gold);font-weight:700;letter-spacing:.05em;}
+  .shead .sub{color:var(--ink-3);font-size:.86rem;margin-left:auto;}
+
+  /* ---------- LEADERBOARD ---------- */
+  .board{display:flex;flex-direction:column;gap:8px;}
+  .row{display:grid;grid-template-columns:44px minmax(0,1fr) 168px 82px;gap:14px;align-items:center;
+    background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 16px;box-shadow:var(--shadow);
+    transition:transform .16s ease,border-color .16s ease;}
+  .row:hover{transform:translateX(3px);border-color:var(--gold);}
+  .row.win{border-color:var(--gold);background:linear-gradient(90deg,rgba(var(--heat-rgb),.07),var(--surface) 40%);}
+  .rank{width:34px;height:34px;border-radius:9px;display:grid;place-items:center;font-family:var(--font-mono);font-weight:700;font-size:1.05rem;background:var(--surface-2);color:var(--ink-2);border:1px solid var(--line);}
+  .rank.m1{background:var(--medal-1);color:#221c07;border-color:transparent;}
+  .rank.m2{background:var(--medal-2);color:#1a1c1f;border-color:transparent;}
+  .rank.m3{background:var(--medal-3);color:#211408;border-color:transparent;}
+  .r-main{min-width:0;}
+  .r-name{font-weight:800;font-size:1.06rem;letter-spacing:-.01em;display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+  .r-en{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;color:var(--ink-3);font-weight:600;}
+  .r-tag{color:var(--ink-2);font-size:.85rem;margin-top:2px;overflow:hidden;text-overflow:ellipsis;}
+  .r-meta{display:flex;gap:8px;margin-top:7px;flex-wrap:wrap;}
+  .chip{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.03em;color:var(--ink-2);background:var(--surface-2);border:1px solid var(--line-2);border-radius:6px;padding:2px 7px;}
+  .bar-wrap{display:flex;flex-direction:column;gap:5px;}
+  .bar{height:7px;border-radius:99px;background:var(--surface-2);overflow:hidden;border:1px solid var(--line-2);}
+  .bar span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--gold),var(--gold-bright));width:0;transition:width 1s cubic-bezier(.2,.7,.2,1);}
+  .bar-lab{font-family:var(--font-mono);font-size:.64rem;color:var(--ink-3);letter-spacing:.04em;}
+  .score{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:1.5rem;font-weight:700;text-align:right;letter-spacing:-.02em;}
+  .score small{font-size:.7rem;color:var(--ink-3);font-weight:400;}
+
+  /* ---------- WINNER ---------- */
+  .winner{background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:var(--shadow);overflow:hidden;}
+  .win-head{padding:clamp(22px,3.4vw,34px);border-bottom:1px solid var(--line);position:relative;background:linear-gradient(180deg,rgba(var(--heat-rgb),.06),transparent);}
+  .win-crown{display:flex;align-items:center;gap:10px;margin-bottom:14px;}
+  .win-crown .m{width:30px;height:30px;border-radius:8px;background:var(--medal-1);color:#221c07;display:grid;place-items:center;font-family:var(--font-mono);font-weight:700;}
+  .win-crown .t{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.2em;text-transform:uppercase;color:var(--gold);font-weight:700;}
+  .win-name{font-size:clamp(1.7rem,3.6vw,2.5rem);letter-spacing:-.02em;}
+  .win-name .en{display:block;font-family:var(--font-mono);font-size:.78rem;letter-spacing:.24em;color:var(--ink-3);font-weight:600;margin-top:8px;}
+  .win-tag{margin-top:16px;color:var(--ink-2);font-size:clamp(1rem,1.7vw,1.16rem);max-width:60ch;}
+  .win-judges{display:flex;gap:10px;margin-top:22px;flex-wrap:wrap;}
+  .jchip{border:1px solid var(--line);border-radius:10px;padding:9px 14px;background:var(--ground);display:flex;flex-direction:column;gap:1px;}
+  .jchip .jn{font-size:.72rem;color:var(--ink-3);}
+  .jchip .jv{font-family:var(--font-mono);font-weight:700;font-size:1.15rem;color:var(--ink);}
+  .jchip.avg{border-color:var(--gold);background:rgba(var(--heat-rgb),.08);}
+  .jchip.avg .jv{color:var(--gold);}
+
+  .win-body{padding:clamp(22px,3.4vw,34px);display:grid;gap:34px;}
+  .block-h{font-family:var(--font-mono);font-size:.72rem;letter-spacing:.16em;text-transform:uppercase;color:var(--gold);font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:10px;}
+  .block-h::after{content:"";flex:1;height:1px;background:var(--line);}
+
+  .why-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;}
+  .why-card{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--surface-2);}
+  .why-card .n{font-family:var(--font-mono);color:var(--gold);font-weight:700;font-size:.9rem;}
+  .why-card .h{font-weight:700;margin:6px 0 4px;font-size:.98rem;}
+  .why-card .d{color:var(--ink-2);font-size:.86rem;line-height:1.6;}
+
+  .dimbars{display:grid;gap:11px;}
+  .dimbar{display:grid;grid-template-columns:132px 1fr 40px;gap:12px;align-items:center;}
+  .dimbar .dl{font-size:.85rem;color:var(--ink-2);display:flex;flex-direction:column;}
+  .dimbar .dl .w{font-family:var(--font-mono);font-size:.62rem;color:var(--ink-3);letter-spacing:.04em;}
+  .dimbar .dt{height:20px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line-2);overflow:hidden;}
+  .dimbar .dt span{display:block;height:100%;background:linear-gradient(90deg,rgba(var(--heat-rgb),.55),var(--gold));width:0;transition:width .9s cubic-bezier(.2,.7,.2,1);}
+  .dimbar .dv{font-family:var(--font-mono);font-weight:700;text-align:right;font-size:.95rem;}
+
+  .timeline{display:grid;gap:2px;}
+  .tl-item{display:grid;grid-template-columns:60px 1fr;gap:16px;padding:14px 0;border-top:1px solid var(--line-2);}
+  .tl-item:first-child{border-top:none;}
+  .tl-t{font-family:var(--font-mono);font-weight:700;color:var(--gold);font-size:.9rem;padding-top:1px;}
+  .tl-s{color:var(--ink);font-size:.94rem;line-height:1.66;}
+
+  .plan{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px;}
+  .pcard{border:1px solid var(--line);border-radius:12px;padding:15px 16px;background:var(--surface-2);position:relative;}
+  .pcard .span{font-family:var(--font-mono);font-weight:700;font-size:.8rem;color:var(--gold);letter-spacing:.05em;}
+  .pcard .pd{color:var(--ink-2);font-size:.86rem;margin-top:6px;line-height:1.62;}
+
+  .llist{display:grid;gap:9px;list-style:none;padding:0;margin:0;}
+  .llist li{display:grid;grid-template-columns:20px 1fr;gap:11px;font-size:.92rem;color:var(--ink);line-height:1.62;}
+  .llist li::before{content:"";width:7px;height:7px;border-radius:2px;background:var(--gold);margin-top:9px;transform:rotate(45deg);}
+  .llist.risk li::before{background:var(--risk);border-radius:99px;transform:none;width:8px;height:8px;}
+  .llist.bonus li::before{background:var(--good);}
+
+  .cols2{display:grid;grid-template-columns:1fr 1fr;gap:34px;}
+  @media (max-width:720px){.cols2{grid-template-columns:1fr;}}
+
+  /* ---------- HEATMAP ---------- */
+  .scroll{overflow-x:auto;border:1px solid var(--line);border-radius:14px;background:var(--surface);box-shadow:var(--shadow);}
+  table.heat{border-collapse:collapse;width:100%;min-width:720px;font-size:.9rem;}
+  .heat th,.heat td{padding:11px 10px;text-align:center;border-bottom:1px solid var(--line-2);}
+  .heat thead th{position:sticky;top:0;background:var(--surface-2);font-size:.74rem;color:var(--ink-2);font-weight:700;border-bottom:1px solid var(--line);white-space:nowrap;}
+  .heat thead th .w{display:block;font-family:var(--font-mono);font-size:.62rem;color:var(--ink-3);font-weight:600;margin-top:2px;}
+  .heat td.name,.heat th.name{text-align:left;position:sticky;left:0;background:var(--surface);z-index:2;white-space:nowrap;border-right:1px solid var(--line);}
+  .heat thead th.name{background:var(--surface-2);z-index:3;}
+  .heat td.name .nm{font-weight:700;font-size:.92rem;}
+  .heat td.name .rk{font-family:var(--font-mono);color:var(--ink-3);font-size:.72rem;margin-right:8px;}
+  .heat tr.win-row td.name{box-shadow:inset 3px 0 0 var(--gold);}
+  .cell{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-weight:600;color:var(--ink);border-radius:5px;}
+  .heat td.total{font-family:var(--font-mono);font-weight:800;font-size:1.02rem;background:var(--surface-2);}
+  .legend{display:flex;align-items:center;gap:12px;margin-top:14px;flex-wrap:wrap;color:var(--ink-3);font-size:.76rem;font-family:var(--font-mono);letter-spacing:.03em;}
+  .legend .scale{display:flex;height:12px;border-radius:99px;overflow:hidden;border:1px solid var(--line);}
+  .legend .scale i{width:22px;}
+
+  /* ---------- RUNNER UPS ---------- */
+  .runners{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+  @media (max-width:720px){.runners{grid-template-columns:1fr;}}
+  .rcard{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:var(--shadow);display:flex;flex-direction:column;gap:14px;}
+  .rcard .rh{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;}
+  .rcard .silver{font-family:var(--font-mono);font-size:.68rem;letter-spacing:.14em;text-transform:uppercase;color:var(--ink-3);font-weight:700;}
+  .rcard h3{font-size:1.3rem;}
+  .rcard .rscore{margin-left:auto;font-family:var(--font-mono);font-weight:700;color:var(--ink-2);}
+  .rcard .lbl{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;color:var(--gold);font-weight:700;}
+  .rcard p{font-size:.9rem;color:var(--ink-2);line-height:1.66;}
+  .rcard .graft{border-left:2px solid var(--gold);padding-left:14px;}
+  .rcard .graft p{color:var(--ink);}
+
+  /* ---------- APPENDIX ---------- */
+  .cat{display:grid;gap:9px;}
+  details.idea{background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);overflow:hidden;}
+  details.idea summary{list-style:none;cursor:pointer;display:grid;grid-template-columns:38px minmax(0,1fr) auto;gap:14px;align-items:center;padding:14px 16px;}
+  details.idea summary::-webkit-details-marker{display:none;}
+  details.idea summary .rk{width:30px;height:30px;border-radius:8px;background:var(--surface-2);border:1px solid var(--line);display:grid;place-items:center;font-family:var(--font-mono);font-weight:700;color:var(--ink-2);font-size:.9rem;}
+  details.idea .snm{font-weight:800;font-size:1rem;display:flex;gap:9px;align-items:center;flex-wrap:wrap;}
+  details.idea .stag{color:var(--ink-2);font-size:.83rem;margin-top:2px;}
+  details.idea .ssc{font-family:var(--font-mono);font-weight:700;color:var(--gold);font-size:1.05rem;}
+  details.idea .caret{font-family:var(--font-mono);color:var(--ink-3);transition:transform .2s;font-size:.8rem;}
+  details.idea[open] .caret{transform:rotate(90deg);}
+  .idea-body{padding:2px 16px 18px;display:grid;gap:12px;border-top:1px solid var(--line-2);}
+  .field{display:grid;grid-template-columns:74px 1fr;gap:12px;font-size:.88rem;}
+  .field .fk{font-family:var(--font-mono);font-size:.66rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);padding-top:3px;}
+  .field .fv{color:var(--ink);line-height:1.62;}
+  .field.rk .fv{color:var(--ink-2);}
+
+  /* ---------- STRATEGY ---------- */
+  .strat{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  @media (max-width:720px){.strat{grid-template-columns:1fr;}}
+  .scard{display:grid;grid-template-columns:32px 1fr;gap:14px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow);}
+  .scard .sn{font-family:var(--font-mono);font-weight:700;color:var(--gold);font-size:1.05rem;}
+  .scard .sh{font-weight:700;font-size:.98rem;margin-bottom:3px;}
+  .scard .sb{color:var(--ink-2);font-size:.87rem;line-height:1.62;}
+
+  footer{border-top:1px solid var(--line);color:var(--ink-3);font-size:.8rem;padding-block:34px;}
+  footer .wrap{display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+  footer .mono{color:var(--ink-2);}
+
+  @media (max-width:640px){
+    .row{grid-template-columns:38px 1fr;gap:10px 12px;}
+    .row .bar-wrap{grid-column:2;}
+    .row .score{grid-column:1 / -1;text-align:left;}
+    .dimbar{grid-template-columns:110px 1fr 36px;}
+    .tl-item{grid-template-columns:52px 1fr;gap:12px;}
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{transition:none !important;animation:none !important;}
+    .bar span,.dimbar .dt span{width:var(--final) !important;}
+  }
+</style>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="hero-top">
+      <span class="badge">AI 自动化场景创意比赛</span>
+      <span class="badge">评估报告 · v1</span>
+      <span class="badge">2026-07-16</span>
+    </div>
+    <h1 class="title">10 个参赛方案，<span class="hl">3 位评委</span>打分，谁最能夺冠？</h1>
+    <p class="lede">面向「技术/开发/产品」岗，围绕真实职场提效场景生成候选方案，按比赛评分导向（<b>简单好用权重最高</b>）多维评审，给出可直接落地的冠军方案与现场演示脚本。</p>
+
+    <div class="stat-row">
+      <div class="stat"><div class="k">10</div><div class="l">入围方案</div></div>
+      <div class="stat"><div class="k">3</div><div class="l">评委视角</div></div>
+      <div class="stat"><div class="k">6</div><div class="l">评分维度</div></div>
+      <div class="stat"><div class="k">8.1</div><div class="l">冠军加权均分</div></div>
+      <div class="stat"><div class="k">~2</div><div class="l">周开发窗口</div></div>
+    </div>
+
+    <div class="rec">
+      <span class="tag">推荐夺冠 ★</span>
+      <span class="name">图秒成表</span>
+      <span class="why">发票 / 白板照 / 表格截图 → 30 秒变可编辑 Excel。链路最短、简单度满分、财务行政瞬间共情——稳中带亮的头名。</span>
+    </div>
+  </div>
+</header>
+
+<section id="board">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">01</span>
+      <h2>方案排行榜</h2>
+      <span class="sub">按三评委加权均分排序（0–10）</span>
+    </div>
+    <div class="board" id="boardList"></div>
+  </div>
+</section>
+
+<section id="winner" style="background:var(--surface-2);border-block:1px solid var(--line);">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">02</span>
+      <h2>冠军方案详解</h2>
+      <span class="sub">Why it wins · 演示脚本 · 两周计划</span>
+    </div>
+    <div class="winner">
+      <div class="win-head">
+        <div class="win-crown"><span class="m mono">1</span><span class="t">第一名 · 综合最优</span></div>
+        <h1 class="win-name">图秒成表<span class="en">SNAP · TO · SHEET</span></h1>
+        <p class="win-tag">发票、白板照片、微信里的表格截图丢进去，30 秒变成干净可编辑的 Excel，还自动配好图表。</p>
+        <div class="win-judges">
+          <div class="jchip"><span class="jn">技术评委</span><span class="jv num">7.9</span></div>
+          <div class="jchip"><span class="jn">业务评委</span><span class="jv num">8.5</span></div>
+          <div class="jchip"><span class="jn">老板 / ROI</span><span class="jv num">7.9</span></div>
+          <div class="jchip avg"><span class="jn">加权均分</span><span class="jv num">8.1</span></div>
+        </div>
+      </div>
+      <div class="win-body">
+        <div>
+          <div class="block-h">为什么是它</div>
+          <div class="why-grid" id="whyGrid"></div>
+        </div>
+
+        <div class="cols2">
+          <div>
+            <div class="block-h">六维得分（评委均值）</div>
+            <div class="dimbars" id="winDims"></div>
+          </div>
+          <div>
+            <div class="block-h">它做什么</div>
+            <p style="color:var(--ink-2);font-size:.92rem;line-height:1.72;" id="whatItDoes"></p>
+          </div>
+        </div>
+
+        <div>
+          <div class="block-h">现场演示脚本 · 约 2′40″</div>
+          <div class="timeline" id="demoTl"></div>
+        </div>
+
+        <div>
+          <div class="block-h">两周开发计划</div>
+          <div class="plan" id="planGrid"></div>
+        </div>
+
+        <div class="cols2">
+          <div>
+            <div class="block-h">Wow 时刻</div>
+            <ul class="llist" id="wowList"></ul>
+          </div>
+          <div>
+            <div class="block-h">翻车兜底</div>
+            <ul class="llist risk" id="riskList"></ul>
+          </div>
+        </div>
+
+        <div>
+          <div class="block-h">锦上添花的加分项</div>
+          <ul class="llist bonus" id="bonusList"></ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="scorecard">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">03</span>
+      <h2>评分矩阵</h2>
+      <span class="sub">10 方案 × 6 维度 · 单元格越金越高分</span>
+    </div>
+    <div class="scroll">
+      <table class="heat" id="heatTable"></table>
+    </div>
+    <div class="legend">
+      <span>低</span>
+      <span class="scale"><i style="background:rgba(var(--heat-rgb),.08)"></i><i style="background:rgba(var(--heat-rgb),.22)"></i><i style="background:rgba(var(--heat-rgb),.38)"></i><i style="background:rgba(var(--heat-rgb),.55)"></i><i style="background:rgba(var(--heat-rgb),.72)"></i></span>
+      <span>高</span>
+      <span style="margin-left:8px;">权重：简单好用 25% · 现场演示 20% · 实用性 20% · 原创性 15% · 评委共鸣 10% · 可实现性 10%</span>
+    </div>
+  </div>
+</section>
+
+<section id="runners" style="background:var(--surface-2);border-block:1px solid var(--line);">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">04</span>
+      <h2>两个备选</h2>
+      <span class="sub">可嫁接亮点回冠军方案</span>
+    </div>
+    <div class="runners" id="runnerList"></div>
+  </div>
+</section>
+
+<section id="catalog">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">05</span>
+      <h2>十大方案速览</h2>
+      <span class="sub">点击展开 · 痛点 / 原理 / Wow / 风险</span>
+    </div>
+    <div class="cat" id="catList"></div>
+  </div>
+</section>
+
+<section id="strategy" style="background:var(--surface-2);border-top:1px solid var(--line);">
+  <div class="wrap">
+    <div class="shead">
+      <span class="idx">06</span>
+      <h2>通用夺冠策略</h2>
+      <span class="sub">现场演示 · 话术 · 加分技巧</span>
+    </div>
+    <div class="strat" id="stratList"></div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span>AI 自动化场景比赛 · 参赛方案评估报告</span>
+    <span class="mono">6 ideators → consolidate → 3-judge panel → synthesis · 11 agents</span>
+  </div>
+</footer>
+
+<script>
+const DIMS=[
+  {k:"简单好用",w:25},{k:"现场演示",w:20},{k:"实用性",w:20},
+  {k:"原创性",w:15},{k:"评委共鸣",w:10},{k:"可实现性",w:10}
+];
+// scores per judge: [简单好用,现场演示,实用性,原创性,评委共鸣,可实现性]
+const IDEAS=[
+  {name:"图秒成表",en:"SNAP·TO·SHEET",tag:"发票/白板照/表格截图 30 秒变可编辑 Excel 并自动配图",cat:"数据处理·多模态",effort:6,
+    j:{"技术":[9,8,8,6,7,8,7.9],"业务":[9,9,8,7,8,8,8.5],"老板":[9,8,8,6,7,8,7.9]},
+    verdict:"链路短、依赖少、财务行政瞬间共情，是稳中带亮的高分头名；风险靠挑稳素材压到最低。",
+    problem:"财务/行政/采购/HR 大量时间花在「照着图片/PDF/截图手敲数据进 Excel」：发票、报销单、对账单、群里的表格截图。纯手工、易错、月底尤其崩溃，最能让财务/行政评委瞬间共情。",
+    how:"上传图片/PDF/截图 → 多模态大模型按目标表头结构化抽取成 JSON（含手写体、合并单元格）→ 渲染成可编辑表格，低置信度单元格标黄提示核对，并按数据类型自动配图 → 鼠标划过单元格高亮回原图 → 一键导出 .xlsx；支持多张自动合并成汇总表。",
+    wow:"一张歪歪的手机拍的手写白板/发票照片，10 秒后变成配着彩色图表、双击即用的正式 Excel，金额税号都对——财务当场就问「这个能不能今天给我」。",
+    risk:"极潦草手写/复杂合并表可能识别错 → 现场只用验证过的稳素材、复杂表降级为可编辑；票据隐私统一用脱敏示例；预缓存结果做断网兜底。"},
+  {name:"纪要快手",en:"MEETING·TO·TASKS",tag:"开会即得「谁·做什么·几号截止」待办表，一键发群",cat:"会议·语音",effort:7,
+    j:{"技术":[8,7,9,6,9,7,7.7],"业务":[8,8,9,6,10,7,8.0],"老板":[9,8,9,6,9,7,8.2]},
+    verdict:"共鸣面全场最广（业务评委给到 10 分），痛点最刚需；惜原创一般、现场 ASR 有回声/口音翻车风险。",
+    problem:"跨部门每周都开会，会后要花 30-60 分钟整理纪要、追待办，责任人和 deadline 最容易漏。行政/HR/项目/运营/领导几乎人人每周都在做，是评委席共鸣面最广的高频刚需。",
+    how:"浏览器 Web Speech API 边说边出实时字幕，faster-whisper 本地转写兜底；分段文本用固定 JSON schema 强制抽取{摘要、议题要点、待办表(负责人|事项|截止|优先级)}→ 前端渲染可编辑表格，一键导出 Word/邮件草稿/复制到企业微信。",
+    wow:"评委随口说一句话，责任人+deadline 的待办卡片「啪」地弹进表格——全场立刻意识到「我下次开会就能用这个」。",
+    risk:"会议室回声/口音影响识别 → 领夹麦+预录音频兜底；Web Speech 需 Chrome 联网 → 断网切本地 whisper；LLM 跑偏 → 固定 schema+失败重试。"},
+  {name:"AI数字员工·小跑腿",en:"AI·CLERK",tag:"一句话让 AI 自己动鼠标 40 秒跑完一下午的网页录入",cat:"浏览器自动化·Agent",effort:7,
+    j:{"技术":[7,9,7,8,8,6,7.6],"业务":[8,9,7,8,8,6,7.8],"老板":[8,9,6,8,8,7,7.7]},
+    verdict:"原创与 demo_wow 双高、最出片最上镜；但靠本地仿真系统演示有「摆拍」嫌疑、落地可信度打折。",
+    problem:"运营/HR/客服/财务每天把 Excel 数据一条条手工录入内网系统/CRM/OA，机械、易错、极耗时。这是跨部门都有的高频苦活。",
+    how:"Node.js + Playwright 有头浏览器慢放打开网页；读取 Excel 任务清单，大模型做字段映射与业务判断（归类科目、审批路由），结构化返回下一步动作，Playwright 执行 定位→逐字输入→下拉→提交。左侧滚动 AI 思考、右侧真实浏览器自动操作、字段高亮。",
+    wow:"全场看着鼠标和表单自己动起来，40 秒干完平时一下午的活——最像「AI 真的在替我打工」，最容易让同事忍不住拍照录像。",
+    risk:"真实外网有验证码/反爬/元素变动会翻车 → 演示用本地自托管仿真系统（离线、选择器稳定），getByRole 稳健定位+重试+slowMo，备录屏兜底。"},
+  {name:"点石成器",en:"SAY·IT·SHIP·IT",tag:"大白话描述，AI 当场生成能点能用的网页小工具，30 秒交付",cat:"代码生成",effort:5,
+    j:{"技术":[8,9,6,7,7,7,7.5],"业务":[8,9,7,8,8,7,7.9],"老板":[8,9,6,7,7,7,7.5]},
+    verdict:"「AI 现场写软件」魔法感与互动记忆点满分；但临时小工具属低频、即兴生成白屏是硬伤。",
+    problem:"各部门天天有「临时小需求」——提成计算器、抽奖转盘、值班排班、报价器…找 IT 排期太慢，Excel 又搭不出交互。人人都有过「要是有个小工具就好了」的时刻。",
+    how:"自然语言需求 + 严格系统提示词（单文件、自包含、内联、纯前端）发给代码大模型 → 返回完整 HTML → 塞进沙箱 iframe(srcdoc+sandbox) 立即运行 → 可追加一句做增量重生成 → 一键下载 HTML 或生成二维码。",
+    wow:"评委临时喊一个需求，30 秒后台上就出现一个真能点、能用的小工具，还能对话式当场改——「AI 现场写软件」的魔法感。",
+    risk:"生成代码偶发报错/白屏 → 预置 3-4 个已验证需求走主线，即兴需求当彩蛋（iframe 隔离不影响主程序）；加「回退上一个可用版本」按钮。"},
+  {name:"痛点雷达",en:"PAIN·RADAR",tag:"几百条杂乱吐槽 60 秒变可下钻的痛点气泡地图",cat:"数据分析·可视化",effort:7,
+    j:{"技术":[8,8,8,7,7,7,7.7],"业务":[8,8,7,7,7,7,7.5],"老板":[8,8,7,7,6,7,7.4]},
+    verdict:"embedding 聚类+严重度评分是套壳做不出的完整流水线，综合最均衡；惜聚类质量不稳需锁定固定数据集。",
+    problem:"运营/市场/客服/产品每周面对成百上千条用户反馈——评论、工单、问卷、社群聊天。人工读不完、归不了类、算不出占比，只能拍脑袋。几乎每个部门都有的痛。",
+    how:"上传 CSV/文本 → 向量嵌入做语义聚类 → LLM 给每簇命名、打情感分、估严重度与频次 → 渲染气泡图（越大越高频、越红越负面）+ 代表原声 + 自动起草需求点 → 点击气泡下钻看原始反馈，一键导出一页式洞察报告。",
+    wow:"拖入一坨看不下去的杂乱评论，40 秒后「啪」地长出一张彩色痛点气泡地图，点一下就能下钻看原声和需求建议——把读不完的吐槽变成能拍板的一张图。",
+    risk:"大数据量聚类慢 → 限量 300 条+预缓存结果兜底；聚类质量不稳 → 固定 demo 数据集反复调好，绝不现场即兴上传未测数据。"},
+  {name:"白话跑数",en:"ASK·YOUR·DATA",tag:"乱 Excel 拖进来用中文提问，几秒出透视表和图表",cat:"数据分析·Code-Interpreter",effort:8,
+    j:{"技术":[7,8,8,6,7,6,7.2],"业务":[8,8,8,6,7,6,7.4],"老板":[8,8,9,7,7,6,7.8]},
+    verdict:"code-interpreter 式真写代码+透明展示很戳人；但沙箱执脏数据易列名对不上，是全场技术翻车面最高的方案之一。",
+    problem:"财务/运营/数据/销售天天做重复的 Excel 汇总、透视、找异常、画图；不会写公式的人卡壳，会的人也烦重复劳动。财务、数据、运营岗每周甚至每天的真实痛点。",
+    how:"上传 Excel/CSV → pandas 读表，列名+样例喂大模型 → function calling 把中文需求翻成 pandas/plotly 代码 → 受限沙箱执行（AST 白名单、禁文件网络、超时）→ 返回表格+自动选型图表，并把真实生成并跑通的代码透明展示。可追问、可导出。",
+    wow:"一句中文下去，透视表和图表同时蹦出来，旁边还实时滚出它真写的 pandas 代码——财务同事眼睛发亮：「这不就是我加班在干的活，它真在算不是编」。",
+    risk:"生成代码报错/列名对不上 → 自动读表头、失败重试 2 次、一键切缓存问题；主线走缓存问题，自由提问作彩蛋。"},
+  {name:"千人千面",en:"MASS·PERSONAL",tag:"一份名单+一句意图，一键生成 N 条像手写的个性化文案",cat:"智能文案",effort:5,
+    j:{"技术":[8,6,8,5,8,8,7.2],"业务":[9,7,8,6,8,8,7.8],"老板":[8,7,8,5,8,8,7.4]},
+    verdict:"覆盖销售/市场/HR 最广业务岗、贴合「智能文案」主题、稳且低风险；但内核是 mail-merge 套 LLM，原创性偏弱。",
+    problem:"销售/客服/市场/HR 常要给一批人发「看起来像单独写的」消息：祝福、邀约、续费提醒、入职欢迎。群发太假、手写太累，每逢节点就加班复制粘贴改称呼。",
+    how:"上传名单表(姓名/公司/标签)+ 选写意图与语气模板 → 逐行把字段拼进 prompt 生成引用专属信息的文案 → 输出「姓名|文案」表，可逐条微调、一键导出，还能生成 AB 两版。并发加速+缓存兜底。",
+    wow:"点一下，20 条像亲手写的不同文案同时刷出来，每条都精准带上对方公司和标签——市场和销售同事直接问「能不能接我们的真实客户表」。",
+    risk:"逐行调用慢 → 并发+进度条+缓存兜底，演示名单控制在 15-25 行；内容夸大 → 模板内置约束+可逐条改；隐私 → 统一用示例名单。"},
+  {name:"AI杠精评审团",en:"RED·TEAM",tag:"需求丢进去，五个杠精专家轮番开炮，评审会前先挨一顿骂",cat:"多角色·评审",effort:5,
+    j:{"技术":[8,8,6,7,6,9,7.4],"业务":[8,7,6,7,6,9,7.2],"老板":[9,8,6,7,6,9,7.6]},
+    verdict:"最轻量最不翻车、又好玩又能挑硬伤、观众票友好；但需求评审偏产品/技术窄场景，业务评委明天用不上。",
+    problem:"需求评审是拦坑的最后一道关，但技术/测试/法务/财务/用户很难每次凑齐；独自写需求容易有盲区，上线才发现边界没考虑、成本没算、合规踩线，返工代价巨大。",
+    how:"粘贴需求/PRD → 系统扮演 5-6 个角色专家（技术/测试/法务/财务/目标用户/老板），各自内置专业检查清单提出尖锐质疑、边界、风险与成本 → 主持人汇总成 Go/No-Go、Top 风险清单、需补充的验收标准。",
+    wow:"五个性格鲜明的杠精你一言我一语把需求批得体无完肤，全场先被逗笑，笑完发现它真挑出了合规、成本、边界的硬伤——又好玩又有用，最容易赢观众投票。",
+    risk:"角色发言雷同变空话 → 每个角色强约束的检查清单和鲜明口吻；现场命题敏感 → 准备 2 个已调好的保险案例先跑。整体开发最轻、翻车面最小。"},
+  {name:"制度通",en:"POLICY·DESK",tag:"公司制度一问就答，还告诉你出自哪份文件第几页，查不到就说查不到",cat:"知识库·RAG",effort:7,
+    j:{"技术":[8,6,8,4,7,8,6.9],"业务":[8,6,8,5,8,8,7.2],"老板":[8,6,8,5,7,8,7.1]},
+    verdict:"带页码溯源+无依据拒答很赢信任、可沉淀成公司知识库；但这是最标准的 RAG，原创性低、画面偏静缺爆点。",
+    problem:"HR/行政/新人天天被问「报销标准多少」「出差住宿限额」「请假流程」，翻制度文档费时，答错还担责。是行政/HR 评委每周被反复打扰的真实痛点。",
+    how:"制度手册(PDF/Word)拖进来自动解析、分块、向量索引 → 提问检索最相关片段 → LLM 基于片段作答并强制标注来源文件名+页码+原文摘录 → 答案旁高亮引用可点开核对 → 检索不到明确拒答。可换任意部门文档即插即用。",
+    wow:"答案旁边直接甩出「出处第几页+原文」，指哪答哪、可当场核对；且「查不到就说查不到」极加分——非技术评委立刻信任它。",
+    risk:"检索不准 → 优化分块与 top-k、加重排；扫描版 PDF → 演示用可提取文本文档或加 OCR；幻觉 → 强制仅依据检索片段作答、无则拒答。"},
+  {name:"周报喵",en:"GIT·TO·REPORT",tag:"一行命令把这周 git 提交变成领导爱看的周报，还结算成就徽章",cat:"开发者提效",effort:5,
+    j:{"技术":[6,7,6,6,7,8,6.5],"业务":[7,7,4,7,5,8,6.3],"老板":[7,8,5,7,7,8,7.0]},
+    verdict:"升级动画+徽章把最烦的事变爽、确定性高不翻车；致命伤是只服务开发者、非技术评委「懂痛却用不上」，全公司推广面最窄。",
+    problem:"开发者每周五都要憋周报，费时又容易漏；而「恨写周报」更是全场评委的共同痛点、共鸣面最大、情绪也最痛。",
+    how:"本地脚本用 git log 拉取跨多仓库提交（含改动行数），去噪+按主题聚类，喂大模型生成分层周报：总结+本周成果+下周计划+数据；一键切换受众语气；按内容动态触发成就徽章做游戏化结算。AI 只翻译组织、缺信息则标注不编造。",
+    wow:"「我一个字没写，它把我一周的活自动总结成能直接交的周报」——尤其一键切换语气、右侧同时弹出升级动画那一下，把全公司最烦的事变爽。",
+    risk:"AI 夸大/编造 → 仅基于提交信息、缺则标注，同屏展示原始提交清单背书；API 超时 → 预生成缓存兜底；本质只有开发能用是硬伤。"}
+];
+
+const WINNER={
+  why:[
+    {n:"01",h:"痛点极广",d:"照着图片手敲进 Excel 是财务/行政/采购/HR 每月月底的高频苦活，评委席共情面极广。"},
+    {n:"02",h:"60 秒出效果",d:"一张歪斜手写白板照拖进去，10 秒变对齐、带图、金额税号都对的正式 Excel，肉眼可见。"},
+    {n:"03",h:"交互零门槛",d:"用户只有「把图拖进去」一个动作，simplicity 三位评委给到 9/9/9，非技术评委无门槛。"},
+    {n:"04",h:"明显原创",d:"视觉→结构化→标黄核对→自动配图→划过高亮回原图→多张合并→导出 xlsx 一条龙，套壳做不到。"},
+    {n:"05",h:"两周稳做完",d:"仅 6 天工期、链路最短，无数据库/沙箱/ASR/浏览器自动化，现场翻车面全场最小。"}
+  ],
+  what:"上传图片/PDF/微信截图（PDF 先 pdf2image 转图）→ 多模态大模型按目标表头结构化抽取成 JSON（含合并单元格、手写体、金额/日期/税号语义）→ 前端渲染成可编辑表格，模型对每个单元格返回置信度，低置信度单元格标黄提示人工核对 → 鼠标划过任一单元格即在原图对应位置高亮框选 → 按数据类型自动生成图表 → 一键导出真正的 .xlsx → 支持一次多张自动对齐表头合并成汇总表并求和。彩蛋：汇总表一键生成摘要或报销邮件草稿。",
+  demo:[
+    {t:"0:00",s:"开场钉痛点：「在座财务、行政的同事，每个月底是不是都在对着发票、群里发的表格截图，一格一格往 Excel 里敲？今天我让这活儿从半小时变成 10 秒。」"},
+    {t:"0:08",s:"现场制造真实感：掏出事先手写的「各部门 Q3 预算」白板照片（或纸质发票现拍），直接把图拖进网页——强调「没做任何预处理，就是手机随手拍的歪照片」。"},
+    {t:"0:15",s:"进度条转 3-8 秒，同时让右侧表格的单元格「逐个点亮」填入，让等待也好看。"},
+    {t:"0:30",s:"结果表格弹出，日期/金额/开票方/科目已对齐填好，指着标黄单元格说「它不确定的地方会自己标黄提醒核对」——鼠标划过一格，原图对应位置同步高亮框出，证明「它真在看这张图，不是编的」。"},
+    {t:"0:50",s:"右侧自动长出一张柱状图：「数据进来的同时，图也替我画好了。」"},
+    {t:"1:20",s:"现场改一个标黄单元格，点「导出 Excel」，用真正的 Excel 打开展示——「双击即用，交给领导的就是这个。」"},
+    {t:"2:00",s:"彩蛋：一次上传 3 张不同发票 → 自动合并成一张汇总表并在底部求和：「一次一沓，它自己对齐表头、加总。」"},
+    {t:"2:40",s:"收尾：「整个过程我只做了一个动作——把图拖进去。这就是我想给公司每个天天和表格照片打交道的同事的工具。」"}
+  ],
+  plan:[
+    {span:"Day 1–2",d:"打通主链路：FastAPI 薄后端+单页拖拽上传；接通一个多模态 vision API，用固定 JSON schema 把标准发票稳定抽成结构化数据并渲染成表格。先跑通「图进→表出」命脉。"},
+    {span:"Day 3–4",d:"可编辑表格+置信度标黄：表格双击可编辑；解析置信度，低于阈值标黄；处理金额/日期/税号的类型规整。"},
+    {span:"Day 5–6",d:"自动配图+导出 xlsx：Chart.js 按数据类型自动选型；SheetJS 一键导出真 Excel 并验证打开无乱码。"},
+    {span:"Day 7–8",d:"划过高亮回原图（差异化亮点）：记录每个单元格在原图的 bbox，鼠标划过时叠加高亮框——拉开与普通 OCR 差距的关键记忆点。"},
+    {span:"Day 9–10",d:"多张合并汇总（彩蛋）：多图上传按表头对齐合并并自动求和；处理 pdf2image 的 PDF 输入分支。"},
+    {span:"Day 11–12",d:"素材硬化+兜底：精选 3-5 套 100% 验证通过的稳素材反复跑稳；实现预缓存结果的断网兜底开关。"},
+    {span:"Day 13–14",d:"打磨与彩排：UI 收干净；演示脚本掐秒表彩排 5 遍以上；录完整演示视频作终极兜底；准备 Q&A 话术。"}
+  ],
+  wow:[
+    "一张歪歪的手机拍的白板/发票照片，10 秒后变成配着彩色图表、双击即用的正式 Excel——财务当场就问「能不能今天给我」。",
+    "鼠标划过某一格，原图对应位置同步高亮框出——瞬间证明「它真在看图、不是瞎编」，建立强信任。",
+    "一次上传 3 张不同发票，自动对齐表头合并并当场求和——把「月底对一沓票」的噩梦压缩成一次拖拽。",
+    "模型不确定的单元格自动标黄提醒核对——「它会说自己哪里没把握」这个诚实感，非技术评委立刻信任。"
+  ],
+  risk:[
+    "极潦草手写/复杂合并表可能识别错 → 现场只用事先 100% 验证过的稳素材，复杂表降级为可编辑+标黄让人随手改。",
+    "票据隐私敏感 → 全程用脱敏示例发票/预算，开场声明「演示数据均已脱敏」。",
+    "API 超时/网络波动 → 预缓存每套素材的标准输出，一个开关秒切本地缓存做「假装实时」。",
+    "识别偶发偏差 → 保留可编辑表格，当场手动改一格反而成为「它标黄我核对」的正向演示，把风险转成信任点。",
+    "终极兜底：录制一段完整无瑕演示视频，若彻底断网/API 全挂，直接播视频讲解，不冷场。"
+  ],
+  bonus:[
+    "嫁接「纪要快手」的 schema 思路：汇总表一键生成报销摘要/邮件草稿，把「出表」延伸到「回流工作流」。",
+    "嫁接「小跑腿」的可见动效：等待时单元格逐个点亮、划过回原图高亮，让静态 OCR 有「AI 在干活」的画面感。",
+    "备一句 ROI 话术：「按每人每月省 2 小时算，全公司财务行政一年省下的工时……」给老板评委一个可量化的钩子。",
+    "强调「可换任意表头即插即用」（发票/报销/对账/名片/问卷截图），暗示可推广成部门工具，抬高长期价值。",
+    "可选高风险彩蛋：现场邀一位财务/行政评委用手机拍一张（预先确认清晰）真实单据试拖——稳的话可信度爆表。"
+  ]
+};
+
+const RUNNERS=[
+  {name:"纪要快手",score:"7.97",rank:"#2",
+   why:"共鸣面全场最广（业务评委罕见给到 10 分），开会+追待办是行政/HR/项目/运营/领导人人每周都在做的高频刚需，产出正是评委每周要交的东西，痛点属性比冠军更硬；只因原创性一般和现场 ASR 翻车风险屈居第二。作为冠军素材出问题时的稳妥备选。",
+   graft:"它「固定 JSON schema 强制抽取{负责人|事项|截止|优先级}」的方法论，可直接嫁接到图秒成表：让汇总表出表后一键生成结构化待办/报销摘要/邮件草稿，把「图变表」升级为「图变可执行工作项」。"},
+  {name:"AI数字员工·小跑腿",score:"7.70",rank:"#3",
+   why:"三位评委的 originality 普遍打到 8、demo_wow 打到 9，是全场最出片、最像「AI 真的在替我打工」、最容易让同事拍照录像的方案，观众票与记忆点极强；只因演示靠本地仿真系统绕过真实内网被看出「精心搭的舞台」，在可信度上打折。追求现场爆点/观众投票时的备选。",
+   graft:"它「左侧实时滚动 AI 思考、右侧自定义光标可见移动+被操作字段高亮」的可见化动效，可嫁接到图秒成表的 3-8 秒识别等待期：单元格逐个点亮+光标扫过原图高亮，把静态进度条变成有画面张力的 wow。"}
+];
+
+const STRAT=[
+  {h:"黄金 15 秒法则",b:"开场先用一句话把评委钉在痛点上，再让 60 秒内出现肉眼可见的成品——先共情后惊艳，别上来讲技术架构。"},
+  {h:"主线走稳素材",b:"任何现场不可控输入（评委即兴拍照/自由提问）都放到演示后半段当彩蛋，事先只承诺同类已测通的场景，跑挂一键切缓存。"},
+  {h:"诚实感就是加分",b:"主动展示「标黄=它不确定会提醒你核对」「划过高亮=它真在看图」，非技术评委对会说自己哪里没把握的 AI 信任度远高于黑箱。"},
+  {h:"分层给钩子",b:"给财务/行政讲「今天就能用」，给老板补一句可量化省时话术，给技术评委轻描淡写点一句原创链路，不展开。"},
+  {h:"交互越少越高分",b:"紧扣「简单好用就是高分」，全程只让评委看到一个动作（拖图），绝不在屏幕上出现提示词、代码、参数面板。"},
+  {h:"把等待做成表演",b:"3-8 秒识别期用单元格逐个点亮/光标扫图的动效填满，别让进度条空转——等待也是 wow 的一部分。"},
+  {h:"三重兜底彩排到肌肉记忆",b:"①预缓存结果切换开关 ②完整演示录屏 ③Q&A 话术；掐秒表彩排 5 遍以上，确保 3-8 分钟跑完并留互动时间。"},
+  {h:"留一句 slogan 和钩子",b:"结尾抛一个「能不能今天给我」的钩子，让评委散会后还记得你的作品叫什么、解决了什么——记忆点决定投票。"}
+];
+
+// ---------- compute ----------
+const JKEYS=["技术","业务","老板"];
+function avgDim(idea,di){let s=0;JKEYS.forEach(k=>s+=idea.j[k][di]);return s/3;}
+function avgTotal(idea){let s=0;JKEYS.forEach(k=>s+=idea.j[k][6]);return s/3;}
+IDEAS.forEach(i=>{i.total=avgTotal(i);i.dims=DIMS.map((_,di)=>avgDim(i,di));});
+const RANKED=[...IDEAS].sort((a,b)=>b.total-a.total);
+RANKED.forEach((i,ix)=>i.rank=ix+1);
+
+const F=n=>n.toFixed(1);
+function heatBg(v){const a=Math.max(0,Math.min(1,(v-4)/(10-4)));return `rgba(var(--heat-rgb),${(0.06+a*0.66).toFixed(3)})`;}
+
+// ---------- leaderboard ----------
+const bl=document.getElementById("boardList");
+RANKED.forEach(i=>{
+  const m=i.rank<=3?`m${i.rank}`:"";
+  const el=document.createElement("div");
+  el.className="row"+(i.rank===1?" win":"");
+  el.innerHTML=`
+    <div class="rank ${m}">${i.rank}</div>
+    <div class="r-main">
+      <div class="r-name">${i.name}<span class="r-en">${i.en}</span></div>
+      <div class="r-tag">${i.tag}</div>
+      <div class="r-meta"><span class="chip">${i.cat}</span><span class="chip">工期 ${i.effort} 天</span></div>
+    </div>
+    <div class="bar-wrap">
+      <div class="bar"><span data-w="${i.total*10}"></span></div>
+      <div class="bar-lab">加权均分</div>
+    </div>
+    <div class="score num">${F(i.total)}<small>/10</small></div>`;
+  bl.appendChild(el);
+});
+
+// ---------- winner ----------
+document.getElementById("whyGrid").innerHTML=WINNER.why.map(w=>
+  `<div class="why-card"><div class="n">${w.n}</div><div class="h">${w.h}</div><div class="d">${w.d}</div></div>`).join("");
+document.getElementById("whatItDoes").textContent=WINNER.what;
+const win=IDEAS[0];
+document.getElementById("winDims").innerHTML=DIMS.map((d,di)=>{
+  const v=win.dims[di];
+  return `<div class="dimbar"><div class="dl">${d.k}<span class="w">权重 ${d.w}%</span></div><div class="dt"><span data-w="${v*10}"></span></div><div class="dv num">${F(v)}</div></div>`;
+}).join("");
+document.getElementById("demoTl").innerHTML=WINNER.demo.map(s=>
+  `<div class="tl-item"><div class="tl-t">${s.t}</div><div class="tl-s">${s.s}</div></div>`).join("");
+document.getElementById("planGrid").innerHTML=WINNER.plan.map(p=>
+  `<div class="pcard"><div class="span">${p.span}</div><div class="pd">${p.d}</div></div>`).join("");
+document.getElementById("wowList").innerHTML=WINNER.wow.map(x=>`<li>${x}</li>`).join("");
+document.getElementById("riskList").innerHTML=WINNER.risk.map(x=>`<li>${x}</li>`).join("");
+document.getElementById("bonusList").innerHTML=WINNER.bonus.map(x=>`<li>${x}</li>`).join("");
+
+// ---------- heatmap ----------
+const ht=document.getElementById("heatTable");
+let head=`<thead><tr><th class="name">方案</th>`;
+DIMS.forEach(d=>head+=`<th>${d.k}<span class="w">${d.w}%</span></th>`);
+head+=`<th class="total-h">总分</th></tr></thead>`;
+let body="<tbody>";
+RANKED.forEach(i=>{
+  body+=`<tr class="${i.rank===1?"win-row":""}"><td class="name"><span class="rk num">${String(i.rank).padStart(2,"0")}</span><span class="nm">${i.name}</span></td>`;
+  i.dims.forEach(v=>body+=`<td><span class="cell" data-heat="${v}" style="display:inline-block;min-width:34px;padding:4px 6px;">${F(v)}</span></td>`);
+  body+=`<td class="total num">${F(i.total)}</td></tr>`;
+});
+body+="</tbody>";
+ht.innerHTML=head+body;
+
+// ---------- runners ----------
+document.getElementById("runnerList").innerHTML=RUNNERS.map(r=>
+  `<div class="rcard">
+     <div class="rh"><span class="silver">${r.rank} 备选</span><h3>${r.name}</h3><span class="rscore num">${r.score}</span></div>
+     <div><div class="lbl" style="margin-bottom:6px;">为何入选</div><p>${r.why}</p></div>
+     <div class="graft"><div class="lbl" style="margin-bottom:6px;">可嫁接回冠军</div><p>${r.graft}</p></div>
+   </div>`).join("");
+
+// ---------- catalog ----------
+document.getElementById("catList").innerHTML=RANKED.map(i=>
+  `<details class="idea">
+     <summary>
+       <span class="rk num">${i.rank}</span>
+       <span><span class="snm">${i.name}<span class="r-en">${i.en}</span></span><span class="stag">${i.tag}</span></span>
+       <span style="display:flex;align-items:center;gap:12px;"><span class="ssc num">${F(i.total)}</span><span class="caret">▸</span></span>
+     </summary>
+     <div class="idea-body">
+       <div class="field"><div class="fk">痛点</div><div class="fv">${i.problem}</div></div>
+       <div class="field"><div class="fk">原理</div><div class="fv">${i.how}</div></div>
+       <div class="field"><div class="fk">Wow</div><div class="fv">${i.wow}</div></div>
+       <div class="field rk"><div class="fk">风险</div><div class="fv">${i.risk}</div></div>
+       <div class="field"><div class="fk">评委</div><div class="fv" style="color:var(--ink-2)">${i.verdict}</div></div>
+     </div>
+   </details>`).join("");
+
+// ---------- strategy ----------
+document.getElementById("stratList").innerHTML=STRAT.map((s,ix)=>
+  `<div class="scard"><div class="sn num">${String(ix+1).padStart(2,"0")}</div><div><div class="sh">${s.h}</div><div class="sb">${s.b}</div></div></div>`).join("");
+
+// ---------- paint heat cells ----------
+document.querySelectorAll(".cell[data-heat]").forEach(c=>{
+  c.style.background=heatBg(parseFloat(c.dataset.heat));
+});
+
+// ---------- animate bars (staggered "light up", subject-grounded) ----------
+const reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+function fill(){
+  document.querySelectorAll(".bar span[data-w],.dimbar .dt span[data-w]").forEach((b,ix)=>{
+    const w=b.dataset.w+"%";
+    b.style.setProperty("--final",w);
+    if(reduce){b.style.width=w;return;}
+    setTimeout(()=>{b.style.width=w;},80+ix*45);
+  });
+}
+if(reduce){fill();}
+else{requestAnimationFrame(()=>requestAnimationFrame(fill));}
+</script>
+
+</body>
+</html>

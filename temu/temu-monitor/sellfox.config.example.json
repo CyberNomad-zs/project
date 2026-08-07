@@ -1,0 +1,24 @@
+{
+  "enabled": true,
+  "clientId": "赛狐开放平台 client_id",
+  "clientSecret": "赛狐开放平台 client_secret_勿提交",
+  "baseUrl": "https://openapi.sellfox.com",
+  "intervalMinutes": 15,
+  "dateType": "updateDate",
+  "lookbackDays": 30,
+  "pageSize": 100,
+  "maxPagesPerWindow": 50,
+  "editBaseUrl": "https://agentseller.temu.com",
+  "debug": false,
+  "alerts": {
+    "delist": true,
+    "onshelf": true
+  },
+  "stores": [
+    { "shopId": "396706", "name": "Agnis", "enabled": true },
+    { "shopId": "398202", "name": "HomeCove", "enabled": true },
+    { "shopId": "398203", "name": "Twilight Cove", "enabled": true }
+  ],
+  "feishuWebhooks": [],
+  "stateFile": "data/sellfox-state.json"
+}

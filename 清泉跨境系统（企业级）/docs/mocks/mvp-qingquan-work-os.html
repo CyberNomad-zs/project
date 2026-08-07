@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>清泉跨境系统 · MVP</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f6f3ec;
+      --ink: #152028;
+      --mute: #5c6670;
+      --line: #ddd6c8;
+      --card: #fffdf8;
+      --teal: #0d5854;
+      --teal-2: #0a3f3c;
+      --alert: #b84a1f;
+      --alert-bg: #f8e6dc;
+      --ok-bg: #e2efe6;
+      --ok: #1a5c32;
+      --warn-bg: #f3ead0;
+      --warn: #7a5b10;
+      --font: "Noto Sans SC", system-ui, sans-serif;
+      --display: "Noto Serif SC", "Songti SC", serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; font-family: var(--font); color: var(--ink);
+      background:
+        linear-gradient(180deg, #e8efe9 0%, transparent 42%),
+        var(--bg);
+      min-height: 100vh;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 48px; }
+
+    /* —— 首页：一个焦点 —— */
+    .home { display: none; }
+    .home.on { display: block; }
+    .brand {
+      font-family: var(--display); font-size: clamp(40px, 7vw, 64px);
+      font-weight: 700; letter-spacing: 0.04em; margin: 8px 0 8px; line-height: 1.1;
+    }
+    .one-line {
+      font-size: clamp(18px, 2.4vw, 22px); color: var(--mute);
+      max-width: 22em; line-height: 1.55; margin: 0 0 28px;
+    }
+    .flow {
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      margin: 0 0 32px; font-size: 14px; font-weight: 500;
+    }
+    .flow span {
+      background: var(--card); border: 1px solid var(--line);
+      padding: 8px 12px; border-radius: 999px;
+    }
+    .flow i { color: var(--mute); font-style: normal; padding: 0 2px; }
+    .enter {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px;
+      margin-bottom: 28px;
+    }
+    @media (max-width: 720px) { .enter { grid-template-columns: 1fr; } }
+    .enter button {
+      text-align: left; border: 1px solid var(--line); background: var(--card);
+      border-radius: 16px; padding: 20px; cursor: pointer; font: inherit;
+      transition: border-color 0.15s, transform 0.15s;
+    }
+    .enter button:hover { border-color: var(--teal); transform: translateY(-1px); }
+    .enter button strong {
+      display: block; font-family: var(--display); font-size: 22px;
+      font-weight: 600; margin-bottom: 6px;
+    }
+    .enter button em {
+      display: block; font-style: normal; color: var(--mute); font-size: 13px; line-height: 1.45;
+    }
+    .only-four {
+      border-top: 1px solid var(--line); padding-top: 20px;
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+    }
+    @media (max-width: 720px) { .only-four { grid-template-columns: 1fr 1fr; } }
+    .only-four div {
+      background: rgba(255,253,248,0.7); border-radius: 12px; padding: 14px;
+      border: 1px solid transparent;
+    }
+    .only-four b { display: block; font-size: 14px; margin-bottom: 4px; }
+    .only-four span { font-size: 12px; color: var(--mute); line-height: 1.4; }
+    .later {
+      margin-top: 18px; font-size: 13px; color: var(--mute);
+    }
+
+    /* —— 内页壳 —— */
+    .app { display: none; }
+    .app.on { display: block; }
+    .bar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+    }
+    .bar .name { font-family: var(--display); font-size: 20px; font-weight: 600; }
+    .bar .meta { font-size: 13px; color: var(--mute); }
+    .bar .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+    .btn {
+      border: 1px solid var(--line); background: var(--card); color: var(--ink);
+      border-radius: 999px; padding: 8px 14px; font: inherit; font-size: 13px; cursor: pointer;
+    }
+    .btn.main { background: var(--teal); border-color: var(--teal); color: #fff; }
+    .btn.main:hover { background: var(--teal-2); }
+
+    .panel {
+      background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+      overflow: hidden;
+    }
+    .panel-h {
+      padding: 18px 20px 12px; border-bottom: 1px solid var(--line);
+    }
+    .panel-h h1 {
+      font-family: var(--display); font-size: 26px; font-weight: 600;
+      margin: 0 0 4px;
+    }
+    .panel-h p { margin: 0; color: var(--mute); font-size: 14px; }
+
+    .kpis {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px;
+      background: var(--line); border-bottom: 1px solid var(--line);
+    }
+    @media (max-width: 600px) { .kpis { grid-template-columns: 1fr; } }
+    .kpi { background: var(--card); padding: 16px 20px; }
+    .kpi .l { font-size: 12px; color: var(--mute); }
+    .kpi .n { font-family: var(--display); font-size: 36px; font-weight: 600; margin-top: 2px; }
+    .kpi.hot .n { color: var(--alert); }
+
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 14px 16px; text-align: left; border-bottom: 1px solid var(--line); }
+    th { font-size: 12px; color: var(--mute); font-weight: 500; background: #faf7f0; }
+    tr.go { cursor: pointer; }
+    tr.go:hover td { background: #f4faf8; }
+    .tag {
+      display: inline-block; padding: 2px 8px; border-radius: 999px;
+      font-size: 12px; font-weight: 600;
+    }
+    .tag.todo { background: var(--warn-bg); color: var(--warn); }
+    .tag.doing { background: #dde9f3; color: #1a4d6e; }
+    .tag.late { background: var(--alert-bg); color: var(--alert); }
+    .tag.done { background: var(--ok-bg); color: var(--ok); }
+
+    .split { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 14px; }
+    @media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+    .box { padding: 20px; }
+    .box h2 { font-size: 16px; margin: 0 0 12px; }
+    .tl { list-style: none; margin: 0; padding: 0; }
+    .tl li {
+      padding: 0 0 14px 16px; border-left: 2px solid var(--line);
+      margin-left: 4px; position: relative;
+    }
+    .tl li::before {
+      content: ""; width: 8px; height: 8px; border-radius: 50%;
+      background: var(--teal); position: absolute; left: -5px; top: 5px;
+    }
+    .tl .t { font-size: 12px; color: var(--mute); }
+    .tl .a { font-weight: 600; margin: 2px 0; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-size: 12px; color: var(--mute); margin-bottom: 4px; }
+    .field select, .field textarea {
+      width: 100%; border: 1px solid var(--line); border-radius: 10px;
+      padding: 10px; font: inherit; background: #fff;
+    }
+    .field textarea { min-height: 88px; }
+    .msg {
+      display: none; margin-top: 10px; padding: 10px 12px; border-radius: 10px; font-size: 13px;
+    }
+    .msg.on { display: block; }
+    .msg.ok { background: var(--ok-bg); color: var(--ok); }
+    .msg.bad { background: var(--alert-bg); color: var(--alert); }
+    .feishu {
+      margin: 0 20px 16px; padding: 12px 14px; border-radius: 12px;
+      background: #e8eef8; border: 1px solid #c5d3ea; font-size: 13px; line-height: 1.5;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+
+    <!-- ========== 首页：唯一焦点 ========== -->
+    <section class="home on" id="home">
+      <div class="brand">清泉跨境系统</div>
+      <p class="one-line">让老板看见员工有没有处理异常，并留下怎么处理的记录。</p>
+
+      <div class="flow" aria-label="主线">
+        <span>异常</span><i>→</i>
+        <span>建案件</span><i>→</i>
+        <span>飞书群 @人</span><i>→</i>
+        <span>认领关闭</span><i>→</i>
+        <span>老板看超时</span>
+      </div>
+
+      <div class="enter">
+        <button type="button" data-go="work">
+          <strong>工作台</strong>
+          <em>员工用 · 认领和处理我的单</em>
+        </button>
+        <button type="button" data-go="boss">
+          <strong>监督台</strong>
+          <em>老板用 · 谁超时、谁没关</em>
+        </button>
+        <button type="button" data-go="case">
+          <strong>一件事</strong>
+          <em>看时间线 · 填原因关闭</em>
+        </button>
+      </div>
+
+      <div class="only-four">
+        <div><b>1 工作台</b><span>员工办单</span></div>
+        <div><b>2 监督台</b><span>老板盯人</span></div>
+        <div><b>3 飞书群</b><span>通知必达</span></div>
+        <div><b>4 留痕</b><span>以后才推荐</span></div>
+      </div>
+      <p class="later">第一版不做：智能推荐、完整 ERP、经营大屏、按级别发个人消息。</p>
+    </section>
+
+    <!-- ========== 工作台 ========== -->
+    <section class="app" id="work">
+      <div class="bar">
+        <div>
+          <div class="name">清泉跨境系统</div>
+          <div class="meta">工作台 · 王运营</div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button" data-go="home">回首页</button>
+          <button class="btn" type="button" data-go="boss">去监督台</button>
+          <button class="btn main" type="button" data-go="case">处理第一条</button>
+        </div>
+      </div>
+      <div class="feishu">飞书群已通知：@王运营 · Agnis 商品 A-1024 疑似下架 · 点链接进本系统处理</div>
+      <div class="panel">
+        <div class="panel-h">
+          <h1>我的待办</h1>
+          <p>先认领，写清原因，才能关闭</p>
+        </div>
+        <table>
+          <thead>
+            <tr><th>事情</th><th>店</th><th>状态</th><th>超时</th></tr>
+          </thead>
+          <tbody>
+            <tr class="go" data-go="case">
+              <td>商品疑似下架 · A-1024</td>
+              <td>Agnis</td>
+              <td><span class="tag doing">处理中</span></td>
+              <td><span class="tag late">关闭超时</span></td>
+            </tr>
+            <tr class="go" data-go="case">
+              <td>流量待关注 +3</td>
+              <td>HomeCove</td>
+              <td><span class="tag todo">未认领</span></td>
+              <td>—</td>
+            </tr>
+            <tr class="go" data-go="case">
+              <td>广告低 ROI · SummerMat</td>
+              <td>TK-UK-02</td>
+              <td><span class="tag todo">未认领</span></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 监督台 ========== -->
+    <section class="app" id="boss">
+      <div class="bar">
+        <div>
+          <div class="name">清泉跨境系统</div>
+          <div class="meta">监督台 · 李总</div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button" data-go="home">回首页</button>
+          <button class="btn" type="button" data-go="work">去工作台</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-h">
+          <h1>谁在拖、哪单超时</h1>
+          <p>盯人办事，不是看平台报表</p>
+        </div>
+        <div class="kpis">
+          <div class="kpi"><div class="l">未关闭</div><div class="n">18</div></div>
+          <div class="kpi hot"><div class="l">已超时</div><div class="n">5</div></div>
+          <div class="kpi"><div class="l">今日已关</div><div class="n">27</div></div>
+        </div>
+        <table>
+          <thead>
+            <tr><th>负责人</th><th>事情</th><th>状态</th><th>超时</th></tr>
+          </thead>
+          <tbody>
+            <tr class="go" data-go="case">
+              <td>王运营</td>
+              <td>商品疑似下架 · A-1024</td>
+              <td><span class="tag doing">处理中</span></td>
+              <td><span class="tag late">是</span></td>
+            </tr>
+            <tr class="go" data-go="case">
+              <td>还没人领</td>
+              <td>无物流渠道 · SF-8891</td>
+              <td><span class="tag todo">未认领</span></td>
+              <td><span class="tag late">是</span></td>
+            </tr>
+            <tr class="go" data-go="case">
+              <td>赵跟单</td>
+              <td>对账差异待确认</td>
+              <td><span class="tag doing">处理中</span></td>
+              <td>—</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ========== 一件事 ========== -->
+    <section class="app" id="case">
+      <div class="bar">
+        <div>
+          <div class="name">清泉跨境系统</div>
+          <div class="meta">案件 · A-1024</div>
+        </div>
+        <div class="actions">
+          <button class="btn" type="button" data-go="home">回首页</button>
+          <button class="btn" type="button" data-go="boss">回监督台</button>
+        </div>
+      </div>
+      <div class="split">
+        <div class="panel box">
+          <h2>发生了什么 · 谁做了什么</h2>
+          <p style="margin:0 0 14px;color:var(--mute);font-size:14px">Agnis · 在售 128→121 · <span class="tag late">关闭超时</span></p>
+          <ul class="tl">
+            <li>
+              <div class="t">08:02 · 系统</div>
+              <div class="a">建案件 + 飞书群通知</div>
+            </li>
+            <li>
+              <div class="t">08:18 · 王运营</div>
+              <div class="a">认领</div>
+            </li>
+            <li>
+              <div class="t">09:40 · 王运营</div>
+              <div class="a">备注：正在核对是否季节性下架</div>
+            </li>
+          </ul>
+        </div>
+        <div class="panel box">
+          <h2>关闭（必须写原因）</h2>
+          <div class="field">
+            <label>处理方式</label>
+            <select id="how">
+              <option value="">请选择</option>
+              <option value="1" selected>确认为误报</option>
+              <option value="2">已恢复在售</option>
+              <option value="3">升级主管</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>原因说明</label>
+            <textarea id="why">季节性下架，已核对，记误报。</textarea>
+          </div>
+          <button class="btn main" type="button" id="close">关闭案件</button>
+          <div class="msg" id="msg"></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <script>
+    function go(id) {
+      document.querySelectorAll(".home, .app").forEach((el) => el.classList.remove("on"));
+      document.getElementById(id).classList.add("on");
+      window.scrollTo(0, 0);
+    }
+    document.querySelectorAll("[data-go]").forEach((el) => {
+      el.addEventListener("click", () => go(el.dataset.go));
+    });
+    document.getElementById("close").addEventListener("click", () => {
+      const msg = document.getElementById("msg");
+      const how = document.getElementById("how").value;
+      const why = document.getElementById("why").value.trim();
+      msg.classList.add("on");
+      if (!how || !why) {
+        msg.className = "msg on bad";
+        msg.textContent = "关不掉：处理方式和原因都要填。";
+        return;
+      }
+      msg.className = "msg on ok";
+      msg.textContent = "已关闭。时间线多一笔记录；监督台超时消失。（智能推荐以后再做）";
+    });
+  </script>
+</body>
+</html>

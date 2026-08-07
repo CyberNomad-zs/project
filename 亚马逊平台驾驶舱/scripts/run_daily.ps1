@@ -1,0 +1,77 @@
+# Daily batch launcher for Task Scheduler
+$ErrorActionPreference = "Continue"
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+Set-Location -LiteralPath $Root
+
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+if (-not (Test-Path -LiteralPath $Python)) {
+    $Python = "python"
+}
+
+$LogDir = Join-Path $Root "data\logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$Log = Join-Path $LogDir ("daily_{0}.log" -f $stamp)
+$OutFile = Join-Path $LogDir ("daily_{0}.out.txt" -f $stamp)
+$ErrFile = Join-Path $LogDir ("daily_{0}.err.txt" -f $stamp)
+
+function Write-Log([string]$Message) {
+    $line = "{0} {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $Message
+    Add-Content -LiteralPath $Log -Value $line -Encoding utf8
+    Write-Host $line
+}
+
+Write-Log "==== start ===="
+Write-Log ("cwd={0}" -f $Root)
+Write-Log ("python={0}" -f $Python)
+
+if (-not (Test-Path -LiteralPath $Python)) {
+    Write-Log "ERROR: python not found"
+    exit 2
+}
+
+$env:PYTHONPATH = $Root
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
+
+# Build argument string (PS 5.1-friendly; avoid empty array edge cases)
+$ArgString = "-u -m app.main once"
+if ($env:ASIN_DAILY_DRY_RUN -eq "1") {
+    $ArgString = $ArgString + " --dry-run-notify"
+    Write-Log "mode=dry-run-notify"
+}
+Write-Log ("cmd={0} {1}" -f $Python, $ArgString)
+
+$p = Start-Process -FilePath $Python -ArgumentList $ArgString -WorkingDirectory $Root -RedirectStandardOutput $OutFile -RedirectStandardError $ErrFile -NoNewWindow -PassThru -Wait
+$Code = 1
+if ($null -ne $p -and $null -ne $p.ExitCode) {
+    $Code = [int]$p.ExitCode
+}
+
+if (Test-Path -LiteralPath $OutFile) {
+    $outText = Get-Content -LiteralPath $OutFile -Raw -ErrorAction SilentlyContinue
+    if ($outText) {
+        Write-Log "---- stdout ----"
+        Add-Content -LiteralPath $Log -Value $outText -Encoding utf8
+    }
+}
+if (Test-Path -LiteralPath $ErrFile) {
+    $errText = Get-Content -LiteralPath $ErrFile -Raw -ErrorAction SilentlyContinue
+    if ($errText) {
+        Write-Log "---- stderr ----"
+        Add-Content -LiteralPath $Log -Value $errText -Encoding utf8
+    }
+}
+
+# 日批后刷新本地仪表盘（失败不阻断主流程）
+try {
+    Write-Log "dashboard: building static site"
+    $dashArgs = "-u -m app.main dashboard"
+    $dp = Start-Process -FilePath $Python -ArgumentList $dashArgs -WorkingDirectory $Root -NoNewWindow -PassThru -Wait
+    Write-Log ("dashboard exit={0}" -f $dp.ExitCode)
+} catch {
+    Write-Log ("dashboard skipped: {0}" -f $_.Exception.Message)
+}
+
+Write-Log ("==== exit={0} ====" -f $Code)
+exit $Code

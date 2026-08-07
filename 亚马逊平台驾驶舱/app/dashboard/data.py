@@ -1,0 +1,533 @@
+"""从 SQLite 聚合集团总览 / 店铺仪表盘所需 JSON。"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.store.db import Database
+from app.sync.shops import (
+    canonicalize_shop,
+    list_canonical_shops_from_db,
+    load_alias_map,
+    shop_match_variants,
+)
+
+
+def latest_biz_date(db: Database) -> str | None:
+    with db.connect() as conn:
+        row = conn.execute(
+            "SELECT biz_date FROM asin_daily ORDER BY biz_date DESC LIMIT 1"
+        ).fetchone()
+    return str(row["biz_date"]) if row else None
+
+
+def _date_range(end: str, days: int) -> list[str]:
+    end_dt = datetime.strptime(end, "%Y-%m-%d")
+    return [
+        (end_dt - timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(days - 1, -1, -1)
+    ]
+
+
+def _open_tasks(db: Database, biz_date: str | None = None) -> list[dict[str, Any]]:
+    tasks = db.list_tasks(biz_date=biz_date)
+    return [
+        t
+        for t in tasks
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange", "yellow")
+    ]
+
+
+def _filter_shop(
+    rows: list[dict[str, Any]], variants: set[str], key: str = "shop_name"
+) -> list[dict[str, Any]]:
+    return [r for r in rows if str(r.get(key) or "") in variants]
+
+
+def _overdue_count(tasks: list[dict[str, Any]]) -> int:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return sum(1 for t in tasks if (due := t.get("due_at")) and due < now)
+
+
+def _task_metric_display(t: dict[str, Any]) -> str:
+    """优先指标摘要，其次说明文案，最后裸当前值。"""
+    payload = t.get("payload_json")
+    if isinstance(payload, str) and payload:
+        import json
+
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    for key in ("value_summary", "message"):
+        v = t.get(key) or payload.get(key)
+        if v:
+            return str(v)
+    cur = t.get("current_value")
+    return "" if cur is None else str(cur)
+
+
+def _task_brief(t: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "task_id": t.get("task_id"),
+        "shop_name": t.get("shop_name"),
+        "asin": t.get("asin"),
+        "title_cn": t.get("product_title_cn") or t.get("product_title"),
+        "anomaly_type": t.get("anomaly_type"),
+        "level": t.get("level"),
+        "current_value": t.get("current_value"),
+        "value_summary": _task_metric_display(t),
+        "owner": t.get("owner"),
+        "due_at": t.get("due_at"),
+        "status": t.get("status"),
+        "need_boss": bool(t.get("need_boss")),
+    }
+
+
+def _sales_kpis(db: Database, biz_date: str, variants: set[str] | None = None) -> dict[str, float]:
+    with db.connect() as conn:
+        if variants:
+            ph = ",".join("?" * len(variants))
+            row = conn.execute(
+                f"""
+                SELECT
+                  COALESCE(SUM(sale_price),0) AS sales,
+                  COALESCE(SUM(order_num),0) AS orders,
+                  COALESCE(SUM(ad_cost),0) AS ad_cost,
+                  COALESCE(SUM(ad_sales),0) AS ad_sales,
+                  COALESCE(SUM(sessions),0) AS sessions,
+                  COUNT(DISTINCT asin) AS asins
+                FROM asin_daily
+                WHERE biz_date=? AND shop_name IN ({ph})
+                """,
+                [biz_date, *variants],
+            ).fetchone()
+        else:
+            row = conn.execute(
+                """
+                SELECT
+                  COALESCE(SUM(sale_price),0) AS sales,
+                  COALESCE(SUM(order_num),0) AS orders,
+                  COALESCE(SUM(ad_cost),0) AS ad_cost,
+                  COALESCE(SUM(ad_sales),0) AS ad_sales,
+                  COALESCE(SUM(sessions),0) AS sessions,
+                  COUNT(DISTINCT asin) AS asins
+                FROM asin_daily WHERE biz_date=?
+                """,
+                (biz_date,),
+            ).fetchone()
+    sales = float(row["sales"] or 0)
+    ad_cost = float(row["ad_cost"] or 0)
+    ad_sales = float(row["ad_sales"] or 0)
+    # 统一为 0–1 比例（花费/广告销售额）
+    acos = (ad_cost / ad_sales) if ad_sales > 0 else None
+    return {
+        "sales": round(sales, 2),
+        "orders": round(float(row["orders"] or 0), 2),
+        "ad_cost": round(ad_cost, 2),
+        "ad_sales": round(ad_sales, 2),
+        "sessions": round(float(row["sessions"] or 0), 2),
+        "asins": int(row["asins"] or 0),
+        "acos": round(acos, 4) if acos is not None else None,
+    }
+
+
+def _norm_acos(v: Any) -> float | None:
+    """赛狐 ACOS 可能是 0–1 或 0–100，统一成 0–1。"""
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    if x > 1.5:
+        return x / 100.0
+    return x
+
+
+def _trend(
+    db: Database, dates: list[str], variants: set[str] | None = None
+) -> list[dict[str, Any]]:
+    out = []
+    with db.connect() as conn:
+        for d in dates:
+            if variants:
+                ph = ",".join("?" * len(variants))
+                row = conn.execute(
+                    f"""
+                    SELECT
+                      COALESCE(SUM(sale_price),0) AS sales,
+                      COALESCE(SUM(order_num),0) AS orders,
+                      COALESCE(SUM(ad_cost),0) AS ad_cost,
+                      COALESCE(SUM(ad_sales),0) AS ad_sales
+                    FROM asin_daily WHERE biz_date=? AND shop_name IN ({ph})
+                    """,
+                    [d, *variants],
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT
+                      COALESCE(SUM(sale_price),0) AS sales,
+                      COALESCE(SUM(order_num),0) AS orders,
+                      COALESCE(SUM(ad_cost),0) AS ad_cost,
+                      COALESCE(SUM(ad_sales),0) AS ad_sales
+                    FROM asin_daily WHERE biz_date=?
+                    """,
+                    (d,),
+                ).fetchone()
+            ad_cost = float(row["ad_cost"] or 0)
+            ad_sales = float(row["ad_sales"] or 0)
+            out.append(
+                {
+                    "date": d,
+                    "sales": round(float(row["sales"] or 0), 2),
+                    "orders": round(float(row["orders"] or 0), 2),
+                    "ad_cost": round(ad_cost, 2),
+                    "ad_sales": round(ad_sales, 2),
+                    "acos": round(ad_cost / ad_sales, 4) if ad_sales > 0 else None,
+                }
+            )
+    return out
+
+
+def _task_trend(db: Database, dates: list[str]) -> list[dict[str, Any]]:
+    """按日统计 open 红/橙（用 biz_date 上的任务快照）。"""
+    out = []
+    for d in dates:
+        tasks = [
+            t
+            for t in db.list_tasks(biz_date=d)
+            if t.get("status") not in ("closed", "resolved")
+        ]
+        out.append(
+            {
+                "date": d,
+                "red": sum(1 for t in tasks if t.get("level") == "red"),
+                "orange": sum(1 for t in tasks if t.get("level") == "orange"),
+            }
+        )
+    return out
+
+
+def _shop_sales_breakdown(db: Database, biz_date: str) -> list[dict[str, Any]]:
+    aliases = load_alias_map()
+    with db.connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT shop_name,
+                   COALESCE(SUM(sale_price),0) AS sales,
+                   COALESCE(SUM(ad_cost),0) AS ad_cost,
+                   COALESCE(SUM(ad_sales),0) AS ad_sales,
+                   COUNT(DISTINCT asin) AS asins
+            FROM asin_daily WHERE biz_date=?
+            GROUP BY shop_name
+            """,
+            (biz_date,),
+        ).fetchall()
+    by_can: dict[str, dict[str, float]] = defaultdict(
+        lambda: {"sales": 0.0, "ad_cost": 0.0, "ad_sales": 0.0, "asins": 0}
+    )
+    for r in rows:
+        can = canonicalize_shop(str(r["shop_name"] or ""), aliases)
+        if not can:
+            can = str(r["shop_name"] or "未知")
+        by_can[can]["sales"] += float(r["sales"] or 0)
+        by_can[can]["ad_cost"] += float(r["ad_cost"] or 0)
+        by_can[can]["ad_sales"] += float(r["ad_sales"] or 0)
+        by_can[can]["asins"] += int(r["asins"] or 0)
+    out = []
+    for shop, v in sorted(by_can.items(), key=lambda x: -x[1]["sales"]):
+        acos = (v["ad_cost"] / v["ad_sales"]) if v["ad_sales"] > 0 else None
+        out.append(
+            {
+                "shop": shop,
+                "sales": round(v["sales"], 2),
+                "ad_cost": round(v["ad_cost"], 2),
+                "asins": v["asins"],
+                "acos": round(acos, 4) if acos is not None else None,
+            }
+        )
+    return out
+
+
+def _shop_task_breakdown(open_tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aliases = load_alias_map()
+    by: dict[str, dict[str, int]] = defaultdict(
+        lambda: {"red": 0, "orange": 0, "overdue": 0, "boss": 0}
+    )
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for t in open_tasks:
+        if t.get("level") not in ("red", "orange"):
+            continue
+        can = canonicalize_shop(str(t.get("shop_name") or ""), aliases) or "未知"
+        if t.get("level") == "red":
+            by[can]["red"] += 1
+        else:
+            by[can]["orange"] += 1
+        if (due := t.get("due_at")) and due < now:
+            by[can]["overdue"] += 1
+        if t.get("need_boss"):
+            by[can]["boss"] += 1
+    return [
+        {"shop": s, **v}
+        for s, v in sorted(by.items(), key=lambda x: (-x[1]["red"], -x[1]["orange"]))
+    ]
+
+
+def _top_anomaly_types(open_tasks: list[dict[str, Any]], limit: int = 8) -> list[dict[str, Any]]:
+    c: dict[str, int] = defaultdict(int)
+    for t in open_tasks:
+        if t.get("level") in ("red", "orange"):
+            c[str(t.get("anomaly_type") or "unknown")] += 1
+    return [
+        {"type": k, "count": v}
+        for k, v in sorted(c.items(), key=lambda x: -x[1])[:limit]
+    ]
+
+
+def _top_asins(
+    db: Database, biz_date: str, variants: set[str] | None, limit: int = 10
+) -> list[dict[str, Any]]:
+    with db.connect() as conn:
+        if variants:
+            ph = ",".join("?" * len(variants))
+            rows = conn.execute(
+                f"""
+                SELECT asin, title_cn, title, shop_name, sale_price, order_num,
+                       ad_cost, acos, available_days
+                FROM asin_daily
+                WHERE biz_date=? AND shop_name IN ({ph})
+                ORDER BY COALESCE(sale_price,0) DESC
+                LIMIT ?
+                """,
+                [biz_date, *variants, limit],
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT asin, title_cn, title, shop_name, sale_price, order_num,
+                       ad_cost, acos, available_days
+                FROM asin_daily
+                WHERE biz_date=?
+                ORDER BY COALESCE(sale_price,0) DESC
+                LIMIT ?
+                """,
+                (biz_date, limit),
+            ).fetchall()
+    return [
+        {
+            "asin": r["asin"],
+            "title": r["title_cn"] or r["title"],
+            "shop_name": r["shop_name"],
+            "sales": r["sale_price"],
+            "orders": r["order_num"],
+            "ad_cost": r["ad_cost"],
+            "acos": r["acos"],
+            "available_days": r["available_days"],
+        }
+        for r in rows
+    ]
+
+
+def _inventory_risk(
+    db: Database, biz_date: str, variants: set[str], threshold: float = 30.0
+) -> list[dict[str, Any]]:
+    with db.connect() as conn:
+        ph = ",".join("?" * len(variants))
+        rows = conn.execute(
+            f"""
+            SELECT asin, title_cn, title, available, in_transit, available_days,
+                   sale_price
+            FROM asin_daily
+            WHERE biz_date=? AND shop_name IN ({ph})
+              AND available_days IS NOT NULL AND available_days < ?
+            ORDER BY available_days ASC
+            LIMIT 30
+            """,
+            [biz_date, *variants, threshold],
+        ).fetchall()
+    return [
+        {
+            "asin": r["asin"],
+            "title": r["title_cn"] or r["title"],
+            "available": r["available"],
+            "in_transit": r["in_transit"],
+            "available_days": r["available_days"],
+            "sales": r["sale_price"],
+        }
+        for r in rows
+    ]
+
+
+def _high_acos(
+    db: Database, biz_date: str, variants: set[str], redline: float = 0.3
+) -> list[dict[str, Any]]:
+    """ACOS 超红线：兼容 0–1 / 0–100 存储。"""
+    with db.connect() as conn:
+        ph = ",".join("?" * len(variants))
+        rows = conn.execute(
+            f"""
+            SELECT asin, title_cn, title, acos, ad_cost, ad_sales, sale_price
+            FROM asin_daily
+            WHERE biz_date=? AND shop_name IN ({ph})
+              AND acos IS NOT NULL
+              AND COALESCE(ad_cost,0) > 0
+            ORDER BY ad_cost DESC
+            LIMIT 80
+            """,
+            [biz_date, *variants],
+        ).fetchall()
+    out = []
+    for r in rows:
+        a = _norm_acos(r["acos"])
+        if a is None or a <= redline:
+            continue
+        out.append(
+            {
+                "asin": r["asin"],
+                "title": r["title_cn"] or r["title"],
+                "acos": round(a, 4),
+                "ad_cost": r["ad_cost"],
+                "ad_sales": r["ad_sales"],
+                "sales": r["sale_price"],
+            }
+        )
+        if len(out) >= 20:
+            break
+    return out
+
+
+def build_group_payload(
+    db: Database, *, biz_date: str | None = None, trend_days: int = 7
+) -> dict[str, Any]:
+    day = biz_date or latest_biz_date(db)
+    if not day:
+        return {"error": "no_data", "biz_date": None}
+
+    dates = _date_range(day, trend_days)
+    open_all = [
+        t
+        for t in db.list_tasks()
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange")
+    ]
+    open_day = [
+        t
+        for t in _open_tasks(db, day)
+        if t.get("level") in ("red", "orange")
+    ]
+    # 未关闭任务可能跨日：集团 KPI 用全部 open
+    red = [t for t in open_all if t.get("level") == "red"]
+    orange = [t for t in open_all if t.get("level") == "orange"]
+    sales = _sales_kpis(db, day)
+    summary = db.aggregate_daily_summary(day)
+
+    return {
+        "kind": "group",
+        "biz_date": day,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "kpi": {
+            "red": len(red),
+            "orange": len(orange),
+            "overdue": _overdue_count(open_all),
+            "boss": sum(1 for t in open_all if t.get("need_boss")),
+            "total_open": len(open_all),
+            "sales": sales["sales"],
+            "orders": sales["orders"],
+            "ad_cost": sales["ad_cost"],
+            "acos": sales["acos"],
+            "asins": sales["asins"],
+            "inv_red": summary.get("inv_red", 0),
+            "inv_orange": summary.get("inv_orange", 0),
+            "ad_anomaly": summary.get("ad_count", 0),
+            "sales_anomaly": summary.get("sales_count", 0),
+        },
+        "sales_trend": _trend(db, dates),
+        "task_trend": _task_trend(db, dates),
+        "shop_sales": _shop_sales_breakdown(db, day),
+        "shop_tasks": _shop_task_breakdown(open_all),
+        "top_anomaly_types": _top_anomaly_types(open_all),
+        "red_tasks": [_task_brief(t) for t in red[:25]],
+        "boss_tasks": [_task_brief(t) for t in open_all if t.get("need_boss")][:20],
+        "top_asins": _top_asins(db, day, None, 15),
+        "shops": list_canonical_shops_from_db(),
+    }
+
+
+def build_shop_payload(
+    db: Database,
+    shop: str,
+    *,
+    biz_date: str | None = None,
+    trend_days: int = 7,
+    acos_redline: float = 0.3,
+) -> dict[str, Any]:
+    day = biz_date or latest_biz_date(db)
+    if not day:
+        return {"error": "no_data", "shop": shop, "biz_date": None}
+
+    aliases = load_alias_map()
+    canonical = canonicalize_shop(shop, aliases) or shop
+    variants = set(shop_match_variants(canonical, aliases))
+    dates = _date_range(day, trend_days)
+
+    open_all = [
+        t
+        for t in db.list_tasks()
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange")
+        and str(t.get("shop_name") or "") in variants
+    ]
+    red = [t for t in open_all if t.get("level") == "red"]
+    orange = [t for t in open_all if t.get("level") == "orange"]
+    sales = _sales_kpis(db, day, variants)
+    summary = db.aggregate_daily_summary(day, shop_names=list(variants))
+
+    type_counts: dict[str, int] = defaultdict(int)
+    for t in open_all:
+        type_counts[str(t.get("anomaly_type") or "unknown")] += 1
+
+    return {
+        "kind": "shop",
+        "shop": canonical,
+        "shop_variants": sorted(variants),
+        "biz_date": day,
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "kpi": {
+            "red": len(red),
+            "orange": len(orange),
+            "overdue": _overdue_count(open_all),
+            "boss": sum(1 for t in open_all if t.get("need_boss")),
+            "total_open": len(open_all),
+            "sales": sales["sales"],
+            "orders": sales["orders"],
+            "ad_cost": sales["ad_cost"],
+            "ad_sales": sales["ad_sales"],
+            "acos": sales["acos"],
+            "asins": sales["asins"],
+            "inv_red": summary.get("inv_red", 0),
+            "inv_orange": summary.get("inv_orange", 0),
+            "sessions": sales["sessions"],
+        },
+        "sales_trend": _trend(db, dates, variants),
+        "todo_tasks": [
+            _task_brief(t)
+            for t in sorted(
+                open_all,
+                key=lambda x: (0 if x.get("level") == "red" else 1, x.get("due_at") or ""),
+            )
+        ][:30],
+        "inventory_risk": _inventory_risk(db, day, variants),
+        "high_acos": _high_acos(db, day, variants, acos_redline),
+        "top_asins": _top_asins(db, day, variants, 10),
+        "anomaly_types": [
+            {"type": k, "count": v}
+            for k, v in sorted(type_counts.items(), key=lambda x: -x[1])
+        ],
+    }

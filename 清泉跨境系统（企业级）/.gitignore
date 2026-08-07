@@ -1,0 +1,31 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+*.log
+.DS_Store
+pgdata/
+.pgdata/
+logs/
+.idea/
+.vscode/
+backup/
+*.dump
+*.sql.gz
+Thumbs.db
+*.local
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 本地临时机密（本项目只把 SSH 密钥放 keys/，其它勿进仓）
+secrets/
+*.local.md
+# 含生产明文密码的同事交接（仅本机传阅，禁止提交）
+docs/ops/生产环境-同事交接.md

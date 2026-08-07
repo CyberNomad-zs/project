@@ -1,0 +1,31 @@
+﻿{
+    "bizDate":  "2026-08-02",
+    "totalSpend":  92.72,
+    "totalOrders":  52,
+    "totalRevenue":  866.73,
+    "totalCampaigns":  9,
+    "overallRoi":  9.35,
+    "highlights":  [
+                       "销售额最高店铺：Gardena（销售额 866.73，花费 92.72，综合 ROI 9.35）",
+                       "综合 ROI 最高店铺：Gardena（ROI 9.35，花费 92.72）",
+                       "单系列销售额 TOP1：[Gardena] 活动品（销售额 464.58，ROI 11.95）"
+                   ],
+    "risks":  [
+                  "店铺 Gardena 有 2 个系列花费\u003e0 但销售额为 0"
+              ],
+    "storeRollups":  [
+                         {
+                             "store":  "Gardena",
+                             "storeId":  "27328767468273",
+                             "campaigns":  9,
+                             "spend":  92.72,
+                             "orders":  52,
+                             "revenue":  866.73,
+                             "topCampaign":  "活动品",
+                             "topRevenue":  464.58,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  2,
+                             "roi":  9.35
+                         }
+                     ]
+}

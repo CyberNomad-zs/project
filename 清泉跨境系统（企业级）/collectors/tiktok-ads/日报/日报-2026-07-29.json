@@ -1,0 +1,44 @@
+﻿{
+    "bizDate":  "2026-07-29",
+    "totalSpend":  123.3,
+    "totalOrders":  55,
+    "totalRevenue":  984.91,
+    "totalCampaigns":  10,
+    "overallRoi":  7.99,
+    "highlights":  [
+                       "销售额最高店铺：SHOP INOUT（销售额 905.25，花费 111.12，综合 ROI 8.15）",
+                       "综合 ROI 最高店铺：SHOP INOUT（ROI 8.15，花费 111.12）",
+                       "单系列销售额 TOP1：[SHOP INOUT] 活动品（销售额 220.83，ROI 11.33）"
+                   ],
+    "risks":  [
+                  "店铺 SHOP INOUT 有 1 个系列花费\u003e0 但销售额为 0"
+              ],
+    "storeRollups":  [
+                         {
+                             "store":  "Deal to deal",
+                             "storeId":  "27501502216807",
+                             "campaigns":  1,
+                             "spend":  12.18,
+                             "orders":  5,
+                             "revenue":  79.66,
+                             "topCampaign":  "全店商品7/27",
+                             "topRevenue":  79.66,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  0,
+                             "roi":  6.54
+                         },
+                         {
+                             "store":  "SHOP INOUT",
+                             "storeId":  "27328767468273",
+                             "campaigns":  9,
+                             "spend":  111.12,
+                             "orders":  50,
+                             "revenue":  905.25,
+                             "topCampaign":  "活动品",
+                             "topRevenue":  220.83,
+                             "lowRoiCount":  0,
+                             "zeroRevSpend":  1,
+                             "roi":  8.15
+                         }
+                     ]
+}

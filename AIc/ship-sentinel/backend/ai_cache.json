@@ -1,0 +1,26 @@
+{
+  "P2AL6TCD63006": {
+    "root_cause": "主数据缺失且发货时间紧迫（<24h）",
+    "action": "立即补全主数据并优先安排发货",
+    "risk": "订单超时取消或店铺绩效扣分",
+    "model": "deepseek-v4-flash"
+  },
+  "P2AL6TCD63005": {
+    "root_cause": "主数据缺失及渠道未配置",
+    "action": "立即匹配货号并绑定发货渠道",
+    "risk": "超时罚款或订单关闭",
+    "model": "deepseek-v4-flash"
+  },
+  "P2AL6TCD63004": {
+    "root_cause": "临期发货且主数据缺失",
+    "action": "立即补全货号信息，优先处理该单",
+    "risk": "超时发货导致亚马逊订单取消或绩效扣分",
+    "model": "deepseek-v4-flash"
+  },
+  "P2AL6TCD63000": {
+    "root_cause": "发货倒计时不足24小时且主数据缺失",
+    "action": "立即手动批量核实SKU并催单发货",
+    "risk": "订单超时取消，影响账户绩效",
+    "model": "deepseek-v4-flash"
+  }
+}

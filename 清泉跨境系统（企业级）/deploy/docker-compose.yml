@@ -1,0 +1,87 @@
+# 清泉跨境系统 · 本地/私有化一键启动
+# 用法:
+#   cd deploy
+#   cp ../.env.example ../.env   # 按需修改
+#   docker compose up -d --build
+#   docker compose exec api python -m app.scripts.seed
+#   curl http://localhost:8000/health
+
+name: qingquan
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-qingquan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-qingquan}
+      POSTGRES_DB: ${POSTGRES_DB:-qingquan}
+      TZ: Asia/Shanghai
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../backend/migrations/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qingquan}:${POSTGRES_PASSWORD:-qingquan}@db:5432/${POSTGRES_DB:-qingquan}
+      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-dev}
+      TZ: Asia/Shanghai
+    ports:
+      - "${API_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ../backend/app:/app/app
+      - ../backend/migrations:/app/migrations
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-qingquan}:${POSTGRES_PASSWORD:-qingquan}@db:5432/${POSTGRES_DB:-qingquan}
+      REDIS_URL: redis://redis:6379/0
+      APP_ENV: ${APP_ENV:-dev}
+      TZ: Asia/Shanghai
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: python -m app.jobs.worker
+    volumes:
+      - ../backend/app:/app/app
+    profiles:
+      - worker
+
+volumes:
+  pgdata:

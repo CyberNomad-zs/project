@@ -1,0 +1,108 @@
+@echo off
+chcp 65001 >nul
+rem Console menu launcher (no GUI dependency).
+cd /d "%~dp0"
+title TK英区广告日报启动器
+
+:menu
+cls
+echo ============================================================
+echo   TK 英区广告日报 · 启动器
+echo   %CD%
+echo ============================================================
+echo.
+echo   [1] 预览店铺列表   (ListOnly，不打开浏览器)
+echo   [2] 干跑抓取       (串行开店抽数，不写飞书)
+echo   [3] 正式写入飞书   (串行抓取并写入)
+echo   [4] 立即跑日报     (同 17:20 计划任务)
+echo   [5] 安装每日 17:20 计划任务
+echo   [6] 打开日报目录
+echo   [7] 打开最新日报
+echo   [8] 打开日志目录
+echo   [9] 打开配置目录
+echo   [E] 安装环境依赖 (Node + ziniao-cli)
+echo   [G] 打开图形启动器 (gui.py)
+echo   [0] 退出
+echo.
+set /p choice=请选择编号:
+
+if "%choice%"=="1" goto list
+if "%choice%"=="2" goto dry
+if "%choice%"=="3" goto write
+if "%choice%"=="4" goto daily
+if "%choice%"=="5" goto install
+if /I "%choice%"=="6" goto reports
+if /I "%choice%"=="7" goto latest
+if "%choice%"=="8" goto logs
+if "%choice%"=="9" goto config
+if /I "%choice%"=="E" goto env
+if /I "%choice%"=="G" goto gui
+if "%choice%"=="0" exit /b 0
+echo 无效选择
+timeout /t 2 >nul
+goto menu
+
+:list
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-multi-store.ps1" -ListOnly
+goto pause
+
+:dry
+echo 将干跑抓取（不写飞书）。需紫鸟已登录。
+pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-multi-store.ps1" -DryRun true
+goto pause
+
+:write
+echo 将【正式写入飞书】。确认后继续。
+pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-multi-store.ps1" -DryRun false
+goto pause
+
+:daily
+echo 执行日报流程（写飞书）。
+pause
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\run-daily-report.ps1"
+goto pause
+
+:install
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-daily-task.ps1" -Time "17:20"
+goto pause
+
+:reports
+if not exist "%~dp0日报" mkdir "%~dp0日报"
+explorer "%~dp0日报"
+goto menu
+
+:latest
+if exist "%~dp0日报\最新日报.md" (
+  start "" "%~dp0日报\最新日报.md"
+) else if exist "%~dp0日报" (
+  explorer "%~dp0日报"
+) else (
+  echo 还没有日报，请先干跑或正式抓取。
+  pause
+)
+goto menu
+
+:logs
+if not exist "%~dp0logs" mkdir "%~dp0logs"
+explorer "%~dp0logs"
+goto menu
+
+:config
+explorer "%~dp0config"
+goto menu
+
+:env
+call "%~dp0安装环境.bat"
+goto menu
+
+:gui
+call "%~dp0美化启动器.bat"
+goto menu
+
+:pause
+echo.
+echo ---------- 结束 ----------
+pause
+goto menu

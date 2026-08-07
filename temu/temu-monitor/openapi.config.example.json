@@ -1,0 +1,40 @@
+{
+  "enabled": true,
+  "appKey": "你的应用密钥_app_key",
+  "appSecret": "你的应用秘钥_app_secret_勿提交到git",
+  "region": "global",
+  "baseUrl": "https://openapi-b-global.temu.com",
+  "apiMode": "listQuery",
+  "pageSize": 100,
+  "intervalMinutes": 15,
+  "editBaseUrl": "https://agentseller.temu.com",
+  "debug": false,
+  "forceAssumeActiveOnType1": false,
+  "alerts": {
+    "delist": true,
+    "lowTraffic": true,
+    "restrictedTraffic": true
+  },
+  "stores": [
+    {
+      "name": "HomeCove",
+      "accessToken": "",
+      "mallId": "",
+      "enabled": true
+    },
+    {
+      "name": "Twilight Cove",
+      "accessToken": "",
+      "mallId": "",
+      "enabled": true
+    },
+    {
+      "name": "Agnis",
+      "accessToken": "",
+      "mallId": "",
+      "enabled": true
+    }
+  ],
+  "feishuWebhooks": [],
+  "stateFile": "data/openapi-state.json"
+}

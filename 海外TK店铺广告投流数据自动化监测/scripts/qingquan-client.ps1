@@ -1,0 +1,187 @@
+# 清泉中心 Ingest 客户端（Stage A 旁路）
+# 由 run-multi-store.ps1 dot-source 使用；也可单独点测。
+#
+# 依赖 config.qingquan:
+# {
+#   "enabled": true,
+#   "baseUrl": "http://127.0.0.1:8000",
+#   "apiKey": "dev-ingest-key",
+#   "source": "tiktok_ads",
+#   "failOpen": true,
+#   "timeoutSec": 30
+# }
+
+function Get-QingquanConfig($cfg) {
+  if (-not $cfg.qingquan) {
+    return [pscustomobject]@{
+      enabled    = $false
+      baseUrl    = 'http://127.0.0.1:8000'
+      apiKey     = ''
+      source     = 'tiktok_ads'
+      failOpen   = $true
+      timeoutSec = 30
+    }
+  }
+  $q = $cfg.qingquan
+  $enabled = $false
+  if ($null -ne $q.enabled) { $enabled = [bool]$q.enabled }
+  $failOpen = $true
+  if ($null -ne $q.failOpen) { $failOpen = [bool]$q.failOpen }
+  $timeout = 30
+  if ($null -ne $q.timeoutSec) { $timeout = [int]$q.timeoutSec }
+  $source = 'tiktok_ads'
+  if ($q.source) { $source = [string]$q.source }
+  $base = 'http://127.0.0.1:8000'
+  if ($q.baseUrl) { $base = [string]$q.baseUrl }
+  $key = ''
+  if ($q.apiKey) { $key = [string]$q.apiKey }
+  return [pscustomobject]@{
+    enabled    = $enabled
+    baseUrl    = $base.TrimEnd('/')
+    apiKey     = $key
+    source     = $source
+    failOpen   = $failOpen
+    timeoutSec = $timeout
+  }
+}
+
+function Get-FeishuWriteMode($cfg) {
+  # direct | dual | center
+  $mode = 'direct'
+  if ($cfg.feishu -and $cfg.feishu.writeMode) {
+    $mode = [string]$cfg.feishu.writeMode
+  } elseif ($cfg.qingquan -and $cfg.qingquan.enabled) {
+    # 启用清泉但未写 writeMode 时，Stage A 默认 dual
+    $mode = 'dual'
+  }
+  $mode = $mode.ToLowerInvariant()
+  if ($mode -notin @('direct', 'dual', 'center')) { $mode = 'direct' }
+  return $mode
+}
+
+function ConvertTo-QingquanIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [string]$Currency = 'USD'
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = @()
+  foreach ($r in @($Rows)) {
+    $campaign = [string]$r.campaign
+    if (-not $campaign) { continue }
+    $storeId = [string]$r.storeId
+    $bizDate = [string]$r.date
+    $spend = 0; if ($null -ne $r.spend) { $spend = [double]$r.spend }
+    $orders = 0; if ($null -ne $r.orders) { $orders = [double]$r.orders }
+    $roi = $null; if ($null -ne $r.roi) { $roi = [double]$r.roi }
+    $revenue = 0; if ($null -ne $r.revenue) { $revenue = [double]$r.revenue }
+    $status = 'success'; if ($r.status) { $status = [string]$r.status }
+    $planStatus = ''; if ($r.planStatus) { $planStatus = [string]$r.planStatus }
+    $sourceUrl = ''; if ($r.sourceUrl) { $sourceUrl = [string]$r.sourceUrl }
+    $storeName = ''; if ($r.store) { $storeName = [string]$r.store }
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+
+    $items += [ordered]@{
+      platform         = 'tiktok'
+      shop_id          = $storeId
+      shop_name        = $storeName
+      biz_date         = $bizDate
+      collected_at     = $CollectedAt
+      idempotency_key  = ("tiktok_ads:{0}:{1}:{2}" -f $storeId, $campaign, $bizDate)
+      payload          = [ordered]@{
+        campaign_name = $campaign
+        spend         = $spend
+        orders        = $orders
+        roi           = $roi
+        revenue       = $revenue
+        row_status    = $status
+        plan_status   = $planStatus
+        currency      = $rowCurrency
+        source_url    = $sourceUrl
+      }
+      evidence         = [ordered]@{
+        source_url = $sourceUrl
+      }
+    }
+  }
+  return $items
+}
+
+function Send-QingquanIngest {
+  param(
+    [Parameter(Mandatory = $true)] $Config,
+    [Parameter(Mandatory = $true)] $Items,
+    [switch]$Quiet
+  )
+  $q = Get-QingquanConfig $Config
+  if (-not $q.enabled) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'qingquan.disabled'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+  if (-not $q.apiKey) {
+    $msg = 'qingquan.apiKey empty'
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = @($Items).Count }
+    }
+    throw $msg
+  }
+  if (@($Items).Count -eq 0) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'empty-items'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+
+  $url = "{0}/api/v1/ingest/{1}" -f $q.baseUrl, $q.source
+  $payload = @{ items = @($Items) }
+  $json = $payload | ConvertTo-Json -Depth 10 -Compress
+  # PS 5.1 ConvertTo-Json 对中文可能转义；UTF8 字节发送
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+
+  try {
+    $resp = Invoke-RestMethod -Method Post -Uri $url -TimeoutSec $q.timeoutSec -ContentType 'application/json; charset=utf-8' -Body $bodyBytes -Headers @{
+      'X-Api-Key' = $q.apiKey
+    }
+    $accepted = 0; $duplicated = 0; $failed = 0
+    if ($null -ne $resp.accepted) { $accepted = [int]$resp.accepted }
+    if ($null -ne $resp.duplicated) { $duplicated = [int]$resp.duplicated }
+    if ($null -ne $resp.failed) { $failed = [int]$resp.failed }
+    return [pscustomobject]@{
+      ok         = ($failed -eq 0)
+      skipped    = $false
+      accepted   = $accepted
+      duplicated = $duplicated
+      failed     = $failed
+      resp       = $resp
+      error      = $null
+    }
+  }
+  catch {
+    $err = [string]$_
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning ("qingquan ingest failed (failOpen): {0}" -f $err) }
+      return [pscustomobject]@{
+        ok         = $false
+        skipped    = $false
+        accepted   = 0
+        duplicated = 0
+        failed     = @($Items).Count
+        resp       = $null
+        error      = $err
+      }
+    }
+    throw
+  }
+}
+
+function Test-QingquanHealth {
+  param([Parameter(Mandatory = $true)] $Config)
+  $q = Get-QingquanConfig $Config
+  $url = "{0}/health" -f $q.baseUrl
+  try {
+    $r = Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 10
+    return [pscustomobject]@{ ok = ($r.status -eq 'ok'); resp = $r; error = $null }
+  }
+  catch {
+    return [pscustomobject]@{ ok = $false; resp = $null; error = [string]$_ }
+  }
+}

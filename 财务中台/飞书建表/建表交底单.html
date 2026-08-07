@@ -1,0 +1,246 @@
+<title>飞书建表交底单 v1</title>
+<style>
+  :root{
+    --sans: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Code", "SF Mono", "Consolas", "Liberation Mono", monospace;
+    --paper:#EFF2F2; --card:#FFFFFF; --card-2:#F7F9F9;
+    --ink:#17242A; --ink-soft:#51636A; --ink-faint:#7C8D93;
+    --line:#DBE3E3; --line-soft:#E7EDED;
+    --accent:#0C7C6B; --accent-ink:#0A5F53; --accent-soft:#E0F0EC;
+    --crit:#B5372A; --crit-bg:#F9E7E4; --crit-line:#F0C4BD;
+    --warn:#9A6100; --warn-bg:#FAEEDA; --warn-line:#EBD3A6;
+    --ok:#1E7A52; --ok-bg:#E2F2E9; --ok-line:#BEE0CD;
+    --shadow: 0 1px 2px rgba(20,40,45,.04), 0 8px 24px -14px rgba(20,40,45,.18);
+    --maxw: 1000px;
+  }
+  @media (prefers-color-scheme: dark){:root{
+    --paper:#0C1517; --card:#121D20; --card-2:#0F1A1C; --ink:#E6EDED; --ink-soft:#A2B4B6; --ink-faint:#7A8E90;
+    --line:#26363A; --line-soft:#1D2C2F; --accent:#45B79E; --accent-ink:#6FCDB7; --accent-soft:#14302B;
+    --crit:#EF8072; --crit-bg:#2E1B18; --crit-line:#5A2E28; --warn:#E0A951; --warn-bg:#2C2415; --warn-line:#57431F;
+    --ok:#5EC08D; --ok-bg:#14301F; --ok-line:#2A5238; --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -16px rgba(0,0,0,.6);
+  }}
+  :root[data-theme="light"]{
+    --paper:#EFF2F2; --card:#FFFFFF; --card-2:#F7F9F9; --ink:#17242A; --ink-soft:#51636A; --ink-faint:#7C8D93;
+    --line:#DBE3E3; --line-soft:#E7EDED; --accent:#0C7C6B; --accent-ink:#0A5F53; --accent-soft:#E0F0EC;
+    --crit:#B5372A; --crit-bg:#F9E7E4; --crit-line:#F0C4BD; --warn:#9A6100; --warn-bg:#FAEEDA; --warn-line:#EBD3A6;
+    --ok:#1E7A52; --ok-bg:#E2F2E9; --ok-line:#BEE0CD; --shadow:0 1px 2px rgba(20,40,45,.04),0 8px 24px -14px rgba(20,40,45,.18);
+  }
+  :root[data-theme="dark"]{
+    --paper:#0C1517; --card:#121D20; --card-2:#0F1A1C; --ink:#E6EDED; --ink-soft:#A2B4B6; --ink-faint:#7A8E90;
+    --line:#26363A; --line-soft:#1D2C2F; --accent:#45B79E; --accent-ink:#6FCDB7; --accent-soft:#14302B;
+    --crit:#EF8072; --crit-bg:#2E1B18; --crit-line:#5A2E28; --warn:#E0A951; --warn-bg:#2C2415; --warn-line:#57431F;
+    --ok:#5EC08D; --ok-bg:#14301F; --ok-line:#2A5238; --shadow:0 1px 2px rgba(0,0,0,.3),0 10px 30px -16px rgba(0,0,0,.6);
+  }
+  *{ box-sizing:border-box; }
+  body{ margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans); line-height:1.6;
+    -webkit-font-smoothing:antialiased; font-size:16px; }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 22px 96px; }
+  header.mast{ padding:50px 0 28px; border-bottom:2px solid var(--ink); }
+  .eyebrow{ font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--accent-ink); font-weight:600; margin:0 0 16px; }
+  h1{ font-size:clamp(26px,4vw,40px); line-height:1.1; margin:0 0 12px; font-weight:700; letter-spacing:-.01em; text-wrap:balance; }
+  .lede{ font-size:clamp(15.5px,2vw,18px); color:var(--ink-soft); margin:0; max-width:64ch; }
+  .metarow{ display:flex; flex-wrap:wrap; gap:8px 10px; margin-top:22px; font-family:var(--mono); font-size:12.5px; color:var(--ink-faint); }
+  .metarow span{ display:inline-flex; align-items:center; gap:7px; }
+  .metarow span::before{ content:""; width:5px; height:5px; border-radius:50%; background:var(--accent); }
+
+  section{ padding-top:44px; }
+  .sec-head{ display:flex; align-items:baseline; gap:13px; margin:0 0 6px; }
+  .sec-no{ font-family:var(--mono); font-size:13px; color:var(--accent-ink); font-weight:600; }
+  h2{ font-size:clamp(20px,2.5vw,25px); margin:0; font-weight:700; letter-spacing:-.01em; }
+  .sec-sub{ color:var(--ink-soft); margin:6px 0 18px; max-width:70ch; }
+  h3{ font-size:16px; margin:22px 0 6px; font-weight:650; display:flex; align-items:center; gap:9px; flex-wrap:wrap; }
+  h3 .tbadge{ font-family:var(--mono); font-size:11px; font-weight:600; color:var(--accent-ink); background:var(--accent-soft);
+    border:1px solid var(--accent-soft); border-radius:6px; padding:2px 8px; }
+  p{ margin:0 0 12px; }
+
+  .pill{ display:inline-flex; align-items:center; gap:6px; font-size:11.5px; font-weight:600; padding:2px 9px; border-radius:999px; border:1px solid var(--line); white-space:nowrap; }
+  .pill.imp{ color:var(--ok); background:var(--ok-bg); border-color:var(--ok-line); }
+  .pill.new{ color:var(--warn); background:var(--warn-bg); border-color:var(--warn-line); }
+  .pill.t{ color:var(--ink-soft); background:var(--card-2); border-color:var(--line); font-family:var(--mono); font-weight:600; }
+
+  code,.cell{ font-family:var(--mono); font-size:.85em; background:var(--card-2); border:1px solid var(--line-soft); padding:1px 6px; border-radius:5px; color:var(--ink); }
+  .fx{ font-family:var(--mono); font-size:12.5px; line-height:1.7; background:var(--card-2); border:1px solid var(--line-soft);
+    border-left:3px solid var(--accent); border-radius:8px; padding:11px 13px; margin:9px 0; overflow-x:auto; white-space:pre; color:var(--ink); }
+  .fx .cm{ color:var(--ink-faint); } .fx .hl{ color:var(--accent-ink); font-weight:700; }
+
+  .scroll{ overflow-x:auto; border:1px solid var(--line); border-radius:12px; box-shadow:var(--shadow); background:var(--card); margin:10px 0; }
+  table{ border-collapse:collapse; width:100%; font-size:13.5px; min-width:600px; }
+  thead th{ text-align:left; font-weight:650; color:var(--ink-soft); background:var(--card-2); padding:10px 14px; border-bottom:1px solid var(--line); white-space:nowrap; font-size:12px; }
+  tbody td{ padding:9px 14px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  tbody tr:last-child td{ border-bottom:0; }
+  td.fname{ font-weight:600; white-space:nowrap; }
+
+  .steps{ counter-reset:step; margin:10px 0 0; padding:0; list-style:none; }
+  .steps>li{ counter-increment:step; position:relative; padding:14px 0 14px 46px; border-bottom:1px solid var(--line-soft); }
+  .steps>li:last-child{ border-bottom:0; }
+  .steps>li::before{ content:counter(step); position:absolute; left:0; top:12px; width:30px; height:30px; border-radius:50%;
+    background:var(--accent); color:#fff; font-family:var(--mono); font-weight:700; font-size:14px; display:flex; align-items:center; justify-content:center; }
+  .steps .st-t{ font-weight:700; font-size:15.5px; }
+  .steps .st-d{ color:var(--ink-soft); font-size:14px; margin-top:2px; }
+
+  .note{ border-radius:12px; padding:14px 16px; margin:13px 0; border:1px solid var(--line); background:var(--card); font-size:14px; }
+  .note .lbl{ font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; display:block; margin-bottom:6px; }
+  .note.flag{ background:var(--crit-bg); border-color:var(--crit-line); } .note.flag .lbl{ color:var(--crit); }
+  .note.tip{ background:var(--accent-soft); border-color:var(--accent-soft); } .note.tip .lbl{ color:var(--accent-ink); }
+  .note.ok{ background:var(--ok-bg); border-color:var(--ok-line); } .note.ok .lbl{ color:var(--ok); }
+
+  ul.clean{ margin:6px 0 12px; padding-left:0; list-style:none; }
+  ul.clean li{ position:relative; padding-left:20px; margin:6px 0; font-size:14px; }
+  ul.clean li::before{ content:""; position:absolute; left:3px; top:9px; width:6px; height:6px; border-radius:2px; background:var(--accent); transform:rotate(45deg); }
+
+  .opts{ display:grid; grid-template-columns:repeat(2,1fr); gap:12px; }
+  @media(max-width:640px){ .opts{ grid-template-columns:1fr; } }
+  .opt{ background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; box-shadow:var(--shadow); font-size:13.5px; }
+  .opt b{ font-family:var(--mono); font-size:11.5px; color:var(--accent-ink); letter-spacing:.05em; display:block; margin-bottom:5px; }
+  .chip{ display:inline-block; font-size:12px; background:var(--card-2); border:1px solid var(--line); border-radius:5px; padding:1px 7px; margin:2px 3px 2px 0; }
+
+  nav.toc{ position:sticky; top:0; z-index:5; background:color-mix(in srgb,var(--paper) 88%, transparent); backdrop-filter:blur(8px); border-bottom:1px solid var(--line); }
+  nav.toc ol{ max-width:var(--maxw); margin:0 auto; padding:11px 22px; list-style:none; display:flex; flex-wrap:wrap; gap:4px 16px; font-family:var(--mono); font-size:12.5px; }
+  nav.toc a{ color:var(--ink-soft); text-decoration:none; padding:2px 0; border-bottom:1.5px solid transparent; }
+  nav.toc a:hover{ color:var(--accent-ink); border-bottom-color:var(--accent); }
+  a{ color:var(--accent-ink); }
+  :focus-visible{ outline:2.5px solid var(--accent); outline-offset:2px; border-radius:3px; }
+  footer{ margin-top:48px; padding-top:20px; border-top:1px solid var(--line); color:var(--ink-faint); font-size:13px; }
+  html{ scroll-behavior:smooth; } @media (prefers-reduced-motion: reduce){ html{ scroll-behavior:auto; } }
+</style>
+
+<nav class="toc" aria-label="目录">
+  <ol>
+    <li><a href="#s0">顺序 & 已确认</a></li>
+    <li><a href="#s1">① 主数据映射</a></li>
+    <li><a href="#s2">② 任务流</a></li>
+    <li><a href="#s3">③ 现金流对接</a></li>
+    <li><a href="#s4">④ 利润表</a></li>
+    <li><a href="#s5">标红 & 选项值</a></li>
+  </ol>
+</nav>
+
+<div class="wrap">
+  <header class="mast">
+    <p class="eyebrow">建表交底单 · Build Worksheet v1</p>
+    <h1>照此在飞书落地第一版</h1>
+    <p class="lede">4 项确认已全部锁定并写入下方。种子数据已生成为可导入的 Excel。按 ① → ④ 顺序建表即可。</p>
+    <div class="metarow">
+      <span>种子文件：E:\项目\财务中台\飞书建表\</span>
+      <span>01_主数据映射表.xlsx · 02_任务目录表.xlsx</span>
+    </div>
+  </header>
+
+  <section id="s0">
+    <div class="sec-head"><span class="sec-no">00</span><h2>建表顺序与已确认口径</h2></div>
+    <div class="note ok"><span class="lbl">已锁定的 4 项</span>
+      <ul class="clean" style="margin-bottom:0">
+        <li><b>汇率</b>：维持 美元/英镑/欧元/港元 4 币种；CNH 按 1:1；无日元账户</li>
+        <li><b>合同表</b>：补「收付方向」单选 + 分期加「合同收付计划」子表</li>
+        <li><b>利润「其他项目」口径</b>：收入类/利润=加，费用/罚款=减（公式见 §④）</li>
+        <li><b>主数据映射</b>：按种子草稿，仅「昇新」法人待你补</li>
+      </ul>
+    </div>
+    <ol class="steps">
+      <li><div class="st-t">① 主数据映射表</div><div class="st-d">导入种子 → 校对 → 作为所有关联的锚点</div></li>
+      <li><div class="st-t">② 任务流（目录 / 月度实例 / 协作依赖）</div><div class="st-d">最快出成果，验证提醒链路</div></li>
+      <li><div class="st-t">③ 现金流对接</div><div class="st-d">补合同字段 + 新建月度资金报表；汇率/流水复用现有表</div></li>
+      <li><div class="st-t">④ 边际利润表</div><div class="st-d">宽表 + 利润桥公式，维度关联①</div></li>
+    </ol>
+    <div class="note tip"><span class="lbl">通用 · 导入后必做</span>
+      Excel 导入飞书后字段默认是「文本/数字」。需手动把：频次/类别/状态/平台/店铺/站点/收付方向 → 改「单选」；负责人 → 改「人员」；跨表字段 → 改「关联」；利润桥/折算/延期 → 建「公式」字段。选项值清单见 §05。</div>
+  </section>
+
+  <section id="s1">
+    <div class="sec-head"><span class="sec-no">01</span><h2>主数据映射表 <span class="pill imp">导入 01</span></h2></div>
+    <p class="sec-sub">导入 <code>01_主数据映射表.xlsx</code>（已含 7 店铺 + 资金账户/主体/往来共 19 行草稿）。它是把「店铺↔法人↔账户」钉在一起的锚点。</p>
+    <div class="scroll"><table>
+      <thead><tr><th>字段</th><th>类型</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td class="fname">类型</td><td><span class="pill t">单选</span></td><td>店铺 / 主体 / 资金账户 / 现金 / 往来</td></tr>
+        <tr><td class="fname">店铺（利润表）</td><td><span class="pill t">文本/单选</span></td><td>特米/英茂/字同/起的快/昇新/NOTTAC/Ledvia</td></tr>
+        <tr><td class="fname">运营法人公司</td><td><span class="pill t">文本</span></td><td>校对「昇新」法人</td></tr>
+        <tr><td class="fname">关联账户</td><td><span class="pill t">文本</span></td><td>乒乓/公户/PP，分号分隔</td></tr>
+        <tr><td class="fname">站点 · 备注</td><td><span class="pill t">文本</span></td><td>UK/DE；待确认项已标注</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note flag"><span class="lbl">校对 2 处</span>「昇新」运营法人主体；「澜航/创发/智领/圣光」的归属主体（种子里标了【待确认】）。</div>
+  </section>
+
+  <section id="s2">
+    <div class="sec-head"><span class="sec-no">02</span><h2>财务岗任务流 <span class="pill imp">导入 02</span> <span class="pill new">+2 新建</span></h2></div>
+    <h3><span class="tbadge">2-A</span>任务目录表 — 导入 <code>02_任务目录表.xlsx</code>（19 条）</h3>
+    <p>导入后把 频次 / 类别 改单选，默认负责人 改人员。</p>
+    <h3><span class="tbadge">2-B</span>月度任务实例表 — 新建</h3>
+    <p>字段：所属月份(日期) · 任务(关联目录) · 负责人(人员) · 计划完成日(日期) · 状态(单选) · 进度(数字) · 实际完成日(日期) · 展示状态(公式) · 逾期天数(公式)。</p>
+    <div class="fx">展示状态 = IF({状态}="已完成","已完成",
+             IF(AND({计划完成日}&lt;TODAY(),{状态}&lt;&gt;"已完成"),"延期",{状态}))
+逾期天数 = IF(AND({计划完成日}&lt;TODAY(),{状态}&lt;&gt;"已完成"), DATEDIF({计划完成日},TODAY(),"D"), 0)</div>
+    <p>自动化：每月 1 日定时 → 按目录批量新建当月实例（写月份、关联任务、带默认负责人）。</p>
+    <h3><span class="tbadge">2-C</span>协作依赖表 — 新建</h3>
+    <p>所属任务(关联目录) · 处理事项 · 产出物 · 协同部门/负责人 · 所需文档 · 截止日。「所需文档」可关联 进出口数据表 / 日记账 / 未开发票。</p>
+  </section>
+
+  <section id="s3">
+    <div class="sec-head"><span class="sec-no">03</span><h2>现金流对接 <span class="pill imp">复用现有</span> <span class="pill new">+补</span></h2></div>
+    <h3>汇率 & 流水 —— 复用，不新建</h3>
+    <ul class="clean">
+      <li>折算引用 <code>每月1号汇率记录</code>（美元/英镑/欧元/港元汇率），按月关联 Lookup</li>
+      <li>账户流水复用 <code>日记账</code>；本月结存取各日记账当月末 <code>账户余额</code> 汇总</li>
+    </ul>
+    <div class="fx">账户余额CNY = ROUND( {CNY}+{CNH} + {USD}*{美元汇率} + {GBP}*{英镑汇率}
+                   + {EUR}*{欧元汇率} + {HKD}*{港元汇率}, 2 )   <span class="cm"># 无日元</span></div>
+    <h3>合同表 —— 补字段 <span class="pill new">新建字段/子表</span></h3>
+    <ul class="clean">
+      <li>合同表加：<b>收付方向</b>（单选 应收/应付）、<b>币种</b>（单选）</li>
+      <li>新建 <b>合同收付计划</b> 子表：关联合同 · 期数 · 金额 · 币种 · 到期日 · 状态（未收付/已收付）——分期应收应付都进这里</li>
+    </ul>
+    <h3>月度资金报表 —— 新建</h3>
+    <p>左侧账户结存（关联日记账/头寸）；右侧资产负债块手填（押款/FBA货值/应付货盘/应付运费）；勾稽：</p>
+    <div class="fx">勾稽差异 = ROUND( SUM(账户折算CNY) − SUM(本月结存), 2 )        <span class="cm"># ≠0 标红</span>
+现金缺口 = 现金合计 − Σ应付(合同收付计划 应付,到期≤窗口) − 应付货盘/运费
+                    + Σ应收(合同收付计划 应收 + 未开发票)    <span class="cm"># &lt;阈值 标红</span></div>
+  </section>
+
+  <section id="s4">
+    <div class="sec-head"><span class="sec-no">04</span><h2>边际利润表 <span class="pill new">新建宽表</span></h2></div>
+    <p class="sec-sub">一行 = 月份×平台×店铺×站点（预留SKU）。维度里「店铺」关联 §01 主数据映射表。科目明细做数字录入列，利润桥做公式字段。</p>
+    <div class="fx"><span class="cm"># 汇总</span>
+净销售量 = {销售量}-{退款量}
+经营销售 = {销售额}-{促销折扣}
+经营退款 = {销售退款}+{退款损失}
+经营收入 = {经营销售}-{经营退款}
+平台费用 = {佣金}+{广告}+{推广费}+{尾程配送}+{仓租}+{销毁费}+{移除费}+{平台罚款}+{退货费}
+成本合计 = {采购成本}+{头程成本}
+
+<span class="cm"># 其他项目（已确认口径：收入/利润=加，费用/罚款=减）</span>
+其他项目 = <span class="hl">{其他收入}+{退税收入}+{税金收入}+{情趣利润}+{黑猫利润}</span>
+         <span class="hl">- {其他支出}-{提款手续费}-{中转费}-{操作费}-{快递罚款}</span>
+
+<span class="cm"># 利润桥（重建自 #REF!）</span>
+毛利率     = IF({经营收入}=0,"", 1-{成本合计}/{经营收入})
+边界利润   = {经营收入}-{税费}-{平台费用}-{成本合计}+{其他项目}
+边界利润率 = IF({经营收入}=0,"", {边界利润}/{经营收入})</div>
+    <p>头程成本后续可从 <code>进出口数据表</code>（报关单号/入账月份）自动带入。占比/环比走仪表盘或「关联上月记录」。</p>
+  </section>
+
+  <section id="s5">
+    <div class="sec-head"><span class="sec-no">05</span><h2>三处标红 & 单选选项值</h2></div>
+    <div class="scroll"><table>
+      <thead><tr><th>红灯</th><th>规则</th><th>做法</th></tr></thead>
+      <tbody>
+        <tr><td class="fname">延期任务</td><td>展示状态 = 延期</td><td>条件着色 + 自动化推送负责人</td></tr>
+        <tr><td class="fname">亏损店铺</td><td>边界利润率 &lt; 0</td><td>仪表盘按店铺排名标红</td></tr>
+        <tr><td class="fname">现金缺口</td><td>现金缺口 &lt; 阈值</td><td>指标卡红 + 定时检查推送</td></tr>
+      </tbody>
+    </table></div>
+    <h3>建单选时直接抄这些选项值</h3>
+    <div class="opts">
+      <div class="opt"><b>频次</b><span class="chip">每日</span><span class="chip">每周</span><span class="chip">第一周</span><span class="chip">第二周</span><span class="chip">第三周</span><span class="chip">第四周</span><span class="chip">季度/次</span><span class="chip">年度/次</span></div>
+      <div class="opt"><b>类别</b><span class="chip">日常工作</span><span class="chip">专项工作</span></div>
+      <div class="opt"><b>任务状态</b><span class="chip">未开始</span><span class="chip">进行中</span><span class="chip">已完成</span></div>
+      <div class="opt"><b>平台</b><span class="chip">AMAZON</span><span class="chip">TEMU</span><span class="chip">SHEIN</span><span class="chip">TK</span><span class="chip">综合部</span><span class="chip">技术部</span></div>
+      <div class="opt"><b>店铺</b><span class="chip">特米</span><span class="chip">英茂</span><span class="chip">字同</span><span class="chip">起的快</span><span class="chip">昇新</span><span class="chip">NOTTAC</span><span class="chip">Ledvia</span></div>
+      <div class="opt"><b>站点</b><span class="chip">UK</span><span class="chip">DE</span></div>
+      <div class="opt"><b>收付方向</b><span class="chip">应收</span><span class="chip">应付</span></div>
+      <div class="opt"><b>币种</b><span class="chip">CNY</span><span class="chip">CNH</span><span class="chip">USD</span><span class="chip">GBP</span><span class="chip">EUR</span><span class="chip">HKD</span></div>
+    </div>
+  </section>
+
+  <footer>建表交底单 v1 · 4 项确认已锁定 ｜ 种子文件 E:\project\财务中台\飞书建表\ ｜ 公式为飞书语法，{字段名} 为字段引用 ｜ 配套：可行性评估 · 施工图 · 集成蓝图。</footer>
+</div>

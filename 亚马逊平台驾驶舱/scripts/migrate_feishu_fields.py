@@ -1,0 +1,302 @@
+#!/usr/bin/env python
+"""飞书多维表格字段类型迁移：文本日期 → 原生日期类型。
+
+飞书 API 不支持修改已有字段类型，因此迁移策略为：
+  1. 为每张表创建新的 DATE 类型字段（如 日期_date, 截止时间_date）
+  2. 将旧文本字段的值转换为毫秒时间戳写入新字段
+  3. 完成后需手动在飞书 UI 中：删旧字段 → 重命名新字段（去掉 _date 后缀）
+
+用法:
+  python scripts/migrate_feishu_fields.py          # 全部表迁移
+  python scripts/migrate_feishu_fields.py --dry-run  # 仅检测，不创建/写入
+  python scripts/migrate_feishu_fields.py --table 异常任务  # 只迁移指定表
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient
+from app.config import get_settings
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("migrate_feishu_fields")
+
+# 需要迁移的字段列表（表名 → 旧文本字段名 → 新 DATE 字段名）
+MIGRATIONS: dict[str, dict[str, str]] = {
+    "ASIN每日数据": {
+        "日期": "日期",
+    },
+    "异常任务": {
+        "日期": "日期",
+        "截止时间": "截止时间",
+        # 合并自运营动作记录
+        "执行日期": "执行日期",
+        "复查日期": "复查日期",
+    },
+}
+
+# 可选：文本 → 单选（历史迁移；新表直接用 schema 单选）
+SINGLE_MIGRATIONS: dict[str, dict[str, list[str]]] = {
+    "异常任务": {
+        "等级": ["yellow", "orange", "red"],
+    },
+}
+
+
+def parse_date_to_ts(text: str | None) -> int | None:
+    """将文本日期转为毫秒 Unix 时间戳。"""
+    if not text:
+        return None
+    text = str(text).strip()
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(text, fmt)
+            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            continue
+    logger.warning("无法解析日期: %s", text)
+    return None
+
+
+def migrate_table(
+    client: FeishuClient,
+    app_token: str,
+    table_id: str,
+    table_name: str,
+    field_map: dict[str, str],
+    *,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """为一张表的文本日期字段创建对应的 DATE 字段并迁移数据。"""
+    logger.info("=== 处理表: %s (%s) ===", table_name, table_id)
+
+    # 获取现有字段
+    all_fields = client.list_fields(app_token, table_id)
+    field_name_to_id = {f.get("field_name"): f.get("field_id") for f in all_fields}
+    field_name_to_type = {f.get("field_name"): f.get("type") for f in all_fields}
+
+    result: dict[str, int] = {"created_fields": 0, "migrated_records": 0}
+
+    for old_name, new_name in sorted(field_map.items()):
+        if old_name not in field_name_to_id:
+            logger.info("  字段 [%s] 不存在，跳过", old_name)
+            continue
+
+        old_type = field_name_to_type.get(old_name)
+        logger.info(
+            "  字段 [%s] type=%s → 目标 DATE (5)",
+            old_name,
+            old_type,
+        )
+
+        if old_type == 5:
+            logger.info("    已是 DATE 类型，跳过")
+            continue
+
+        # 检查是否已有同名 DATE 字段
+        if new_name in field_name_to_id:
+            existing_new_type = field_name_to_type.get(new_name)
+            if existing_new_type == 5:
+                logger.info("    目标字段 [%s] 已存在且为 DATE 类型", new_name)
+            else:
+                logger.warning(
+                    "    目标字段 [%s] 已存在但 type=%s，非 DATE",
+                    new_name,
+                    existing_new_type,
+                )
+        else:
+            if not dry_run:
+                try:
+                    client.create_field(app_token, table_id, new_name, 5)
+                    logger.info("    ✅ 创建 DATE 字段 [%s]", new_name)
+                    result["created_fields"] += 1
+                except Exception as e:
+                    logger.error("    ❌ 创建字段失败: %s", e)
+                    continue
+            else:
+                logger.info("    [DRY-RUN] 将创建 DATE 字段 [%s]", new_name)
+                result["created_fields"] += 1
+
+        # 迁移数据
+        old_field_id = field_name_to_id[old_name]
+        total = 0
+        batch: list[dict[str, Any]] = []
+        for item in client.iter_records(app_token, table_id, page_size=100):
+            rid = item.get("record_id")
+            fields = item.get("fields") or {}
+            old_val = fields.get(old_name)
+            if old_val is None:
+                continue
+            ts = parse_date_to_ts(old_val)
+            if ts is None:
+                continue
+            batch.append({"record_id": rid, "fields": {new_name: ts}})
+            total += 1
+            if len(batch) >= 100:
+                if not dry_run:
+                    client.bitable_batch_update(app_token, table_id, batch)
+                batch = []
+
+        if batch:
+            if not dry_run:
+                client.bitable_batch_update(app_token, table_id, batch)
+
+        action = "将写入" if dry_run else "已写入"
+        logger.info("    %s %s 条记录到 [%s]", action, total, new_name)
+        result["migrated_records"] += total
+
+    return result
+
+
+def migrate_single_select(
+    client: FeishuClient,
+    app_token: str,
+    table_id: str,
+    table_name: str,
+    field_map: dict[str, list[str]],
+    *,
+    dry_run: bool = False,
+) -> dict[str, int]:
+    """为文本字段创建单选版本并迁移数据。"""
+    logger.info("=== 单选迁移: %s ===", table_name)
+
+    all_fields = client.list_fields(app_token, table_id)
+    field_name_to_type = {f.get("field_name"): f.get("type") for f in all_fields}
+
+    result: dict[str, int] = {"created_fields": 0, "migrated_records": 0}
+
+    for field_name, options in field_map.items():
+        old_type = field_name_to_type.get(field_name)
+        logger.info("  字段 [%s] type=%s → 目标 SINGLE(3)", field_name, old_type)
+
+        if old_type == 3:
+            logger.info("    已是单选类型，跳过")
+            continue
+
+        new_name = field_name  # 同名替换（旧字段需手动删除）
+
+        # 实际需要先建新字段（不同名），再搬数据
+        tmp_name = f"{field_name}_单选"
+        all_names = {f.get("field_name") for f in all_fields}
+        if tmp_name not in all_names:
+            if not dry_run:
+                client.create_field(
+                    app_token,
+                    table_id,
+                    tmp_name,
+                    3,
+                    property_={"options": [{"name": o} for o in options]},
+                )
+                logger.info("    ✅ 创建单选字段 [%s]", tmp_name)
+                result["created_fields"] += 1
+            else:
+                logger.info("    [DRY-RUN] 将创建单选字段 [%s]", tmp_name)
+                result["created_fields"] += 1
+
+        # 搬数据
+        old_field_id = next(
+            (f.get("field_id") for f in all_fields if f.get("field_name") == field_name),
+            None,
+        )
+        if not old_field_id:
+            continue
+
+        total = 0
+        batch = []
+        for item in client.iter_records(app_token, table_id, page_size=100):
+            rid = item.get("record_id")
+            fields = item.get("fields") or {}
+            old_val = fields.get(field_name)
+            if old_val is None:
+                continue
+            batch.append({"record_id": rid, "fields": {tmp_name: str(old_val)}})
+            total += 1
+            if len(batch) >= 100:
+                if not dry_run:
+                    client.bitable_batch_update(app_token, table_id, batch)
+                batch = []
+        if batch and not dry_run:
+            client.bitable_batch_update(app_token, table_id, batch)
+
+        logger.info("    已处理 %s 条记录到 [%s]", total, tmp_name)
+        result["migrated_records"] += total
+
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="飞书字段类型迁移")
+    parser.add_argument("--dry-run", action="store_true", help="只检测不写入")
+    parser.add_argument("--table", help="只迁移指定表名")
+    args = parser.parse_args()
+
+    settings = get_settings()
+    if not settings.has_feishu:
+        logger.error("缺少飞书凭证 (FEISHU_APP_ID / FEISHU_APP_SECRET)")
+        sys.exit(1)
+
+    app_token = settings.feishu_bitable_app_token
+    if not app_token:
+        logger.error("缺少 FEISHU_BITABLE_APP_TOKEN")
+        sys.exit(1)
+
+    # 表名 → table_id 映射
+    name_to_id: dict[str, str] = {
+        "ASIN每日数据": settings.feishu_table_asin_daily,
+        "异常任务": settings.feishu_table_tasks,
+    }
+
+    with FeishuClient(settings) as client:
+        # 日期字段迁移
+        for table_name, field_map in MIGRATIONS.items():
+            if args.table and args.table != table_name:
+                continue
+            table_id = name_to_id.get(table_name, "")
+            if not table_id:
+                logger.warning("表 [%s] 未配置 table_id，跳过", table_name)
+                continue
+            try:
+                r = migrate_table(
+                    client, app_token, table_id, table_name, field_map, dry_run=args.dry_run
+                )
+                logger.info("  → 新建字段 %s 个，迁移记录 %s 条", r["created_fields"], r["migrated_records"])
+            except Exception as e:
+                logger.exception("迁移表 [%s] 失败", table_name)
+
+        # 单选字段迁移
+        for table_name, field_map in SINGLE_MIGRATIONS.items():
+            if args.table and args.table != table_name:
+                continue
+            table_id = name_to_id.get(table_name, "")
+            if not table_id:
+                continue
+            try:
+                r = migrate_single_select(
+                    client, app_token, table_id, table_name, field_map, dry_run=args.dry_run
+                )
+                logger.info("  → 新建单选字段 %s 个，迁移记录 %s 条", r["created_fields"], r["migrated_records"])
+            except Exception as e:
+                logger.exception("单选迁移 [%s] 失败", table_name)
+
+    print("\n" + "=" * 60)
+    print("⚠️  手动步骤（飞书 UI 中完成）：")
+    print("1. 删除旧的文本类型字段（如: 日期, 截止时间 等）")
+    print("2. 将新字段重命名，去掉临时后缀: 日期_date → 日期")
+    print("3. 对于单选迁移: 删除旧文本等级字段，将 等级_单选 重命名为 等级")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

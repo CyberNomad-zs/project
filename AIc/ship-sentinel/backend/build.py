@@ -1,0 +1,434 @@
+# -*- coding: utf-8 -*-
+"""
+发货哨兵 · 构建器
+  读取三系统脱敏导出 -> 统一订单模型 -> 履约异常引擎 -> unified.json
+
+数据来源(真实样例)：
+  samples/sellfox/Package*.xlsx  赛狐ERP 包裹导出(72列，已聚合 Amazon/TikTok/Temu/SHEIN 四平台)  = 订单主干
+  samples/temu/仓库和库存数据.xlsx / 商品库存列表.xlsx                                          = Temu 库存
+  samples/wms/商品导出.xlsx        海外仓 SKU 主数据(尺寸/重量/仓库代码/关联ASIN)                 = 商品主数据
+
+设计要点：
+  * 只读：绝不回写任何生产系统。
+  * 脱敏：买家姓名/地址/电话/邮箱/邮编等 PII 在此层直接丢弃，不进入 JSON / 看板 / 演示包。
+  * 跨系统匹配键：内部货号(JMCAT*/VIP* 等)。赛狐 SKU/MSKU ↔ Temu SKU货号 ↔ WMS 仓库代码。
+"""
+import os
+import re
+import json
+import datetime as dt
+from collections import Counter, defaultdict
+
+from xlsx_reader import read_records, read_rows
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SAMPLES = os.path.join(ROOT, "samples")
+
+SELLFOX = os.path.join(SAMPLES, "sellfox", "Package2026_07_16(0).xlsx")
+TEMU_INV = os.path.join(SAMPLES, "temu", "仓库和库存数据.xlsx")
+TEMU_LIST = os.path.join(SAMPLES, "temu", "商品库存列表.xlsx")
+WMS = os.path.join(SAMPLES, "wms", "商品导出.xlsx")
+
+# —— 需要从订单中彻底剔除的 PII 列（脱敏）——
+PII_DROP = {
+    "收件人", "州/省", "城市", "区/县", "地址1", "地址2", "门牌号", "税号",
+    "公司名称", "邮编", "电话", "买家姓名", "短地址", "买家邮箱", "买家留言",
+    "买方公司", "拣货说明", "客服备注",
+    "订单备注",  # 买家自由文本，实测含门牌/街道/单元等配送地址，一并剔除
+}
+
+
+# ----------------------------------------------------------------------------
+# 解析工具
+# ----------------------------------------------------------------------------
+def parse_remaining(s):
+    """'4天15小时26分' -> 111.4(小时)；'已超期：0天8小时33分' -> -8.55(小时)。空 -> None。"""
+    s = (s or "").strip()
+    if not s:
+        return None
+    overdue = ("超期" in s) or ("超时" in s) or s.startswith("-")
+    d = re.search(r"(\d+)\s*天", s)
+    h = re.search(r"(\d+)\s*小时", s)
+    m = re.search(r"(\d+)\s*分", s)
+    total = (int(d.group(1)) if d else 0) * 24 + (int(h.group(1)) if h else 0) + (int(m.group(1)) if m else 0) / 60.0
+    return round(-total if overdue else total, 2)
+
+
+def parse_dt(s):
+    s = (s or "").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return dt.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def is_blank(v):
+    return v is None or str(v).strip() == ""
+
+
+def num(v):
+    try:
+        return float(str(v).strip())
+    except (ValueError, AttributeError):
+        return None
+
+
+# ----------------------------------------------------------------------------
+# 库存 / 商品主数据（Temu + WMS）
+# ----------------------------------------------------------------------------
+def build_inventory():
+    """构建以内部货号为键的库存/主数据索引。"""
+    inv = defaultdict(lambda: {
+        "code": None, "temu_stock": None, "temu_warehouses": [],
+        "wms_registered": False, "name_cn": None, "name_en": None,
+        "asin": None, "spu": None,
+    })
+
+    # —— Temu 库存(仓库和库存数据 · 第2个sheet '库存设置') ——
+    # 该表 row0=表头, row1=填写说明(必填…) 需跳过；按索引取更稳
+    rows = read_rows(TEMU_INV, sheet=1)
+    if rows:
+        thdr = [str(x).strip() for x in rows[0]]
+        ti = {h: i for i, h in enumerate(thdr)}
+        for r in rows[1:]:
+            def g(name):
+                j = ti.get(name)
+                return r[j] if j is not None and j < len(r) else ""
+            code = str(g("SKU货号")).strip()
+            spu = str(g("SPU")).strip()
+            if not code or spu.startswith("必填"):
+                continue
+            stock = num(g("当前库存"))
+            wh = str(g("仓库名称")).strip()
+            e = inv[code]
+            e["code"] = code
+            e["spu"] = str(g("SKU ID")).strip() or spu
+            # 同一货号可能多仓，累加库存
+            e["temu_stock"] = (e["temu_stock"] or 0) + (stock or 0) if stock is not None else e["temu_stock"]
+            if wh and wh not in e["temu_warehouses"]:
+                e["temu_warehouses"].append(wh)
+
+    # —— Temu 商品库存列表(row0=说明, row1=真实表头) ——
+    rows = read_rows(TEMU_LIST)
+    if len(rows) > 1:
+        lhdr = [str(x).strip().lstrip("*") for x in rows[1]]
+        li = {h: i for i, h in enumerate(lhdr)}
+        for r in rows[2:]:
+            def g(name):
+                j = li.get(name)
+                return r[j] if j is not None and j < len(r) else ""
+            code = str(g("SKU货号(选填)")).strip()
+            if not code:
+                continue
+            stock = num(g("当前库存"))
+            e = inv[code]
+            e["code"] = code
+            if e["temu_stock"] is None and stock is not None:
+                e["temu_stock"] = stock
+
+    # —— WMS 商品主数据（含 关联ASIN → 内部货号 桥表，供 Amazon 等平台按 ASIN 回接匹配键）——
+    asin_index = {}
+    _, wrecs = read_records(WMS)
+    for rec in wrecs:
+        code = str(rec.get("仓库代码", "")).strip()
+        if not code:
+            continue
+        e = inv[code]
+        e["code"] = code
+        e["wms_registered"] = True
+        e["name_cn"] = rec.get("英文品名") or rec.get("中文品名")
+        e["name_en"] = rec.get("英文品名")
+        asin_raw = str(rec.get("关联ASIN", "")).strip()
+        e["asin"] = asin_raw or None
+        for a in re.split(r"[,，;；\s]+", asin_raw):
+            a = a.strip()
+            if a:
+                asin_index.setdefault(a, code)
+
+    return dict(inv), asin_index
+
+
+def normalize_code(c):
+    """归一化货号：大写、去内部空格、去尾部数量后缀(*3 / ×2 / X2)。"""
+    c = str(c or "").strip().upper()
+    c = re.sub(r"\s+", "", c)
+    c = re.sub(r"[*×xX]\d+$", "", c)
+    return c
+
+
+def lookup_stock(order_codes, order_asin, inv, norm_index, asin_index):
+    """匹配库存索引：精确 → 归一化(去数量/尺寸后缀) → ASIN 桥接。"""
+    for code in order_codes:                       # 1) 精确
+        code = str(code).strip()
+        if code and code in inv:
+            return code, inv[code]
+    for code in order_codes:                       # 2) 归一化
+        nc = normalize_code(code)
+        if nc and nc in norm_index:
+            real = norm_index[nc]
+            return real, inv[real]
+    a = str(order_asin or "").strip()              # 3) ASIN 桥接（Amazon 等无内部货号时）
+    if a and a in asin_index:
+        real = asin_index[a]
+        return real, inv[real]
+    return None, None
+
+
+# ----------------------------------------------------------------------------
+# 订单主干（赛狐）
+# ----------------------------------------------------------------------------
+KEEP = [
+    "包裹号", "包裹状态", "平台", "店铺", "站点", "订单号", "订单状态",
+    "订购时间", "发货时间", "剩余发货时间", "最晚送达时间",
+    "ASIN", "MSKU", "SKU", "品名", "产品标题", "SKU数量", "订单商品编码",
+    "仓库", "发货渠道", "跟踪号", "物流商单号", "国家/地区",
+]
+
+VOID = {"已作废", "Canceled", "Cancelled", "已取消"}
+SHIPPED = {"已发货", "Shipped", "Completed", "已完成"}
+
+
+def classify(pkg_status, order_status, ship_time_blank=False):
+    if pkg_status in VOID or order_status in VOID:
+        return "void"
+    if pkg_status in SHIPPED or order_status in SHIPPED:
+        # 标记已发货但「发货时间」为空（如 包裹状态=物流下单：已下单、未实际扫描出库）
+        # → 归为在途中间态，不计入已发货/发货时效分母，避免虚增，并与时效样本口径一致。
+        return "shipped" if not ship_time_blank else "in_transit"
+    return "pending"  # 待处理 / Unshipped
+
+
+def build_orders(inv, asin_index):
+    _, recs = read_records(SELLFOX)
+    norm_index = {normalize_code(c): c for c in inv}
+    now = None
+    for rec in recs:
+        t = parse_dt(rec.get("订购时间"))
+        if t and (now is None or t > now):
+            now = t  # 用最近下单时间作参考"现在"
+
+    orders = []
+    for rec in recs:
+        pkg_status = str(rec.get("包裹状态", "")).strip()
+        order_status = str(rec.get("订单状态", "")).strip()
+        state = classify(pkg_status, order_status, is_blank(rec.get("发货时间")))
+
+        sku = str(rec.get("SKU", "")).strip()
+        msku = str(rec.get("MSKU", "")).strip()
+        pcode = str(rec.get("订单商品编码", "")).strip()
+        asin = str(rec.get("ASIN", "")).strip()
+        matched_code, inv_entry = lookup_stock([sku, msku, pcode], asin, inv, norm_index, asin_index)
+
+        # 脱敏双保险：白名单 KEEP ∩ 黑名单 PII_DROP → 即便 KEEP 误含 PII 列，此处也会剔除
+        o = {k: (str(rec.get(k, "")).strip() if not is_blank(rec.get(k)) else "") for k in KEEP if k not in PII_DROP}
+        o["state"] = state
+        o["remaining_h"] = parse_remaining(rec.get("剩余发货时间"))
+        ot = parse_dt(rec.get("订购时间"))
+        o["age_h"] = round((now - ot).total_seconds() / 3600.0, 1) if (ot and now) else None
+        st = parse_dt(rec.get("发货时间"))
+        o["lead_h"] = round((st - ot).total_seconds() / 3600.0, 1) if (ot and st) else None
+        o["matched_code"] = matched_code
+        o["temu_stock"] = inv_entry["temu_stock"] if inv_entry else None
+        o["wms_registered"] = inv_entry["wms_registered"] if inv_entry else False
+        orders.append(o)
+    return orders, now
+
+
+# ----------------------------------------------------------------------------
+# 履约异常引擎
+# ----------------------------------------------------------------------------
+# type, 中文名, 严重度权重(数字越大越紧急), 图标
+RULES_META = {
+    "overdue":       ("已超期未发",   100, "🔴", "已过承诺发货时间仍未发货，随时面临罚款/降权"),
+    "stockout":      ("断货/超卖",     95, "🔴", "待发订单命中仓库/Temu 零库存，无法履约"),
+    "due_soon":      ("临期<24h",      80, "🟠", "距发货截止不足 24 小时，需优先处理"),
+    "no_tracking":   ("已发未回填运单", 70, "🟠", "包裹已发货但跟踪号为空，平台/买家看不到物流"),
+    "stuck_virtual": ("卡在虚拟仓",     65, "🟠", "订单落在虚拟仓库、疑似未分配实仓，存在无法出库风险，需人工确认"),
+    "stuck_pending": ("待处理滞留",     50, "🟡", "待处理超过 24 小时仍未推进"),
+    "no_channel":    ("缺发货渠道",     40, "🟡", "待发订单未指定发货渠道/物流"),
+    "master_missing":("主数据缺失",     20, "⚪", "样例海外仓/Temu 主数据仅覆盖约160货号，多为覆盖缺口而非真实缺失（提示级）"),
+}
+
+
+def detect_anomalies(order):
+    tags = []
+    state = order["state"]
+    if state == "void":
+        return tags
+    rem = order["remaining_h"]
+    tracking_blank = is_blank(order["跟踪号"])
+
+    if state == "pending":
+        if rem is not None and rem < 0:
+            tags.append("overdue")
+        elif rem is not None and 0 <= rem < 24:
+            tags.append("due_soon")
+        # 断货/超卖：命中库存索引且库存<=0
+        if order["matched_code"] and order["temu_stock"] is not None and order["temu_stock"] <= 0:
+            tags.append("stockout")
+        if order["仓库"] == "虚拟仓库":
+            tags.append("stuck_virtual")
+        if is_blank(order["发货渠道"]):
+            tags.append("no_channel")
+        # 滞留：无倒计时但下单已超 24h
+        if rem is None and order["age_h"] is not None and order["age_h"] > 24:
+            tags.append("stuck_pending")
+
+    if state == "shipped" and tracking_blank:
+        tags.append("no_tracking")
+
+    # 主数据缺失（仅对有 SKU 的活跃订单提示，低优先）
+    if state == "pending" and order["SKU"] and not order["matched_code"]:
+        tags.append("master_missing")
+
+    return tags
+
+
+def severity_of(tags):
+    if not tags:
+        return 0
+    return max(RULES_META[t][1] for t in tags)
+
+
+# ----------------------------------------------------------------------------
+# 主流程
+# ----------------------------------------------------------------------------
+def main():
+    inv, asin_index = build_inventory()
+    orders, now = build_orders(inv, asin_index)
+
+    # 异常标注
+    for o in orders:
+        o["anomalies"] = detect_anomalies(o)
+        o["severity"] = severity_of(o["anomalies"])
+
+    # AI 处置建议：由 ai_enrich.py 在有 Key 的机器上预生成，此处仅离线 bake，
+    # 运行时/现场演示不调用任何 API、断网可跑。
+    ai_cache = {}
+    ai_path = os.path.join(HERE, "ai_cache.json")
+    if os.path.exists(ai_path):
+        try:
+            with open(ai_path, encoding="utf-8") as f:
+                ai_cache = json.load(f)
+        except (ValueError, OSError):
+            ai_cache = {}
+    for o in orders:
+        ai = ai_cache.get(o.get("包裹号"))
+        if ai:
+            o["ai"] = ai
+
+    # —— KPI / 统计 ——
+    total = len(orders)
+    by_state = Counter(o["state"] for o in orders)
+    by_platform = Counter(o["平台"] for o in orders if o["平台"])
+    by_shop = Counter(o["店铺"] for o in orders if o["店铺"])
+    by_warehouse = Counter(o["仓库"] for o in orders if o["仓库"])
+    by_channel = Counter((o["发货渠道"] or "∅") for o in orders)
+
+    anomaly_counts = Counter()
+    for o in orders:
+        for t in o["anomalies"]:
+            anomaly_counts[t] += 1
+    flagged = [o for o in orders if o["anomalies"]]
+
+    # 真正"需要动手"的订单：至少命中一个非"主数据缺失"的异常。
+    # （master_missing 受样例库存仅覆盖 160 个货号影响，会误报，不计入头条 KPI。）
+    ACTIONABLE_MIN = 40  # 低于此权重视为提示级
+    actionable = [o for o in orders
+                  if max((RULES_META[t][1] for t in o["anomalies"]), default=0) >= ACTIONABLE_MIN]
+
+    # 健康发货时效（已发货订单的下单->发货小时）
+    leads = [o["lead_h"] for o in orders if o["state"] == "shipped" and o["lead_h"] is not None and o["lead_h"] >= 0]
+    lead_stats = None
+    if leads:
+        leads_sorted = sorted(leads)
+        within24 = sum(1 for x in leads if x <= 24)
+        lead_stats = {
+            "count": len(leads),
+            "avg_h": round(sum(leads) / len(leads), 1),
+            "p50_h": round(leads_sorted[len(leads_sorted) // 2], 1),
+            "p90_h": round(leads_sorted[min(len(leads_sorted) - 1, int(len(leads_sorted) * 0.9))], 1),
+            "within24_pct": round(100.0 * within24 / len(leads), 1),
+            "over24": len(leads) - within24,
+        }
+
+    # 库存侧警报 + 断货/超卖回溯：零库存货号按订单动销分级
+    #   有近期订单命中(尤其已发货) = 该货号被抽干、下一单将断货 → 紧急补货；无动销 = 预防性
+    temu_zero = sorted([c for c, e in inv.items() if e["temu_stock"] is not None and e["temu_stock"] <= 0])
+    linked_codes = set(o["matched_code"] for o in orders if o["matched_code"])
+    code_orders = defaultdict(list)
+    for o in orders:
+        if o["matched_code"]:
+            code_orders[o["matched_code"]].append(o)
+    zero_detail = []
+    for c in temu_zero:
+        hits = code_orders.get(c, [])
+        zero_detail.append({
+            "code": c,
+            "orders": len(hits),
+            "shipped": sum(1 for o in hits if o["state"] == "shipped"),
+            "pending": sum(1 for o in hits if o["state"] == "pending"),
+            "priority": "urgent" if hits else "preventive",
+        })
+
+    payload = {
+        "meta": {
+            "product": "发货哨兵 · FulfillSentinel",
+            "source": os.path.basename(SELLFOX),
+            "reference_now": now.strftime("%Y-%m-%d %H:%M:%S") if now else None,
+            "note": "只读聚合 · 买家PII已脱敏剔除 · 数据来自三系统脱敏导出",
+            "ai_advice_count": sum(1 for o in orders if o.get("ai")),
+        },
+        "kpis": {
+            "total_orders": total,
+            "pending": by_state.get("pending", 0),
+            "shipped": by_state.get("shipped", 0),
+            "in_transit": by_state.get("in_transit", 0),
+            "void": by_state.get("void", 0),
+            "flagged": len(flagged),               # 含提示级(master_missing)
+            "actionable": len(actionable),         # 需动手(排除仅主数据缺失)
+            "critical": sum(1 for o in actionable if o["severity"] >= 90),
+            "platforms": len(by_platform),
+            "shops": len(by_shop),
+        },
+        "rules": {t: {"name": m[0], "weight": m[1], "icon": m[2], "desc": m[3]} for t, m in RULES_META.items()},
+        "anomaly_counts": dict(anomaly_counts),
+        "dist": {
+            "platform": dict(by_platform),
+            "shop": dict(by_shop.most_common(12)),
+            "state": dict(by_state),
+            "warehouse": dict(by_warehouse),
+            "channel": dict(by_channel.most_common(10)),
+        },
+        "lead_stats": lead_stats,
+        "inventory": {
+            "codes_indexed": len(inv),
+            "temu_zero_stock": temu_zero,
+            "zero_detail": zero_detail,
+            "linked_to_orders": len(linked_codes),
+            "matched_orders": sum(1 for o in orders if o["matched_code"]),
+            "wms_master_count": sum(1 for e in inv.values() if e["wms_registered"]),
+        },
+        "orders": sorted(orders, key=lambda o: (-o["severity"], o["remaining_h"] if o["remaining_h"] is not None else 9e9)),
+    }
+
+    out = os.path.join(HERE, "unified.json")
+    with open(out, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    # —— 控制台摘要 ——
+    print("== 发货哨兵 构建完成 ==")
+    print("订单总数:", total, " 待处理:", payload["kpis"]["pending"],
+          " 已发货:", payload["kpis"]["shipped"], " 作废:", payload["kpis"]["void"])
+    print("平台分布:", dict(by_platform))
+    print("异常命中:", dict(anomaly_counts), " 总标记:", len(flagged), " 严重:", payload["kpis"]["critical"])
+    print("发货时效:", lead_stats)
+    print("库存索引:", payload["inventory"])
+    print("输出:", out)
+
+
+if __name__ == "__main__":
+    main()

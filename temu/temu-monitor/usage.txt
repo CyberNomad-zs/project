@@ -1,0 +1,24 @@
+Temu Traffic Monitor - local PC
+
+WHAT THIS PC DOES
+  - traffic watch / decline badges / on-sale count
+  - Feishu alerts for traffic changes
+  - multi-store browser scan
+
+WHAT THIS PC DOES NOT DO
+  - delist / onshelf (company server)
+  - do NOT set fullRun=true
+  - do NOT add sellfox.config.json
+
+FIRST RUN
+  1) Install Node.js LTS + Chrome
+  2) copy config.example.json config.json
+  3) Edit config.json: feishuWebhooks + storeList; keep fullRun false
+  4) npm install
+  5) Double-click start-menu.bat  (or 启动.bat / 美化启动器.bat)
+  6) Menu 1 = login; 2 = test once; 3 or 4 = keep running
+
+If black window says random words are not recognized:
+  old bat bug. Use this new package (line: cd /d "%~dp0.").
+
+Chinese guide: 使用说明.txt

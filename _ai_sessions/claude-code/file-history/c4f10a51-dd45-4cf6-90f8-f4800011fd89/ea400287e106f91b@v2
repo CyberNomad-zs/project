@@ -1,0 +1,108 @@
+# -*- coding: utf-8 -*-
+"""
+只读诊断：复刻 run_shipping 的 WMS 登录序列（同一个 context 先登黑猫、再登金猫），
+验证"金猫未发货=0"到底是【账号没切干净、读的是黑猫的空列表】还是【同步延迟】。
+
+每步只读取，绝不点击 批量发货/批量修改快递方：
+  - 当前页面能标识登录账号的文本（JMSM/JMCAT/店铺名/退出/欢迎…）
+  - orderInfo 未发货 total + 订单号列表
+判据：
+  · 登金猫后账号标识仍是黑猫、或未发货数=登黑猫时的数  -> 账号没切（wms_login bug）
+  · 登金猫后账号标识=金猫、未发货显示≈28            -> 会话能切，当时的 0 是同步延迟
+
+输出：capture/dumps/wms_switch_diag.txt（同时打印）
+用法：python capture/wms_switch_diag.py
+"""
+import sys, os, time, re
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN = "http://193.112.93.60:9999/login.html"
+INDEX = "http://193.112.93.60:9999/index.html"
+ORDER = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+JMSM = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")   # 金猫
+JMCAT = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMCAT")  # 黑猫
+
+out = []
+def w(s=""):
+    print(s)
+    out.append(str(s))
+
+
+def who(page):
+    """抓可见叶子节点里能标识当前登录账号的短文本。"""
+    try:
+        return page.evaluate(r"""() => {
+          const hits=[];
+          document.querySelectorAll('*').forEach(e=>{
+            if(e.children.length) return;
+            if(e.offsetParent===null) return;
+            const t=(e.innerText||'').trim();
+            if(!t || t.length>40) return;
+            if(/JMSM|JMCAT|金猫|黑猫|退出|欢迎|你好|账户|账号|当前|昇新/.test(t)) hits.push(t);
+          });
+          return [...new Set(hits)].slice(0,40);
+        }""")
+    except Exception as e:
+        return [f"(who 读取失败: {e})"]
+
+
+def unshipped(page):
+    core.safe_goto(page, ORDER); time.sleep(4)
+    try:
+        page.click("button:has-text('查询')", timeout=6000); time.sleep(3)
+    except Exception:
+        pass
+    total = None
+    el = page.query_selector(".el-pagination__total")
+    if el:
+        m = re.findall(r"\d+", el.inner_text() or "")
+        if m:
+            total = int(m[0])
+    nums = page.evaluate(r"""() => {
+        const s=new Set();
+        document.querySelectorAll('.el-table__row').forEach(r=>{
+          const m=(r.innerText||'').match(/P[0-9A-Z]{9,15}/g); if(m) m.forEach(x=>s.add(x));
+        });
+        return [...s];
+    }""")
+    return total, nums
+
+
+def snap(page, tag):
+    w(f"\n===== {tag} =====")
+    core.safe_goto(page, INDEX); time.sleep(3)
+    w(f"  url          = {page.url}")
+    w(f"  账号标识文本 = {who(page)}")
+    total, nums = unshipped(page)
+    w(f"  未发货 total = {total}")
+    w(f"  订单号({len(nums)}) = {nums[:40]}")
+
+
+def main():
+    with sync_playwright() as p:
+        # 用全新干净 context 做序列实验（不污染真实 .browser_profile），
+        # 复刻 run_shipping 的核心条件：同一个 context 内 先黑猫 后金猫。
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+
+        w("[1] 登录 黑猫 JMCAT")
+        core.wms_login(page, JMCAT)
+        snap(page, "登黑猫之后")
+
+        w("\n[2] 紧接着（同一 context）登录 金猫 JMSM —— 复刻 run_shipping 的账号切换")
+        core.wms_login(page, JMSM)
+        snap(page, "登金猫之后")
+
+        browser.close()
+
+    path = os.path.join(config.DUMP_DIR, "wms_switch_diag.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
+    print("\nWROTE", path)
+
+
+if __name__ == "__main__":
+    main()

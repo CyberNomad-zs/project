@@ -1,0 +1,93 @@
+# TK 整站运营数据采集路线图
+
+> 职责口径（已确认）：**抓取 TikTok Shop 后台对运营有用的整站数据**（不限广告），经紫鸟 → 清泉 PG（+ 按需飞书）。  
+> 广告是第一域，不是终点。
+
+更新：2026-07-30
+
+---
+
+## 1. 原则
+
+| 原则 | 说明 |
+|------|------|
+| 一域一页一脚本 | 后台多菜单，禁止指望广告页抓全站 |
+| 一域一事实表 | 订单不进 `fact_ads_campaign_daily` |
+| 一域一 Ingest source | 如 `tiktok_ads` / `tiktok_orders` / `tiktok_products` |
+| 只走紫鸟 | 禁止本机浏览器直连卖家后台 |
+| 分期上线 | 每域：调研字段 → 脚本 → 迁移/Ingest → dual/飞书 → 日更稳定 |
+
+---
+
+## 2. 批次与状态
+
+| 批次 | 域 | 菜单/入口（典型） | 事实表 / source | 状态 |
+|------|-----|-------------------|-----------------|------|
+| **P0** | 广告计划日指标 | 营销 → 店铺广告 / ads-creation/dashboard | `fact_ads_campaign_daily` / `tiktok_ads` | **已通**（待日更跑稳） |
+| **P1** | 广告同页扩列 | 同上 | 同上 + P1 列 | **已通** |
+| **P2a** | **订单** | 订单 → 全部订单 / order list | `fact_tiktok_order` / `tiktok_orders` | **进行中（骨架）** |
+| **P2b** | 商品/库存 | 商品 → 商品列表 | `fact_tiktok_product` / `tiktok_products` | **骨架已落**（待实页校准） |
+| **P2c** | 店级数据总览 | 数据分析 / 首页 KPI | `fact_tiktok_shop_daily` / `tiktok_shop_daily` | 待做 |
+| **P3a** | 账号健康 | 账号健康 | `fact_tiktok_health_daily` | 待做 |
+| **P3b** | 财务摘要 | 财务 → 结算/账单 | `fact_tiktok_finance_daily` | 待做 |
+| **P4** | 联盟/达人、直播、促销… | 按运营实际打开频率 | 另表 | 按需 |
+
+---
+
+## 3. 流水线形态（目标）
+
+```text
+run-multi-store.ps1（或 run-tk-collect.ps1）
+  for each store:
+    for each module in config.modules:   # ["ads","orders",...]
+      open → visit moduleUrl → scrape-*.js → 
+        Feishu(可选分表) + Qingquan ingest(source=tiktok_*)
+```
+
+配置示例见 `config/stores.config.example.json` 的 `modules` / `urls`。
+
+---
+
+## 4. P2a 订单 — 最小字段（骨架）
+
+运营日更常用（具体表头以紫鸟实页为准，脚本用别名匹配）：
+
+| 逻辑字段 | 说明 |
+|----------|------|
+| order_id | 订单号（幂等键核心） |
+| order_status | 状态（待发货/已发货/已完成/取消…） |
+| pay_time / create_time | 下单或支付时间 |
+| sku_name / product_name | 商品名 |
+| sku_id / seller_sku | SKU |
+| quantity | 件数 |
+| pay_amount | 实付/订单金额 |
+| currency | 币种 |
+| buyer_region | 可选 |
+| shipping_status | 可选物流状态文案 |
+
+粒度：**一单一行**（多 SKU 订单可拆多行，`line_id` 区分）或先 **订单头一行**（MVP）。  
+MVP 采用：**订单头一行**，`idempotency_key = tiktok_orders:{shop}:{order_id}`。
+
+---
+
+## 5. 验收
+
+### 广告（P0/P1）持续
+
+- [ ] 英区店 dual 日更：飞书 TK广告日报 + PG 有昨日数据  
+- [ ] 欧盟店：代理可用后再纳入  
+
+### 订单（P2a）
+
+- [ ] 紫鸟实页字段调研笔记（截图表头）  
+- [ ] `scrape-orders-page.js` 能解析 ≥1 店表格行  
+- [ ] `POST /api/v1/ingest/tiktok_orders` 幂等写入  
+- [ ] multi-store 可按 module 跑 orders  
+
+---
+
+## 6. 夜间/无人值守说明
+
+- 无紫鸟 Bridge 时：只改代码/迁移/文档，不假装抓取成功  
+- 有 Bridge 时：优先实跑 ads，再 probe orders 页  
+- 进度见仓库根 `PROGRESS-tk-full-scrape.md`

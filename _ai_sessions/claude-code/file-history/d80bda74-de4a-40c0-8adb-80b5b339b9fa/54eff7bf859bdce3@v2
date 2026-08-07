@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""用飞书应用凭证创建「ASIN健康度」多维表格及四张业务表。
+
+前置：
+1. 飞书开放平台创建企业自建应用
+2. 开通权限：bitable:app、bitable:app:readonly 等（见 README）
+3. 应用已发布/可用，并将应用添加为多维表格协作者（创建后脚本会输出 app_token）
+4. .env 已填 FEISHU_APP_ID / FEISHU_APP_SECRET
+
+用法：
+  python scripts/init_feishu_tables.py
+  python scripts/init_feishu_tables.py --name "ASIN健康度驾驶舱"
+  python scripts/init_feishu_tables.py --app-token bascnXXXX   # 已有多维表时只建子表
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient, FeishuError
+from app.config import get_settings
+from app.sync.feishu_schema import TABLE_SPECS
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="初始化飞书多维表")
+    parser.add_argument("--name", default="ASIN健康度监控", help="新建多维表格名称")
+    parser.add_argument(
+        "--app-token",
+        default="",
+        help="已有多维表格 app_token；不填则新建",
+    )
+    parser.add_argument(
+        "--folder-token",
+        default="",
+        help="可选：创建到指定云空间文件夹",
+    )
+    args = parser.parse_args()
+
+    settings = get_settings()
+    if not settings.has_feishu:
+        print("ERROR: 请在 .env 配置 FEISHU_APP_ID / FEISHU_APP_SECRET")
+        return 2
+
+    try:
+        with FeishuClient(settings) as client:
+            app_token = args.app_token.strip()
+            if not app_token:
+                print(f"创建多维表格: {args.name} ...")
+                created = client.create_bitable_app(
+                    args.name,
+                    folder_token=args.folder_token or None,
+                )
+                # 响应结构: data.app.app_token 或 data.app_token
+                app = created.get("app") if isinstance(created.get("app"), dict) else created
+                app_token = (
+                    app.get("app_token")
+                    or created.get("app_token")
+                    or ""
+                )
+                if not app_token:
+                    print("创建返回无 app_token:", created)
+                    return 1
+                print(f"OK app_token={app_token}")
+                url = app.get("url") or created.get("url")
+                if url:
+                    print(f"URL: {url}")
+            else:
+                print(f"使用已有 app_token={app_token}")
+                tables = client.list_tables(app_token)
+                print(f"已有子表 {len(tables)} 个:", [t.get("name") for t in tables])
+
+            existing = {
+                t.get("name"): t.get("table_id")
+                for t in client.list_tables(app_token)
+            }
+            env_lines = [
+                f"FEISHU_APP_ID={settings.feishu_app_id}",
+                f"FEISHU_APP_SECRET={settings.feishu_app_secret}",
+                f"FEISHU_BITABLE_APP_TOKEN={app_token}",
+            ]
+
+            for spec in TABLE_SPECS:
+                name = spec["name"]
+                env_key = spec["env_key"]
+                fields = spec["fields"]
+                if name in existing and existing[name]:
+                    table_id = existing[name]
+                    print(f"表已存在: {name} -> {table_id}")
+                else:
+                    print(f"创建表: {name} ({len(fields)} 字段) ...")
+                    data = client.create_table(app_token, name, fields)
+                    table_id = (
+                        data.get("table_id")
+                        or (data.get("table") or {}).get("table_id")
+                        or ""
+                    )
+                    if not table_id:
+                        print("  失败，返回:", data)
+                        continue
+                    print(f"  OK table_id={table_id}")
+                env_lines.append(f"{env_key}={table_id}")
+
+            out = ROOT / "data" / "feishu_env.snippet.txt"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+            print()
+            print("=" * 60)
+            print("请将以下内容合并进 .env（已写入 data/feishu_env.snippet.txt）：")
+            print("=" * 60)
+            print("\n".join(env_lines))
+            print()
+            print("然后设置 config/config.yaml:  sync.sink: both")
+            print("并执行: python scripts/smoke_feishu.py")
+            print("       python -m app.main sync --date 2026-07-21")
+            return 0
+    except FeishuError as e:
+        print(f"FEISHU ERROR [{e.code}] {e.message}")
+        if e.payload:
+            print(e.payload)
+        print()
+        print("常见原因：")
+        print("1. 应用未开通 bitable 权限或未发布版本")
+        print("2. 创建多维表需要 bitable:app 等权限")
+        print("3. 企业管理员未审核应用")
+        return 1
+    except Exception as e:
+        print(f"ERROR: {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

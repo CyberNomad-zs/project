@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "== container code =="
+docker exec qingquan-api-1 ls /app/app/jobs/
+docker exec qingquan-api-1 python - <<'PY'
+from app.config import get_settings
+s = get_settings()
+print("app_id", s.feishu_app_id)
+print("secret", bool(s.feishu_app_secret))
+print("tk_token", s.feishu_bitable_app_token_tk)
+print("t1", s.feishu_bitable_table_tk_shop_daily)
+print("t2", s.feishu_bitable_table_tk_ads_campaign)
+PY
+
+echo "== health =="
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -fsS --max-time 5 http://127.0.0.1:8000/health; then
+    echo
+    break
+  fi
+  sleep 1
+done
+
+ENV=/opt/qingquan/.env
+ADMIN_USER=$(grep -E '^ADMIN_USERNAME=' "$ENV" | cut -d= -f2- | tr -d '"' | tr -d "'")
+ADMIN_PASS=$(grep -E '^ADMIN_PASSWORD=' "$ENV" | cut -d= -f2- | tr -d '"' | tr -d "'")
+API="${QINGQUAN_API:-http://127.0.0.1:8000}"
+ADMIN_USER=${ADMIN_USER:-admin}
+
+echo "== login as $ADMIN_USER =="
+TOKEN=$(curl -fsS -X POST "$API/api/v1/auth/login" \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$ADMIN_USER\",\"password\":\"$ADMIN_PASS\"}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin).get('access_token',''))")
+if [[ -z "$TOKEN" ]]; then
+  echo "LOGIN_FAILED"
+  exit 1
+fi
+echo "login ok"
+
+for KEY in tk_ads_campaign tk_shop_daily; do
+  echo "== export $KEY =="
+  curl -fsS -X POST "$API/api/v1/export/feishu" \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"table_key\":\"$KEY\",\"mode\":\"incremental\",\"lookback_days\":60,\"limit\":2000,\"dry_run\":false,\"run_inline\":true}" \
+    | python3 -m json.tool
+  echo
+done
+
+echo "== recent jobs =="
+docker exec qingquan-db-1 psql -U qingquan -d qingquan -c \
+  "SELECT id, table_key, mode, status, left(coalesce(error,''),120) AS err, created_at, finished_at FROM sync_feishu_job ORDER BY created_at DESC LIMIT 8;"
+
+echo DONE

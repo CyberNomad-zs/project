@@ -1,0 +1,55 @@
+---
+name: haiwaicang-fahuo-flow
+description: 海外仓订单发货业务流程与自动化项目（Sellfox ERP + 海外仓WMS）的关键规则
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: dce5b0ea-d0d2-42df-858e-039f76260a64
+---
+
+项目：把「海外仓订单发货」流程做成操作手册 + 全自动脚本（Playwright+Python）。依据操作录屏 `E:\project\海外仓\2026-07-08 09-47-00.mp4`。
+
+**两个系统**
+- Sellfox ERP：`www.sellfox.com/amzup-web-main/web/orderShip/index.html`，账号 17312292726 —— 订单处理/确认发货/扣库存/提交平台/获取跟踪单号。
+- 海外仓WMS：`193.112.93.60:9999/index.html#` —— 一件代发>平台订单/批量修改快递方/批量发货。两个账号=两个店铺：JMSM=金猫、JMCAT=黑猫。
+
+**主流程**：ERP 确认发货（弹窗"已选N个包裹，会扣减库存并提交平台"→确定）→ WMS 一件代发>平台订单 筛"未发货"→勾选→批量修改快递方→批量发货（Tip:预发货成功）→ 回 ERP 获取跟踪单号。
+
+**快递方规则（非显然，来自用户口述）**：按店铺/账号不同的优先列表，从上往下依次试，失败换下一个，顺序不严格：
+- 金猫(JMSM): RM → DPD
+- 黑猫(JMCAT): RM → DPD → EH
+- FEDEX 暂不在常规规则内。
+（JMSM=金猫，JMCAT=黑猫。视频里登录的是 JMCAT=黑猫。）
+
+**自动化决策**：范围=ERP+WMS全程；先 DRY_RUN 空跑确认无误再开真发。技术=Playwright+Python(已装 chromium)。项目在 `E:\project\海外仓\automation\`。凭据在 `secrets.py`。
+
+**关键技术结论（实测）**：
+- WMS：无验证码，账号自动登录 OK。平台订单页实体 = `http://193.112.93.60:9999/orderInfo/page/orderInfo.html`（iframe内容页，可直连）。Element UI，按钮用文本选择器。
+- ERP：登录有【图形验证码 + 腾讯滑块(turing.captcha.qcloud.com)】→ 无法无人自动登录。改用【手动登录一次+复用会话】：`capture/erp_manual_login.py` 持久化 profile，`core.ensure_erp` 用 `isLogin.json` 校验会话。会话失效才需重登。
+- ERP 是多阶段流水线：待审核→待处理→物流下单[自营/三方仓]→待打单→已发货。变更类(审核通过/确认发货)风险高，默认 DRY_RUN。**待与业务确认要自动化到哪一步**。
+- ddddocr 对赛狐图形验证码~62%，但滑块过不了，故放弃 OCR 登录方案。
+
+**ERP 订单表是 vxe-table，不是 Element UI el-table（关键）**：旧 `.el-table__row`/`.el-pagination__total`/`.el-table__header .el-checkbox` 全部读不到，是踩过的坑。正确选择器（2026-07-08 实测）：
+- 订单总数：`.total_style`（自定义分页把「共 N 条」拆成 `共<span class=total_style>N</span>条`，异步加载需轮询等 total>0，页面有多个分页实例取 max）。兜底 `.parentRowGroup` 计数（每单一个）。
+- 表头全选：`.vxe-header--column.col--checkbox .vxe-cell--checkbox`，点后用 `.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked` 计数校验。
+- 行复选框有一半 `vxe-cell--checkbox is--disabled`（如 24 中 12 禁用）= vxe 固定列重复渲染的副本，**不是业务限制**，别被吓到。
+- 物流下单按钮：行内也有同名按钮，必须点工具栏批量按钮 → 排除 `.vxe-body--row` 内、取 y 最小的可见按钮（见 erp.py `_find_toolbar_button`）。**关键坑：必须用 Playwright 真实点击(elementhandle.click)，`page.evaluate(el.click())` 的 JS 合成点击不触发 Vue 事件、静默失败=0 单！** 全选也一样用 elementhandle.click。
+- 物流下单点击即执行、**无二次确认**，直接弹结果框 `.el-dialog.dialog_small.info_message`：「成功X条 失败Y条 + 失败订单号/原因」，关闭按钮文本「关 闭」。失败常见=所选仓库无库存。成功的单从【待处理】移到【三方仓】。
+- orderShip 落地页默认就是【待处理】视图；`text=待处理` 会匹配到标题 span（无害 no-op）。订单表在主 frame(frame0=orderShip/index.html)，无需切 iframe；frame1-4 是 transition.html 预加载空 iframe。
+- 之前抓的 erp_orderShip.html(2.9MB) 里 el-table__row/el-pagination 计数全是内联 JS/CSS 字符串，非真实 DOM，别用 raw grep 数元素。
+
+**已完成**：操作手册；automation 骨架；**ERP 第一步「物流下单」DRY_RUN 全程验证通过（2026-07-08：会话有效→待处理12条→全选13→定位工具栏物流下单按钮，DRY 未真点）**。诊断脚本：capture/erp_probe_daichuli.py、erp_dump_grid.py、erp_test_selectall.py。
+**物流下单真跑已完成（2026-07-08）**：真实点击成功，成功15条/失败1条(P2AA6TCD61046 无库存)，待处理16→1、三方仓19→34。erp.py 已修为真实点击。config.DRY_RUN 已改回 True。
+
+**WMS 第二步真跑已完成（2026-07-08，黑猫JMCAT）**：ERP物流下单后订单同步到 WMS「一件代发>平台订单/未发货」。实测 6 单 → 全选 → 批量修改快递方=RM → 批量发货 →「预发货成功」→ 未发货 6→0。已复刻视频到 1:24。
+**WMS 关键选择器/坑（实测）**：Element UI（el-table，非 vxe），平台订单页可直连 `orderInfo/page/orderInfo.html`（无需切 iframe）。
+- 未发货数：读 `.el-pagination__total`「共N条」；`.el-table__row` 因固定列翻倍(6单=12行)，别直接数。
+- 全选 `.el-table__header .el-checkbox`（elementhandle.click 即可，Element UI 不像 ERP-vxe 需防 JS click）。必须先勾选再点「批量修改快递方」，否则弹错框(下单确认)。
+- 批量修改快递方：页面有多个隐藏 el-dialog，**必须 `.el-dialog:visible` 限定**！可见弹窗标题「快递信息修改」，内含快递方 el-select(选项 DPD/RM/EH/FEDEX)，确认按钮=可见弹窗内 `button.el-button--primary`。
+- 改快递方确认后弹 Tip「成功」会挡住批量发货 → 先 close_tips 关掉；列表刷新丢勾选 → 发货前重新全选。
+- 批量发货：可能二次确认，最终弹 Tip「预发货成功」；成功单离开未发货列表。Tip 容器 `.el-message-box__wrapper`，按钮文本「ok」。
+执行脚本 capture/wms_ship_rm.py；wms.py 已按以上修正。
+
+**待办**：① WMS 金猫JMSM 未联调（黑猫已通，金猫同理，等有未发货单）；② WMS 多快递方轮转(RM失败→DPD→EH)未实测(本次6单RM全成功)；③ ERP 后续阶段 确认发货/获取跟踪单号——`get_tracking`/`confirm_shipping` 仍是旧 el-table 假设、未按 vxe 重写、未验证；④ run_shipping.py 端到端串联(ERP物流下单→WMS发货)尚未一把跑通(目前分步用探针脚本验证)。
+
+手册：`E:\project\海外仓\操作手册_海外仓订单发货.md`。

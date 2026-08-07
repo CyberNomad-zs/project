@@ -1,0 +1,31 @@
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+title sellfox-bridge dry-run
+echo ========================================
+echo  sellfox-bridge  dry-run 常驻
+echo  只读演练：不指派、不下单、不回传
+echo  日志：bridge.log
+echo  停止：本窗口按 Ctrl+C
+echo ========================================
+echo.
+
+python --version >nul 2>&1
+if errorlevel 1 (
+  echo [错误] 未找到 python，请先安装并加入 PATH
+  pause
+  exit /b 1
+)
+
+if not exist "config\config.yaml" (
+  echo [错误] 缺少 config\config.yaml
+  pause
+  exit /b 1
+)
+
+echo 启动中... %date% %time%
+echo.
+python main.py --dry-run
+echo.
+echo 进程已退出，退出码 %errorlevel%
+pause

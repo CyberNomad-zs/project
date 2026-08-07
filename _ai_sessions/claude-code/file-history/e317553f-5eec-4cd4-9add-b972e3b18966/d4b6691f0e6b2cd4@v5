@@ -1,0 +1,89 @@
+---
+name: temu-monitor-project
+description: Temu 多店铺自动化监测项目的背景与关键约束
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 1b77f1dc-3064-4ec9-a485-16b918ac2c52
+---
+
+在 `E:\project\temu` 构建 Temu Seller Central 多店铺监测工具（`temu-monitor/`，Node + Playwright + 飞书告警）。
+
+监测两件事：① 各店铺「在售中 N」数量下降；② 出现「商品流量待关注」/「商品流量近期有下降」的流量异常商品（这两个橙色标签在商品列表「申报价格(USD)」列下方，二者都算流量异常）。切换店铺后自动关闭推广弹窗。决策：账号下全部店铺、15 分钟轮询、飞书 webhook 告警。
+
+需求文档 `需求.docx`（正文仅 3 句 + 4 张截图，2026-07-10 更新）：弹窗要求是「登录成功后 / 切换店铺时一律关闭，**可能还有其他类型的弹窗，都关闭**」。截图确认除营销弹窗外还需关：`您有以下待办任务需要尽快处理` 待办模态框、点「消息」弹出的`全部消息`通知面板 / `商品不合规` 违规通知——均只有右上角 X、无「关闭」文本按钮，且带「去处理」等跳转按钮，关闭时**只能点 X，不能误点跳转按钮**。已在 `src/popups.js` 用 KNOWN_DIALOG_KEYWORDS 按标题定位容器后点其内关闭图标处理。
+
+关键非显然点：
+- 真实后台是 `https://agentseller.temu.com/goods/list`，`账号.txt` 里给的 `agentseller-eu.../mmsos/orders.html` 会跳转过去。
+- 店铺切换器 DOM、商品列表接口字段、部分选择器**需真实登录态下 `npm run calibrate` 校准**后才确定；当前代码用文本/结构容错选择器占位。
+- 首次登录可能需手机短信验证码 → 无法完全自主跑通，需用户手动 `npm run login` 一次。
+- 详细录屏分析见 `E:\project\temu\录屏分析.md`。
+
+2026-07-10 排查结论（网络/导航层）：
+- **代理 `127.0.0.1:7897`（Clash/Mihomo）是有害的**：走它频繁 `net::ERR_CONNECTION_CLOSED`；**直连反而稳**（netdiag 实测 goods/list 6/6 200）。已把 config.proxy 设为 `""`，并改 `config.js` 让"空串=强制直连、不回落系统 HTTPS_PROXY"。原注释里"直连会被重置、要走代理"的假设是反的。
+- 导航策略：`waitUntil:'domcontentloaded'` 对这个重型 SPA **永远超时**（网络长期不空闲）；改用 **`commit` 单次 goto + 显式等 `waitForGoodsList` 选择器**。`gotoWithRetry` 用单次 goto 最稳；双 goto/预热 root 在重置阵发期会触发 `frame detached` 崩上下文。
+- **有头模式在网关重置阵发期易 frame-detached 崩溃；headless 稳定**。calibrate 已默认 headless，`CALIB_HEADED=1` 可强制有头。截图/响应体捕获无头下同样有效。
+- 诊断脚本 `netdiag.mjs`（直连、headless、单 goto 连打）用来判网关当前状态。
+
+2026-07-10 当前卡点（未解决）：
+- 登录、导航都通了，页面确是「**商品列表·全球**」聚合视图，但**商品网格永远停在「加载中…」**，商品列表数据接口在自动化里**从不触发**（calibrate 落盘的 20+ 个 JSON 响应体全是外围接口：仓库弹窗/未读消息/售后计数/建议价 msgbox，无一含 在售/流量/skc/goodsList）。**页面无 iframe**，网格是直接渲染的 React 微前端。
+- 顶部「**全部消息**」通知面板（含"商品不合规"违规通知，右上角仅 ✕）**自动关不掉**——`popups.js` 已放宽容器 class 关键词+多层祖先兜底+补充关闭图标选择器，仍未命中那个 ✕（`calib-after-close.html` 存了面板开着时的整页 HTML 待挖真实选择器）。
+- 待定方向：①网格卡「加载中」是否自动化被检测 / 还是"全球"视图需先选地区(美国/欧区)或具体店铺才触发查询；②是否改走直接调商品列表 API 而非解析渲染网格。需用户确认其真人浏览器里该页是否正常出数据。
+
+2026-07-10 用户提供真人浏览器截图 + 定向排查（重大进展）：
+- **真人浏览器该页完全正常出数据**（全部408/在售中13/未发布260/已下架126/已删除9，商品网格正常渲染）→ 卡点定性为**自动化被风控挡数据**，不是页面本身问题。决策：走「修检测让页面正常出数据」路线（复用真人 Chrome 登录态），而非直接抓 API。
+- **纠正原假设**：①「在售中 N」数字直接印在顶部 tab 上，随页头渲染、**不依赖商品网格加载**（需求①读 tab 文字即可）；②店铺不是右上角切换器，而是**顶部「来源店铺」下拉筛选**——`stores.js` 按右上角切换器写的选择器要作废重写；③页面有「批量处理流量下降商品」按钮，"流量下降"是官方可筛选属性（需求②大概率走此筛选/接口，不必逐行抠橙色标签）。
+- 已改 `browser.js`/`config.js`/`config.json`：`channel:'chrome'`（用系统真实 Chrome）+ 有头 + `ignoreDefaultArgs:['--enable-automation']` + `viewport:null`+`--start-maximized`；config 新增 `channel`/`executablePath` 字段。
+- 真实 Chrome 环境三条硬坑（全部实测确认）：
+  1. **Chrome 136+ 禁止 CDP 用「默认 User Data 目录」**（报错 `DevTools remote debugging requires a non-default data directory`）→ 不能直接指向真人原目录，必须用**非默认副本目录**。已把 `userDataDir` 设为项目内 `./.userdata`，用 PowerShell 从真人 `User Data` 复制 `Local State`+`Default\{Preferences,Cookies,Local/Session Storage,IndexedDB,Login Data}`（71.8MB）。
+  2. **真实 Chrome 会读 profile/系统里的代理**：复制来的 profile 带了 Clash 7897 代理 → 海外网关 `net::ERR_CONNECTION_CLOSED`（内置 Chromium 无 profile 代理→直连 6/6 200；真实 Chrome 带代理→12/12 失败）。修法：`cfg.proxy` 空时强制直连。⚠️**曾用 `proxy:{server:'direct://'}` 是错的**——`direct://` 在部分 Chrome 版本被当成代理地址去连接，同事机器（有系统代理/Clash）报 `net::ERR_PROXY_CONNECTION_FAILED`（本机当时恰好识别所以没暴露）。**最终方案：不设 Playwright proxy 选项，只用 `--no-proxy-server` + `--proxy-bypass-list=*`**（Chrome 命令行开关，优先级最高，盖住系统/profile 一切代理）。本机 once 实测直连成功。
+  3. **App-Bound Encryption 让复制的 cookie 失效**：cookie 加密密钥绑定原目录，复制到 `.userdata` 后**真实 Chrome 也解不开**→ 仍被重定向 `/auth/authentication`（未登录）。「复制 profile 免登录」不可行，**必须在 `.userdata` 里 `npm run login` 真实登录一次**（登录态真正写入副本后长期复用）。
+- 诊断脚本 `verify-detect.mjs`（`VD_HEADLESS=1` 切 headless/有头，判是否跳 auth + 数商品行 + 截图）。有头软渲（`--enable-unsafe-swiftshader`，机器无 GPU）+ 网关重置阵发期易 frame-detached；直连修复后有头也稳（navOk=true 不崩）。
+
+2026-07-10 **核心卡点解决**：用户在 `.userdata` 里 `npm run login` 真实登录成功后，**headless 真实 Chrome 直接出数据**：navOk=true 直达 goods/list（未跳 auth）、waitForGoodsList=true、**商品行 SKC ID 数=20、无「加载中」**。此前"网格永远加载中/数据接口不触发"是**未登录 + 内置Chromium被风控**双因，现已破。**headless 即可出数据 → 长期后台轮询无需有头**。
+  - 有效链路配方（勿回退）：`channel:'chrome'` + 非默认副本目录 `.userdata` + `proxy:{server:'direct://'}`+`--no-proxy-server`强制直连 + `ignoreDefaultArgs:['--enable-automation']` + 有效登录态（在副本目录 login 一次）。
+  - 仍待修（非阻塞）：`monitor.js` 读「在售中 N」的 `getByText(/在售中\s*\d+/)` 抓不到（TABS=[]，数字疑在独立 span，需拆分选择器）；`stores.js` 要按顶部「来源店铺」下拉重写；流量异常改走「批量处理流量下降商品」筛选/接口。
+
+2026-07-10 **端到端全部跑通（需求达成）**。真实 DOM 探查（`probe-dom.mjs`/`probe2.mjs`）+ 改写完成：
+- **UI 是 Temu 自研 beast-core 库**，优先用 `data-testid`。在售数量：`[data-testid="beast-core-tab-itemLabel"]` 叶子文本「在售中 13」（数字与文字同一叶子，之前 TABS 空是弹窗遮挡时机）。商品行：`[data-testid="beast-core-table-body-tr"]`。
+- **店铺**：账号（Agnis）下**仅 1 个店铺 `Trendful Treasures`**，「全球」聚合视图即其全部商品。`run.js` 单店铺（`storeNames.length<=1`）直接监测聚合视图、不切换。`config.json` 已把 `storeList:["Trendful Treasures"]` 写死当显示名（`getByText('来源店铺')` 在完整流程里定位不稳，probe 能读但 once 里 timeout；直接写死最稳）。
+- **流量异常计数**：「商品流量待关注」是**快速筛选 chip（角标 3）**，点它→列表底部「共有 N 条」变「共有 3 条」= 精确计数。`monitor.js` 点 chip 读「共有 N 条」后点「重置」复位。⚠️**必坑**：点 chip 后必须用 `waitForFunction` 等「共有 N 条」数值**变化**再读，否则会读到刷新前的旧总数（实测误读成 408=全部商品数）；并校验 `after<before` 才采纳，否则记为未知，绝不把总数当待关注数。
+- **告警多群**：`feishu.js`/`config.js` 支持 `feishuWebhooks` 数组（多群同发，兼容旧 `feishuWebhook`）。webhook 绑群，换群必须换 webhook；飞书**外部群实测可加自定义机器人**。当前只发**含外部联系人刘芝的新外部群「张帅,刘芝」**（webhook 尾号 ...8d3977a），原内部群 webhook 已弃用。
+
+2026-07-10 **开机自启+后台常驻已配好并实测运行中**：Windows 计划任务 `TemuMonitor`（触发 AtLogOn / 用户 chinami-t8ehg7s\administrator / LogonType Interactive / RunLevel Highest / ExecutionTimeLimit 无限 / 崩溃重启）→ 隐藏窗口跑 `run-forever.ps1` 守护 → `node src/cli.js start`（15 分钟轮询），进程崩溃 30 秒自动重启。日志：`logs\daemon-*.log`（守护标记）、`logs\monitor-*.out.log`/`.err.log`（node 输出/报错）。管理：`Start-ScheduledTask`/`Stop-ScheduledTask -TaskName TemuMonitor`、`Get-ScheduledTaskInfo`。
+- **必坑（全部实测踩过）**：
+  1. **必须 Administrator 交互登录会话**才能解 App-Bound/DPAPI 加密的 cookie → 用 AtLogOn，不能用 SYSTEM/AtStartup。**前提：机器开机需自动登录该账户**（否则任务不触发）。
+  2. 守护里跑 node **必须 `Start-Process -RedirectStandardOutput/-RedirectStandardError` 分离重定向**。PS5.1 的 `*>>` 有写入竞争、`cmd /c "\"$node\"..."` 嵌套引号会畸形化路径——两者都会吞掉/截断 node 输出，曾让人误判"node 秒退"（实际 node 一直正常，是日志没写进去）。
+  3. 排查时**别按 `CommandLine -like '*run-forever*'` 杀进程**：当前会话的命令行文本里也含该串 → 匹配到自身 → `Stop-Process` 杀掉自己 → exit 255。必须 `-ne $PID` 且匹配 `-File run-forever.ps1`。
+  4. `Stop-ScheduledTask` 只改任务状态，**不终止已 spawn 的守护 powershell**，改脚本后旧进程仍在跑旧逻辑，需精准另杀。
+  5. daemon-*.log 里 ps1 写的中文标记显示乱码（Out-File 编码），但 node 的 out.log 中文正常，不影响功能。
+
+2026-07-10 **一键启动包已交付（发同事用），实测通过**：
+- 文件：`启动.bat`（英文菜单：1登录/2常驻/3测试/4开机自启/5取消/0退出）+ `install-autostart.ps1`/`uninstall-autostart.ps1`（自提权 UAC，注册/删 TemuMonitor 任务）+ `run-forever.ps1`（已改可移植：`$PSScriptRoot` + `(Get-Command node).Source`）+ `使用说明.txt`（中文）。
+- **编码必坑**：`.bat`/`.ps1` 里的中文在 UTF-8 无 BOM + cmd/PS5.1 下会乱码 → bat 中文被当命令报 `'xxx' is not recognized`；ps1 中文破坏反引号续行，让 `Register-ScheduledTask` 误报位置参数错（'[成功]'）。解法：**bat 和 ps1 全用英文纯 ASCII**，`.ps1` 用 splatting `@params` 代替反引号续行；中文只放 `使用说明.txt`。
+- **测 bat 别用管道**：`goto menu` 结构下管道输入耗尽会 EOF 无限循环刷屏（曾失控，用 TaskStop 停）。测试喂有限输入且末尾 `0` 退出、只 `1>` 捕获 stdout（`2>&1` 对 native cmd 会假报 exit 255 / NativeCommandError）。
+- 发给同事前删本机私有：`.userdata\`（本机加密登录态，别人用不了）、`data\state.json`、`logs\`；同事需自装 Node+Chrome、把 `config.json` 的 feishuWebhooks 改成自己群、`启动.bat` → 选1登录 → 选4开机自启。「商品流量近期有下降」无独立计数入口→用「批量处理流量下降商品」按钮存在性作布尔信号（不点它，避免误触批量操作）。
+- **scanStore 返回**：`onSaleCount / trafficWatchCount / trafficDeclineExists / trafficAnomalyTotal(=待关注数)`。`state.js diffStore` 流量告警＝待关注数增加 或 下降从无到有；字段 `trafficDeclineCount`→`trafficDeclineExists`。
+- **实测结果**：`npm run once` → `{onSaleCount:13, trafficWatchCount:3, trafficDeclineExists:true}`，**飞书告警成功发送**；同数据第二轮「本轮无异常，未发送告警」= **幂等正确**。注意 state 以 store 标签为 key，改店铺标签会让新 key 首轮重新告警一次。
+- **生产运行**：`config.headless:true`（headless 出数据且稳、无窗口）；`npm start` 常驻 15 分钟轮询。每轮 launchBrowser 复用 `.userdata`，跑监测时勿手动开本机 Chrome。诊断脚本保留：`verify-detect.mjs`/`probe-dom.mjs`/`probe2.mjs`（选择器漂移时重跑）。
+
+2026-07-14 **API 可行性抓包（重大，capture-api.mjs 落盘于 `capture/`）**：在当前有效登录态下 headless 访问 goods/list，拦截到 99 个 XHR/fetch，**内部 JSON 接口完全可调、字段齐全**，无需再解析 DOM/点筛选 chip：
+- **在售数量（需求①）** = `POST visage-agent-seller/product/skc/countStatus` → `result.skcTopStatusCountList`，其中 **`skcTopStatus:100 → skcTotal` = 在售中**（实测 13，与现值一致）；0=未发布(260)、200=已下架(126,含二级状态)、300=已删除(0)。一个接口拿全所有 tab 计数,比点 tab 读文字稳得多。
+- **商品列表/总数** = `POST visage-agent-seller/product/skc/pageQuery` → `result.total`(399) + `result.pageItems[]`(每项含 productId/skcId/productName/类目等)。
+- **流量字段（需求②）**：在 pageQuery 每个 item 上,字段为 `flowLimitStatus`/`flowAllowanceStatus`/`flowLimit`/`flowAllowanceSiteList`/`preLimitTime`(当前店铺无待关注商品，多为 null/1，**具体哪个值=「流量待关注/近期下降」待有该类商品时再抓一次确认**)。`home/page/product/page/stat` 返回 potentialProductCount/highPriceProductCount/hasPunishInfoProductSkcCount/hasPrivilegeProductSkcCount(现全 0)。
+- **关键约束（anti-content 签名）**：这些请求成功是**因为由已加载的登录页面自身发出**(浏览器自动附带 cookie + 页面 JS 现算的 anti-content 风控头)。**纯 headless 裸 HTTP(只带 cookie)大概率被拦**。推荐路线=**混合式**:仍用现有 Chrome+登录态启页面,但改为**拦截页面自身发出的 countStatus/pageQuery 响应**(或 `page.evaluate(fetch)` 在页面源内发请求),读 JSON——既拿到 API 级可靠性(干掉老出问题的筛选 chip),又不用破 anti-content。**不推荐**申请官方开放平台 API：门槛(ISV 审批)高,且「流量待关注」这种运营侧指标官方 API 不一定有。
+- **已实施并上线（#1）**：`monitor.js` scanStore 改为先 `page.waitForResponse(/product\/skc\/countStatus/ POST)` 再 goto，在售数量读自接口 JSON（`readOnSaleFromStatus`），读不到才回落原 `readOnSaleCount` 解析 tab 文本；实测 `once` 与守护均输出「在售数量读自 countStatus 接口：13」。让守护用上改动只需 `Stop-Process node`（守护 30s 自动用新代码重启，不碰计划任务、不触发排队重启）。流量 chip（#2）仍为旧逻辑，待有「待关注」商品时抓包定 `flowLimitStatus` 取值后再改。
+- **踩坑更正**：诊断时用 `Get-CimInstance ... CommandLine -like '*run-forever.ps1*'` 会**匹配到自己这条命令**(命令文本含该串)→ 误判成"双守护"。判真实守护须 `-like '*-File*run-forever*' -and -notlike '*-Command*'`。当前实测**单守护单 node,无双实例 bug**;任务 XML 本身 MultipleInstancesPolicy=IgnoreNew、单 LogonTrigger,健康。反复 `Stop-Process` 杀守护会触发任务 `RestartOnFailure`(3次/1min)排队补进程,收尾要先停+杀+静置≥100s 再单启。
+
+2026-07-14 **决定转做浏览器插件（Chrome 扩展 MVP 已搭，在 `E:\project\temu\temu-plugin\`）**：部署目标变为「**装到每个同事自己电脑、在其日常浏览器里监测各自店铺**」。此场景下插件完胜 Playwright 守护：直接用同事真实登录态（无登录过期静默死/无 .userdata 副本/无 App-Bound 加密/无 anti-content 风控），装了即用。取舍：**插件只在 Chrome 开着且留有 goods/list 标签时才跑**（同事上班用浏览器→可接受）。分发=开发者模式（实际推荐「加载已解压」，新版 Chrome 常拒装外部 .crx，已在使用说明写明）。飞书=**各发各的群**（options 页每人填自己 webhook，存 chrome.storage.local）。
+- 架构（Manifest V3）：`content.js`(document_start,隔离世界)注入 `inject.js`(MAIN world) hook `window.fetch`+XHR → 截获 `product/skc/countStatus`(在售)/`product/skc/pageQuery`(总数+流量字段)响应 JSON → postMessage 回 content → `chrome.runtime.sendMessage` 给 `background.js`(service worker) → 解析+对比 chrome.storage 快照 → 异常 fetch 发飞书卡片。`chrome.alarms` 每 15min 后台 `chrome.tabs.reload` goods/list 标签触发接口刷新（不抢焦点）。`popup.html/js` 显示在售/总数/上次时间 + 立即检查/测试飞书；`options.html/js` 配 webhook/间隔/开关。
+- **解析逻辑已用真实抓包数据(capture/hit-086,hit-068)验证通过**：countStatus→{onSale:13,unpublished:260,removed:126,deleted:0}；pageQuery→{total:399,sample:20,flow:{flowLimitStatus=null×20,flowAllowanceStatus=1×20}}。**pageQuery 一次只回一页(20条)**→流量计数不能只数首页,须走筛选后接口(同 #2 待定)。MVP 只做在售数量下降告警(幂等:diff 后 snapshot 跟进),流量待有样本再加。全部 JS `node --check` 通过,manifest 为合法 UTF-8 无 BOM。
+- **端到端已通过**（用户截图证实）：装进真实 Chrome 后 popup 正确显示在售13/总数399/未发布260·已下架126；飞书卡片格式真实发送 code:0 成功。
+- **流量待关注字段结论（重要，2 个待关注商品的真实样本已抓）**：`pageQuery` 商品项里所有流量字段(`flowLimitStatus`/`flowAllowanceStatus`/`flowLimit`/`flowAllowanceSiteList`/`flowLimitStyle`/`productPotentialInfo`)对**待关注商品和普通商品完全一样**(全 null/1/false)——**"流量待关注"标记不在商品字段里,是服务端按筛选条件算的**。故放弃"读字段区分"。**最终方案:直接读快速筛选 chip「商品流量待关注 N」上的数字**(页面现成渲染,`content.js` readTrafficWatch 从 DOM 提取,无需点筛选→避开老方案最不稳的点)；插件已实现:content 读 chip 数→background diff→待关注**增加**时告警。⚠️ headless Playwright 抓筛选后 pageQuery 不稳(capture-traffic.mjs 在无头下 chip 找不到、0 pageQuery)；真实浏览器/插件里读 DOM chip 才靠谱。
+- **插件告警项(v0.1)**：①在售数量下降(读 countStatus 接口)；②流量待关注增加(读 DOM chip)。快照合并式更新(onSale/total/trafficWatch 各自 carry,不互相覆盖)、幂等只报一次。
+- **原未端到端测项**：曾需装进 Chrome(chrome://extensions→开发者模式→加载已解压 `temu-plugin/`)→开 goods/list→点「立即检查」验证 popup 出在售数、点「测试飞书」验证告警链路。Playwright 版(`temu-monitor/`)仍在守护运行,两者并存,插件验证 OK 后再决定是否下线守护。
+
+2026-07-14 排查+修复（两件事）：
+- **登录态会过期→静默死掉**：实测 7-11 15:12(本地) 起 `.userdata` 登录失效，此后每轮 `未登录` 失败、连续 3 天无数据无告警，但计划任务/守护/进程都健康（错误只进 err.log 没人看）。**注意日志时间戳是 UTC，本地=+8**。恢复只需在本机 `npm run login` 重登一次，守护下一轮自动恢复，无需重启/改配置。
+- **上周飞书告警「内容全一样」的根因 = 假告警**：店铺真实数据整周没变（在售13/待关注3/有下降）。「商品流量待关注」计数靠点筛选chip读「共有N条」，偶发点了不生效→该轮 `trafficWatchCount=null`。旧 `state.js` 用 `?? 0` 把 null 当 0，且 run.js 把 null 存进 state → 下一轮恢复读到3 触发 `3>0` 报「待关注 0→3」，每次 null→3 抖动都刷同一条。**已修**：①`state.js` diffStore 只在 prev/curr 都是 number 时比较（未知轮不参与）；②`run.js` 用 `carry()` 让 null 轮沿用上次已知值、不冲基准（onSale/watch 都护）；③`monitor.js` readTraffic 筛选未生效重试最多3次。node 单测证实 null 抖动不再误报、真实 3→5 仍报。
+- **新增登录过期飞书告警**：`cli.js` startLoop 记 `loginFailStreak`，`runOnce` 未登录时 `err.code='NOT_LOGGED_IN'`；连续失败 ≥`loginAlertAfterRounds`(默认2) 发橙色卡片提醒重登，仍不恢复每 `loginRealertRounds`(默认16≈4h) 再提醒，恢复后重置。非登录类错误(导航抖动)不计入。config.json 新增 `alerts.loginExpiry`/`loginAlertAfterRounds`/`loginRealertRounds`。⚠️ 计数在内存、随 node 生命周期；守护崩溃重启会重新计数（可接受，会重登提醒一次）。

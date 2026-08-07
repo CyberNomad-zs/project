@@ -1,0 +1,41 @@
+# -*- coding: utf-8 -*-
+"""抓取 Sellfox 登录页 login.html，分析表单与是否有验证码。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+URL = "https://www.sellfox.com/amzup-web-main/login.html"
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    ctx = browser.new_context(ignore_https_errors=True)
+    page = ctx.new_page()
+    try:
+        page.goto(URL, wait_until="domcontentloaded", timeout=45000)
+    except Exception as e:
+        print("goto:", e)
+    # 等表单渲染
+    for i in range(20):
+        time.sleep(1)
+        if page.query_selector("input[type=password]"):
+            print(f"  password input appeared at {i+1}s")
+            break
+    time.sleep(2)
+    html = page.content()
+    with open(os.path.join(config.DUMP_DIR, "erp_login2.html"), "w", encoding="utf-8") as f:
+        f.write(html)
+    page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_login2.png"), full_page=True)
+    print(f"  dump: {len(html)} bytes, url={page.url}")
+
+    # 罗列所有 input，帮助定位账号/密码/验证码
+    inputs = page.eval_on_selector_all("input", """els => els.map(e => ({
+        id:e.id, name:e.name, type:e.type, placeholder:e.placeholder,
+        cls:e.className, vis:!!(e.offsetWidth||e.offsetHeight)}))""")
+    print("---- inputs ----")
+    for x in inputs:
+        print("  ", x)
+    # 找可能的验证码字样/图片
+    cap = page.query_selector_all("text=/验证码|滑动|拖动|captcha|slider/i")
+    print("captcha-like nodes:", len(cap))
+    browser.close()

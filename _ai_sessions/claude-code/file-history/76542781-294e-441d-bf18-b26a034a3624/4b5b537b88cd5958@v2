@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+from app.config import get_app_config
+from app.rules.engine import Anomaly
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _due_at(level: str, workdays_only: bool = True) -> str:
+    """Orange: 1 workday; Red: same calendar day end."""
+    now = _utc_now()
+    if level == "red":
+        due = now.replace(hour=23, minute=59, second=0, microsecond=0)
+        return due.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # orange default: +1 workday
+    d = now
+    add = 1
+    while add > 0:
+        d = d + timedelta(days=1)
+        if not workdays_only or d.weekday() < 5:
+            add -= 1
+    return d.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def apply_anomalies_to_tasks(
+    anomalies: list[Anomaly],
+    *,
+    biz_date: str,
+    db: Database,
+    rules_cfg: dict[str, Any] | None = None,
+) -> dict[str, int]:
+    """Create/update tasks for orange/red; yellow only counted."""
+    cfg = get_app_config()
+    reviewers = cfg.get("reviewers") or {}
+    default_reviewer = reviewers.get("default")
+    workdays_only = True
+    if rules_cfg:
+        workdays_only = bool(rules_cfg.get("workdays_only", True))
+
+    stats = {"yellow": 0, "orange_new": 0, "orange_updated": 0, "red_new": 0, "red_updated": 0, "skipped": 0}
+
+    for a in anomalies:
+        if a.level == "yellow":
+            stats["yellow"] += 1
+            continue
+        if a.level not in ("orange", "red"):
+            stats["skipped"] += 1
+            continue
+
+        existing = db.get_open_task(a.shop_name, a.asin, a.anomaly_type)
+        reviewer = default_reviewer
+        if existing:
+            streak = int(existing.get("streak") or 1) + 1
+            task_id = existing["task_id"]
+            # escalate level if worse
+            level = a.level
+            if existing.get("level") == "red":
+                level = "red"
+            task = {
+                "task_id": task_id,
+                "biz_date": biz_date,
+                "shop_name": a.shop_name,
+                "asin": a.asin,
+                "product_title": a.product_title,
+                "product_title_cn": a.product_title_cn
+                or existing.get("product_title_cn"),
+                "anomaly_type": a.anomaly_type,
+                "level": level,
+                "current_value": a.current_value,
+                "baseline_value": a.baseline_value,
+                "change_value": a.change_value,
+                "owner": a.owner or existing.get("owner"),
+                "reviewer": existing.get("reviewer") or reviewer,
+                "status": existing.get("status") or "open",
+                "due_at": existing.get("due_at") or _due_at(level, workdays_only),
+                "streak": streak,
+                "need_boss": 1 if level == "red" else int(existing.get("need_boss") or 0),
+                "payload_json": a.to_dict(),
+                "created_at": existing.get("created_at"),
+            }
+            db.upsert_task(task)
+            stats[f"{a.level}_updated"] = stats.get(f"{a.level}_updated", 0) + 1
+        else:
+            task_id = f"T{biz_date.replace('-', '')}-{uuid.uuid4().hex[:10]}"
+            task = {
+                "task_id": task_id,
+                "biz_date": biz_date,
+                "shop_name": a.shop_name,
+                "asin": a.asin,
+                "product_title": a.product_title,
+                "product_title_cn": a.product_title_cn,
+                "anomaly_type": a.anomaly_type,
+                "level": a.level,
+                "current_value": a.current_value,
+                "baseline_value": a.baseline_value,
+                "change_value": a.change_value,
+                "owner": a.owner,
+                "reviewer": reviewer,
+                "status": "open",
+                "due_at": _due_at(a.level, workdays_only),
+                "streak": 1,
+                "need_boss": 1 if a.level == "red" else 0,
+                "payload_json": a.to_dict(),
+            }
+            db.upsert_task(task)
+            stats[f"{a.level}_new"] = stats.get(f"{a.level}_new", 0) + 1
+
+    logger.info("Tasks applied: %s", stats)
+    return stats

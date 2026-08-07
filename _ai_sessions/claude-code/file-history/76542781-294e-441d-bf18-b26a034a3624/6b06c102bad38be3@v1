@@ -1,0 +1,165 @@
+#!/usr/bin/env python3
+"""Create recommended Feishu bitable views on 异常任务 table.
+
+API can create named views; filter UI may still need manual confirm if field_id differs.
+Docs: https://open.feishu.cn/document/server-docs/docs/bitable-v1/app-table-view/create
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient, FeishuError
+from app.config import get_settings
+
+
+def list_views(client: FeishuClient, app: str, table: str) -> list[dict]:
+    data = client._api(
+        "GET", f"/bitable/v1/apps/{app}/tables/{table}/views"
+    )
+    return (data.get("data") or {}).get("items") or []
+
+
+def create_view(
+    client: FeishuClient, app: str, table: str, name: str, view_type: str = "grid"
+) -> dict:
+    data = client._api(
+        "POST",
+        f"/bitable/v1/apps/{app}/tables/{table}/views",
+        json_body={"view_name": name, "view_type": view_type},
+    )
+    return (data.get("data") or {}).get("view") or data.get("data") or {}
+
+
+def patch_view_filter(
+    client: FeishuClient,
+    app: str,
+    table: str,
+    view_id: str,
+    field_id: str,
+    operator: str,
+    value: str,
+) -> dict:
+    """Best-effort filter patch; Feishu filter value format is version-sensitive."""
+    body = {
+        "property": {
+            "filter_info": {
+                "conjunction": "and",
+                "conditions": [
+                    {
+                        "field_id": field_id,
+                        "operator": operator,
+                        "value": value,
+                    }
+                ],
+            }
+        }
+    }
+    return client._api(
+        "PATCH",
+        f"/bitable/v1/apps/{app}/tables/{table}/views/{view_id}",
+        json_body=body,
+    )
+
+
+def field_id_by_name(client: FeishuClient, app: str, table: str) -> dict[str, str]:
+    fields = client.list_fields(app, table)
+    return {f.get("field_name"): f.get("field_id") for f in fields if f.get("field_name")}
+
+
+def main() -> int:
+    s = get_settings()
+    app = s.feishu_bitable_app_token
+    table = s.feishu_table_tasks
+    if not app or not table:
+        print("ERROR: missing FEISHU_BITABLE_APP_TOKEN / FEISHU_TABLE_TASKS")
+        return 2
+
+    wanted = [
+        "01_红色任务",
+        "02_橙色任务",
+        "03_按负责人-梦晴",
+        "04_按负责人-潘启豪",
+        "05_按负责人-马文静",
+        "06_待老板决策",
+        "07_全部未关闭",
+    ]
+
+    try:
+        with FeishuClient(s) as client:
+            existing = {v.get("view_name"): v for v in list_views(client, app, table)}
+            print("existing views:", list(existing.keys()))
+            name_to_id = field_id_by_name(client, app, table)
+            print("fields:", name_to_id)
+
+            created = []
+            for name in wanted:
+                if name in existing:
+                    print(f"skip exists: {name} -> {existing[name].get('view_id')}")
+                    continue
+                v = create_view(client, app, table, name, "grid")
+                vid = v.get("view_id")
+                print(f"created: {name} -> {vid}")
+                created.append((name, vid))
+
+            # try set simple filters where possible
+            level_fid = name_to_id.get("等级")
+            owner_fid = name_to_id.get("负责人")
+            boss_fid = name_to_id.get("需要老板决策")
+            status_fid = name_to_id.get("状态")
+
+            def ensure(name: str) -> str | None:
+                if name in existing:
+                    return existing[name].get("view_id")
+                for n, vid in created:
+                    if n == name:
+                        return vid
+                return None
+
+            # Single-select filter value formats vary; try JSON array text
+            trials = []
+            if level_fid:
+                trials.append(
+                    ("01_红色任务", level_fid, "is", '["red"]')
+                )
+                trials.append(
+                    ("02_橙色任务", level_fid, "is", '["orange"]')
+                )
+            if owner_fid:
+                for nm, owner in [
+                    ("03_按负责人-梦晴", "梦晴"),
+                    ("04_按负责人-潘启豪", "潘启豪"),
+                    ("05_按负责人-马文静", "马文静"),
+                ]:
+                    trials.append((nm, owner_fid, "is", f'["{owner}"]'))
+            if boss_fid:
+                trials.append(("06_待老板决策", boss_fid, "is", "true"))
+            if status_fid:
+                trials.append(("07_全部未关闭", status_fid, "is", '["open"]'))
+
+            for name, fid, op, val in trials:
+                vid = ensure(name)
+                if not vid:
+                    continue
+                try:
+                    patch_view_filter(client, app, table, vid, fid, op, val)
+                    print(f"filter OK: {name}")
+                except FeishuError as e:
+                    print(f"filter skip {name}: [{e.code}] {e.message}")
+
+            print()
+            print("Base URL:")
+            print(f"https://dcnkj1up67d5.feishu.cn/base/{app}?table={table}")
+            print("若筛选未生效，请在飞书 UI 打开对应视图点「筛选」按字段配置一次。")
+            return 0
+    except FeishuError as e:
+        print(f"FEISHU ERROR [{e.code}] {e.message}")
+        print(e.payload)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

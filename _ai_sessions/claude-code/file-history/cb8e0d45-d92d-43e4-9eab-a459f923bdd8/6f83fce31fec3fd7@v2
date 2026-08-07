@@ -1,0 +1,27 @@
+# -*- coding: utf-8 -*-
+"""只读：逐个渠道筛选并数待处理，验证 filter_by_channel 生效。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import core, erp, rules
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            print("ERP 未登录"); ctx.close(); return
+        erp.open_order_ship(page); erp.goto_view(page, "待处理"); time.sleep(1)
+        print("全部待处理:", erp.count_orders(page))
+        for ch in rules.CHANNEL_ORDER:
+            erp.open_order_ship(page)          # 重开重置筛选
+            erp.goto_view(page, "待处理"); time.sleep(1)
+            ok = erp.filter_by_channel(page, ch)
+            n = erp.count_orders(page)
+            print(f"  渠道 {ch}: 筛选ok={ok}  待处理={n}")
+        time.sleep(3); ctx.close()
+
+
+if __name__ == "__main__":
+    main()

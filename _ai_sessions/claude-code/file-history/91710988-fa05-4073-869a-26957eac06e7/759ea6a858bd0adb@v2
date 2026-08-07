@@ -1,0 +1,171 @@
+# TK · P0 验收清单（店日 + 日更闭环 + 任务台总览）
+
+> 日期：2026-08-04  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · P0  
+> 飞书重绑：[仪表盘重绑清单](./TK-飞书驾驶舱-仪表盘重绑清单.md)
+
+---
+
+## 1. 本轮已交付（代码/文档）
+
+| # | 项 | 路径 / 说明 |
+|---|----|-------------|
+| 1 | 整体计划入库 | `docs/TK-整体开发计划.md` |
+| 2 | 店日只读 API | `GET /api/v1/tk/shop-daily`（`backend/app/api/tk_ops.py`） |
+| 3 | 任务台 TK 总览 KPI | `web/src/App.vue` · `tk-overview` 店日卡片 + 明细表 |
+| 4 | 采集后规则+飞书尾巴 | `scripts/tk-p0-post-collect.ps1`（ads → product → **shop** → feishu） |
+| 5 | full-site / night-loop 挂尾巴 | 可选开关，见下 |
+| 6 | **P0.5 生产 anomaly 表** | 生产已 apply `010`+`011`；`FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK=tblstt4IVNJihCd3` |
+| 7 | **P0.6 ① 店铺分析规则** | `tk_shop_rules` / `tk_shop_anomaly_eval` / `GET·POST /tk/shop/anomaly-eval` |
+
+**仍依赖人工/采集环境：**
+
+- 紫鸟保持登录 + 日更 `TK-Shop-Modules-Daily`（17:45）继续攒 ≥3 业务日
+- 飞书 D1/D2 组件 UI 重绑
+- 同事机广告日更（~17:20）保持
+- 生产 SoT：主配置 `qingquan.baseUrl` 仍为生产；本机联调用 `stores.config.local-ingest.json`
+
+---
+
+## 2. API 自检
+
+```powershell
+# 登录后带 Authorization
+curl -s "http://127.0.0.1:8000/api/v1/tk/shop-daily?lookback_days=1" -H "Authorization: Bearer <token>"
+```
+
+期望字段：
+
+| 字段 | 说明 |
+|------|------|
+| `summary.data_source` | `shop_daily` 或 `ads_rollup` 或 `empty` |
+| `summary.gmv` / `ad_spend` / `ad_roi` | ROI = 销售额求和÷花费求和（非 ROI 列平均） |
+| `summary.open_anomaly_count` | 未闭环异常数 |
+| `items[].data_source` | 行级真店日 / 广告估 |
+| `note` | 回退时含 `ads_rollup fallback` |
+
+任务台：登录 → TikTok → 平台总览 → 可见 GMV/订单/花费/ROI 与店日明细。
+
+---
+
+## 3. 日更闭环命令
+
+### 3.1 仅采集后尾巴（规则 + 飞书）
+
+仓库根：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -SkipRules
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -SkipFeishu -DryRun
+```
+
+默认顺序：
+
+1. `python -m app.jobs.tk_ads_anomaly_eval`（若模块存在）或 HTTP `POST /tk/ads/anomaly-eval`
+2. `python -m app.jobs.tk_product_anomaly_eval`（同上）
+3. `python -m app.jobs.tk_shop_anomaly_eval`（① 店铺分析 GMV/订单环比）或 HTTP `POST /tk/shop/anomaly-eval`
+4. `scripts/feishu_tk_daily_sync.py --lookback-days 14`（ads + shop + anomaly）
+
+### 3.2 整站非广告采集 + 尾巴
+
+```powershell
+cd collectors\tiktok-ads
+powershell -ExecutionPolicy Bypass -File .\scripts\run-full-site-daily.ps1
+# 然后仓库根：
+cd ..\..
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1
+```
+
+`run-full-site-daily.ps1` 支持 `-RunPostCollect` 在采集成功后自动调尾巴。
+
+### 3.3 计划任务建议
+
+| 时间（示例） | 动作 |
+|--------------|------|
+| 17:20 | 广告（同事机） |
+| 18:30 | full-site（shop/orders/products） |
+| 19:00 | `tk-p0-post-collect.ps1` 或 full-site `-RunPostCollect` |
+| 或 night-loop 每轮末尾 | 见 `night-loop.ps1 -RunPostCollect` |
+
+---
+
+## 4. 数据质量 SQL
+
+```sql
+-- 真店日是否有行
+SELECT count(*), min(biz_date), max(biz_date)
+FROM tk.fact_tiktok_shop_daily;
+
+-- 广告日
+SELECT count(*), min(biz_date), max(biz_date)
+FROM tk.fact_ads_campaign_daily
+WHERE campaign_name !~ '^【';
+
+-- 未闭环异常
+SELECT anomaly_code, count(*)
+FROM tk.fact_tk_anomaly_task
+WHERE status IN ('open','in_progress')
+GROUP BY 1
+ORDER BY 2 DESC;
+```
+
+---
+
+## 5. P0 验收勾选
+
+| # | 项 | 状态 |
+|---|----|------|
+| 1 | 计划文档在仓库 | ✅ |
+| 2 | `GET /tk/shop-daily` 可用 | ✅ 本机 + **生产**（2026-08-04 补注册 `tk_ops`/`tk_anomaly_tasks` 后 OpenAPI 可见） |
+| 3 | 任务台总览展示店日 KPI | ✅ 代码 |
+| 4 | 规则+飞书 post-collect 脚本 | ✅ 代码（ads → product → **shop ①** → feishu） |
+| 4b | 计划任务 `TK-P0-Post-Collect-Daily` 19:00 | ✅ 已装本机；dry-run + 正式各跑通（含 16:13 正式 `final=0`） |
+| 4c | **P0.5 生产 anomaly 表** | ✅ 010+011；`.env` anomaly table id；api/worker 已 rebuild |
+| 4d | **P0.6 ① 店铺分析规则** | ✅ 单测 8；生产 `GET/POST /tk/shop/anomaly-eval` 可用 |
+| 4e | **生产 TK 路由部署** | ✅ 同步 `main.py`+`tk_*` 并 rebuild；路由含 shop-daily / ads / products / shop anomaly / anomaly-tasks |
+| 5 | 连续 ≥3 业务日 `shop_daily` 多店行 | 🟡 **生产 3 业务日**（07-30/07-31/08-02）共 5 行 2 店，但非严格连续日历；本机 1 日。日更 17:45 继续攒 |
+| 6 | T1 同步不再依赖 ads fallback（或 fallback 可观测） | ✅ 本机+生产 API 均为 `data_source=shop_daily`；生产 lookback7 GMV=16669.14 |
+| 7 | T2 与 PG ads 行数一致 | 🟡 本机 feishu sync exit=0；未逐表点算 |
+| 8 | 异常任务飞书 open ≈ PG open | ✅ 本机 anomaly updated=16 failed=0；**生产 PG open=61** → 飞书 `created=61 failed=0`（tblstt4IVNJihCd3） |
+| 9 | D1/D2 无 ⚠ 重配 | ⬜ 飞书 UI（人工；与 P2 D4 一并） |
+| 12 | 生产 api/web 含 P0+P2 任务台路由 | ✅ 2026-08-05 热修：content/anomaly-eval + 内容 TAB dist；015 人维列 |
+| 10 | ingest 后自动出广告/库存单 | ✅ 生产手动 eval 已出：`ads_roi_low=8` `ads_spend_no_sale=2` `product_stockout=50` `product_stock_low=1` |
+| 11 | ① GMV/订单掉量（有数时）能出单 | 🟡 生产 08-02 相对前日基线跌幅未达 30%（skipped=2 missing_prev=0）；阈值/数据正常 |
+
+### 5.1 本机 2026-08-04 实跑记录（SoT = 本地 PG）
+
+| 项 | 结果 |
+|----|------|
+| 紫鸟 | 企业登录 ZHANGSHUAI；Bridge 采集期可用 |
+| shop-modules | 6/6 OK（local-ingest 配置 → `http://127.0.0.1:8000`） |
+| `fact_tiktok_shop_daily` | 2 行 · biz_date=2026-08-03 · Deal / Gardena |
+| health / finance | 各 2 行同日 |
+| `GET /api/v1/tk/shop-daily?lookback_days=1` | `data_source=shop_daily` · gmv=5557.12 · real_shop_rows=2 |
+| post-collect | ads eval 0 → product eval 0 → **shop eval 0** → feishu sync 0 · **final=0** |
+| post-collect dry-run（16:02） | ads 10 hit · product 6 hit · shop scanned=2 missing_prev=2 · **final=0** |
+| 主配置 `stores.config.json` | 仍指向 **生产** `qingquan.jmzlai.com`；本地灌数用 `stores.config.local-ingest.json` |
+| 生产 | anomaly 表已建；api/worker 已 recreate；同日曾成功跑过一轮 shop-modules（写生产） |
+
+### 5.2 生产 2026-08-04 实跑（SoT = 新加坡 PG）
+
+| 项 | 结果 |
+|----|------|
+| 部署 | 补传 `main.py`（注册 `tk_ops`/`tk_anomaly_tasks`）+ TK domain/jobs/config；`docker compose build/up api worker` |
+| health | `{"status":"ok"}` |
+| OpenAPI TK | `/tk/shop-daily` `/tk/shop/anomaly-eval` `/tk/ads/*` `/tk/products/*` `/tk/anomaly-tasks*` |
+| `GET /tk/shop-daily?lookback_days=7` | `data_source=shop_daily` · total=5 · gmv=16669.14 · open_anomaly_count 随后更新 |
+| shop_daily 窗 | 5 行 · 3 业务日 · 2026-07-30～08-02 · Deal/Gardena |
+| shop anomaly | biz=2026-08-02 scanned=2 hit=0 skipped=2（环比未达 30%） |
+| ads anomaly write | scanned=10 · roi_low=8 · empty=2 · upserted=10 |
+| product anomaly write | scanned=239 · stockout=50 · low=1 · upserted=51 |
+| PG open 汇总 | product_stockout 50 · ads_roi_low 8 · ads_spend_no_sale 2 · product_stock_low 1 |
+| 本机 post-collect 16:13 | ads+product+shop+feishu **final=0**；anomaly 飞书 batch_update 200 · updated=16 |
+| 生产 feishu sync | ads/shop/anomaly 全过；anomaly **scanned=61 created=61 failed=0** |
+
+---
+
+## 6. 不做（P0 边界）
+
+内容 CTR、达人/联盟、分时 GMV、对 ROI 列直接平均。  
+（AI 素材分级整模块 **已砍 2026-08-06**，任何期不做。）

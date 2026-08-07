@@ -1,0 +1,70 @@
+# TK 英区店铺广告数据自动化监测
+
+紫鸟浏览器 **卖家自研插件**（Chrome MV3 扩展）：在已登录的 TikTok 店铺环境中抓取广告核心字段，并写入飞书多维表格。
+
+## 抓取字段
+
+| 字段 | 说明 |
+|------|------|
+| 广告系列名称 | Campaign / 品名 |
+| 广告花费 | Spend / Cost |
+| 销量 | Orders / Units |
+| ROI | ROI / ROAS |
+| 总收入 | GMV / Revenue / 销售额 |
+
+另附：业务日期、店铺、抓取时间、数据源 URL、状态。
+
+## 目录
+
+```
+extension/          # 插件源码（加载已解压 / 打包上传）
+docs/               # 飞书建表、安装上架、运维排障
+scripts/            # package-zip.ps1
+```
+
+## 快速开始
+
+### 1. 飞书
+
+按 [docs/飞书表格建表说明.md](docs/飞书表格建表说明.md) 建表并创建自建应用。
+
+### 2. 紫鸟调试加载
+
+1. 紫鸟中打开店铺窗口 → `chrome://extensions/` → 开发者模式  
+2. 「加载已解压的扩展程序」→ 选择 `extension` 目录  
+3. 扩展 **设置** 中填写飞书 App ID / Secret / app_token / table_id  
+4. 打开广告数据列表 → Popup **立即抓取**（建议先勾选干跑）
+
+详见 [docs/安装与上架指南.md](docs/安装与上架指南.md)。
+
+### 3. 打包上架
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-zip.ps1
+```
+
+将 `dist/tk-ad-scraper-v*.zip` 上传至紫鸟开放平台「卖家自研插件」，并在应用管理中分配给店铺账号。
+
+## 功能概览
+
+- 手动一键抓取 + 结果预览  
+- DOM 表头语义匹配（中英）+ 页面 fetch/XHR 报表兜底  
+- 飞书 `tenant_access_token` + 多维表批量写入（分批 500、失败重试）  
+- 每日定时（`chrome.alarms`，默认可设 07:30）  
+- 本地日志与 JSON 导出  
+
+## 重要限制
+
+- 不替代登录：依赖紫鸟店铺窗口已登录、页面已打开。  
+- 定时任务在浏览器/紫鸟退出后不可靠；完全无人值守需后续配合 `ziniao-cli` 拉起店铺。  
+- TikTok 后台改版可能导致选择器失效，需按 [docs/运维与排障.md](docs/运维与排障.md) 更新别名。
+
+## 需求来源
+
+- `海外店铺数据抓取与自动化需求分析.docx`  
+- `TK广告数据抓取项目梳理.xmind`  
+- 开放平台：[卖家自研插件](https://open.ziniao.com/docSupport?docId=101)  
+
+## 许可与范围
+
+仅供企业内部使用（卖家自研插件）。勿将飞书密钥写入仓库。

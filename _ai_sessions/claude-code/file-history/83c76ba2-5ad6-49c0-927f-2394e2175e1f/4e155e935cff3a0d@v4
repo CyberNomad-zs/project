@@ -1,0 +1,387 @@
+/* TikTok Shop orders list scraper — calibrated 2026-07-30 seller-uk order list.
+   Table columns: [chk] 订单 | 客户 | 商品 | 订单状态 | 物流方式 | 物流选项 | 合计 | ... | 操作
+   List view product cell is usually "N 件商品" (no SKU title on list).
+*/
+(function () {
+  function cleanText(t) {
+    return String(t ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function detectCurrency(text) {
+    const s = String(text ?? '');
+    if (/[£]|GBP|英镑/i.test(s)) return 'GBP';
+    if (/[€]|EUR|欧元/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB|元/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD|美金|美元/i.test(s)) return 'USD';
+    return null;
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    let s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s
+      .replace(/[,\s]/g, '')
+      .replace(/[¥$€£￥]/g, '')
+      .replace(/USD|GBP|EUR|CNY|RMB|美金|美元|英镑|欧元/gi, '')
+      .replace(/%/g, '');
+    const paren = s.match(/^\((.+)\)$/);
+    if (paren) s = `-${paren[1]}`;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** TK list order ids are typically 18-digit, often start with 57 */
+  function extractOrderId(text) {
+    const s = cleanText(text);
+    if (!s) return '';
+    const m =
+      s.match(/\b(57\d{16})\b/) ||
+      s.match(/\b(\d{18})\b/) ||
+      s.match(/\b(\d{15,20})\b/);
+    return m ? m[1] : '';
+  }
+
+  function extractRelativeTime(text) {
+    const s = cleanText(text);
+    const m =
+      s.match(/(\d+\s*分钟前)/) ||
+      s.match(/(今天\s*\d{1,2}:\d{2}(?::\d{2})?)/) ||
+      s.match(/(\d{4}\/\d{1,2}\/\d{1,2}\s*\d{1,2}:\d{2}(?::\d{2})?)/) ||
+      s.match(/(\d+\s*小时前|\d+\s*天前)/);
+    return m ? m[1] : '';
+  }
+
+  function extractQty(text) {
+    const s = cleanText(text);
+    const m = s.match(/(?:^|[^\d])(\d{1,3})\s*件商品/);
+    return m ? Number(m[1]) : null;
+  }
+
+  const HEADER_ALIASES = {
+    orderId: ['订单号', '订单编号', '订单', 'order id', 'order no', 'order number', 'order'],
+    orderStatus: ['订单状态', 'order status'],
+    productName: ['商品信息', '商品', '产品名称', 'product', 'product name', 'item'],
+    payAmount: ['合计', '实付', '订单金额', 'total', 'pay amount'],
+    shippingMethod: ['物流方式', 'shipping method', 'fulfillment type'],
+    shippingOption: ['物流选项', 'shipping option'],
+    buyer: ['客户', '买家', 'customer', 'buyer']
+  };
+
+  function matchField(header) {
+    const h = cleanText(header).toLowerCase();
+    if (!h) return null;
+    let best = null;
+    let bestLen = 0;
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      for (const a of aliases) {
+        const al = a.toLowerCase();
+        if (h === al || h.includes(al)) {
+          if (al.length >= bestLen) {
+            best = field;
+            bestLen = al.length;
+          }
+        }
+      }
+    }
+    // bare "状态" without 订单 — still status if only that
+    if (!best && (h === '状态' || h === 'status')) best = 'orderStatus';
+    return best;
+  }
+
+  function scoreTable(table) {
+    const trs = Array.from(table.querySelectorAll('tr'));
+    if (trs.length < 2) return 0;
+    const headCells = Array.from(trs[0].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+    let hits = 0;
+    const fields = {};
+    for (const h of headCells) {
+      const f = matchField(h);
+      if (f) {
+        hits++;
+        fields[f] = true;
+      }
+    }
+    if (!fields.orderId && !fields.orderStatus && !fields.payAmount) return 0;
+    return hits * 10 + Math.min(trs.length, 80);
+  }
+
+  function pickBestTable() {
+    const tables = Array.from(document.querySelectorAll('table'));
+    let best = null;
+    let bestScore = 0;
+    for (const t of tables) {
+      let s = scoreTable(t);
+      // 列表页表头有时不在 tr 内或首行已是数据：用订单号节点加权
+      const oidN = t.querySelectorAll('.order_id_number, [class*="order_id"]').length;
+      if (oidN > 0) s += 20 + Math.min(oidN, 30);
+      if (s > bestScore) {
+        bestScore = s;
+        best = t;
+      }
+    }
+    return bestScore >= 10 ? best : null;
+  }
+
+  function defaultColMap() {
+    // 实页：0 勾选, 1 订单, 2 客户, 3 商品, 4 订单状态, 5 物流方式, 6 物流选项, 7 合计
+    return {
+      orderId: 1,
+      buyer: 2,
+      productName: 3,
+      orderStatus: 4,
+      shippingMethod: 5,
+      shippingOption: 6,
+      payAmount: 7
+    };
+  }
+
+  function parseHtmlTable(table) {
+    const trs = Array.from(table.querySelectorAll('tr'));
+    if (trs.length < 1) return { rows: [], headers: [], colMap: {} };
+    let headIdx = -1;
+    for (let i = 0; i < Math.min(3, trs.length); i++) {
+      const cells = Array.from(trs[i].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+      const hits = cells.filter((h) => matchField(h)).length;
+      // 表头行通常无 18 位订单号
+      const hasOid = cells.some((c) => extractOrderId(c));
+      if (hits >= 2 && !hasOid) {
+        headIdx = i;
+        break;
+      }
+    }
+    let colMap = {};
+    let headCells = [];
+    if (headIdx >= 0) {
+      headCells = Array.from(trs[headIdx].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+      headCells.forEach((h, i) => {
+        const f = matchField(h);
+        if (f && colMap[f] == null) colMap[f] = i;
+      });
+    }
+    // 合并默认列位（实页校准）
+    const def = defaultColMap();
+    for (const k of Object.keys(def)) {
+      if (colMap[k] == null) colMap[k] = def[k];
+    }
+    if (!headCells.length) headCells = ['', '订单', '客户', '商品', '订单状态', '物流方式', '物流选项', '合计'];
+
+    const rows = [];
+    const seen = {};
+    const start = headIdx >= 0 ? headIdx + 1 : 0;
+    for (let r = start; r < trs.length; r++) {
+      const row = parseRow(trs[r], colMap);
+      if (!row || seen[row.orderId]) continue;
+      seen[row.orderId] = true;
+      rows.push(row);
+    }
+    return { colMap: colMap, rows: rows, headers: headCells };
+  }
+
+  function parseRow(tr, colMap) {
+    const cellEls = Array.from(tr.querySelectorAll('td,th'));
+    if (!cellEls.length) return null;
+    const cells = cellEls.map((c) => cleanText(c.textContent));
+    const get = (f) => (colMap[f] != null ? cells[colMap[f]] || '' : '');
+
+    let orderId = '';
+    const oidEl = tr.querySelector('.order_id_number, [class*="order_id"]');
+    if (oidEl) orderId = extractOrderId(oidEl.textContent);
+    if (!orderId) orderId = extractOrderId(get('orderId'));
+    if (!orderId) orderId = extractOrderId(cells.join(' '));
+    if (!orderId) return null;
+
+    const orderCell = get('orderId') || (colMap.orderId != null ? cells[colMap.orderId] : cells[1] || '');
+    const createTime = extractRelativeTime(orderCell) || extractRelativeTime(cells.join(' '));
+
+    const productCell = get('productName') || '';
+    let quantity = extractQty(productCell);
+    if (quantity == null) quantity = extractQty(cells.join(' ')) || 0;
+
+    // list view rarely has product title — keep "N 件商品" as product_name hint
+    let productName = '';
+    if (productCell && !/^\d+\s*件商品$/.test(productCell)) {
+      productName = productCell;
+    } else if (productCell) {
+      productName = productCell;
+    }
+
+    const payRaw = get('payAmount') || '';
+    const payAmount = parseNumber(payRaw);
+    const status = get('orderStatus') || '';
+    const shipping = get('shippingMethod') || get('shippingOption') || '';
+    const buyer = get('buyer') || '';
+    const blob = cells.join(' ');
+
+    return {
+      orderId: orderId,
+      orderStatus: status,
+      payTime: '',
+      createTime: createTime,
+      productName: productName,
+      sellerSku: '',
+      skuId: '',
+      quantity: quantity,
+      payAmount: payAmount != null ? payAmount : 0,
+      shippingStatus: shipping,
+      buyerRegion: '',
+      buyer: buyer,
+      currencyHint: detectCurrency(payRaw) || detectCurrency(blob),
+      rawCells: cells.slice(0, 10)
+    };
+  }
+
+  function parseHtmlTable(table) {
+    const trs = Array.from(table.querySelectorAll('tr'));
+    if (trs.length < 2) return { rows: [], headers: [], colMap: {} };
+    let headIdx = 0;
+    for (let i = 0; i < Math.min(3, trs.length); i++) {
+      const cells = Array.from(trs[i].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+      const hits = cells.filter((h) => matchField(h)).length;
+      if (hits >= 2) {
+        headIdx = i;
+        break;
+      }
+    }
+    const headCells = Array.from(trs[headIdx].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+    const colMap = {};
+    headCells.forEach((h, i) => {
+      const f = matchField(h);
+      if (f && colMap[f] == null) colMap[f] = i;
+    });
+    // fallback fixed positions if header match weak but looks like order table
+    if (colMap.orderId == null && headCells.some((h) => /订单/.test(h))) {
+      // typical: 0 chk, 1 order, 2 buyer, 3 product, 4 status, 5 ship method, 6 ship opt, 7 total
+      if (colMap.orderId == null) colMap.orderId = 1;
+      if (colMap.buyer == null) colMap.buyer = 2;
+      if (colMap.productName == null) colMap.productName = 3;
+      if (colMap.orderStatus == null) colMap.orderStatus = 4;
+      if (colMap.shippingMethod == null) colMap.shippingMethod = 5;
+      if (colMap.payAmount == null) colMap.payAmount = 7;
+    }
+    const rows = [];
+    const seen = {};
+    for (let r = headIdx + 1; r < trs.length; r++) {
+      const row = parseRow(trs[r], colMap);
+      if (!row || seen[row.orderId]) continue;
+      seen[row.orderId] = true;
+      rows.push(row);
+    }
+    return { colMap: colMap, rows: rows, headers: headCells };
+  }
+
+  function parseOrderIdNodes() {
+    const nodes = Array.from(document.querySelectorAll('.order_id_number, [class*="order_id"]'));
+    if (!nodes.length) return null;
+    const rows = [];
+    const seen = {};
+    for (const n of nodes) {
+      const orderId = extractOrderId(n.textContent);
+      if (!orderId || seen[orderId]) continue;
+      seen[orderId] = true;
+      const tr = n.closest('tr');
+      if (tr) {
+        // reuse column-ish parse with empty map + fixed indices
+        const colMap = {
+          orderId: 1,
+          buyer: 2,
+          productName: 3,
+          orderStatus: 4,
+          shippingMethod: 5,
+          payAmount: 7
+        };
+        const row = parseRow(tr, colMap);
+        if (row) {
+          rows.push(row);
+          continue;
+        }
+      }
+      const text = cleanText((tr || n).textContent).slice(0, 400);
+      const payM = text.match(/[£$€]\s*([0-9]+(?:\.[0-9]+)?)/);
+      const quantity = extractQty(text) || 0;
+      let status = '';
+      const sm = text.match(/(等待中|等待打包|待揽收|已发货|已完成|已取消|待发货|运输中)/);
+      if (sm) status = sm[1];
+      rows.push({
+        orderId: orderId,
+        orderStatus: status,
+        payTime: '',
+        createTime: extractRelativeTime(text),
+        productName: '',
+        sellerSku: '',
+        skuId: '',
+        quantity: quantity,
+        payAmount: payM ? parseNumber(payM[0]) : 0,
+        shippingStatus: '',
+        buyerRegion: '',
+        buyer: '',
+        currencyHint: detectCurrency(text),
+        rawCells: [text.slice(0, 160)]
+      });
+    }
+    return rows.length ? { rows: rows, headers: ['order_id_number'], colMap: {}, source: 'order-id-nodes' } : null;
+  }
+
+  try {
+    const url = location.href || '';
+    const title = document.title || '';
+    let parsed = null;
+    let source = 'none';
+    const table = pickBestTable();
+    if (table) {
+      parsed = parseHtmlTable(table);
+      source = 'html-table';
+    }
+    if (!parsed || !parsed.rows || parsed.rows.length === 0) {
+      const fb = parseOrderIdNodes();
+      if (fb) {
+        parsed = fb;
+        source = fb.source || 'order-id-nodes';
+      }
+    }
+
+    const rows = parsed && parsed.rows ? parsed.rows : [];
+    const currencyHits = { USD: 0, GBP: 0, EUR: 0, CNY: 0 };
+    for (const r of rows) {
+      const c = r.currencyHint;
+      if (c && currencyHits[c] != null) currencyHits[c]++;
+    }
+    let currency = 'GBP';
+    let max = -1;
+    for (const [k, v] of Object.entries(currencyHits)) {
+      if (v > max) {
+        max = v;
+        currency = k;
+      }
+    }
+    if (max <= 0) currency = 'GBP';
+
+    const ok = rows.length > 0;
+    return JSON.stringify({
+      ok: ok,
+      source: source,
+      module: 'orders',
+      url: url,
+      title: title,
+      currency: currency,
+      currencyHits: currencyHits,
+      headers: parsed && parsed.headers ? parsed.headers : [],
+      colMap: parsed && parsed.colMap ? parsed.colMap : {},
+      rows: rows,
+      rowCount: rows.length,
+      error: ok ? null : '未识别到订单表格。url=' + url
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false,
+      source: 'none',
+      module: 'orders',
+      url: location.href || '',
+      rows: [],
+      error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

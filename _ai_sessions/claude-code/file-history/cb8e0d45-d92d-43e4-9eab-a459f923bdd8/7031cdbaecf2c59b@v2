@@ -1,0 +1,25 @@
+# -*- coding: utf-8 -*-
+"""一次性测试 erp.update_order_status（三方仓>待更新>手动更新）。结果写 UTF-8 文件。"""
+import sys, os, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+OUT = os.path.join(config.DUMP_DIR, "erp_test_update.json")
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            json.dump({"error": "ERP未登录"}, open(OUT, "w", encoding="utf-8"), ensure_ascii=False); ctx.close(); return
+        res = erp.update_order_status(page)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_test_update.png"), full_page=True)
+        json.dump(res, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        print("done")
+        import time; time.sleep(3); ctx.close()
+
+
+if __name__ == "__main__":
+    main()

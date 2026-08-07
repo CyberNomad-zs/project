@@ -1,0 +1,29 @@
+---
+name: sellfox-server-deploy
+description: 赛狐下架监测部署到固定公网 IP 的 Linux（解决白名单）
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 2fcab51f-d98e-4a95-a0bd-c99cd9b9b50b
+  modified: 2026-07-30T08:49:15.789Z
+---
+
+2026-07-30：用户因本机 IP 常变、反复申请赛狐 API 白名单，要把脚本推到服务器。
+
+决策：
+- **只部署赛狐下架模块**（纯 Node HTTP，无 Chrome/Playwright/npm 依赖）
+- 流量待关注/下降仍用本机 Chrome 插件
+- 环境：Linux 云主机 + systemd
+
+交付物在 `temu-monitor/deploy/`：
+- `README-SERVER.md` 完整步骤
+- `pack-sellfox.ps1` 本机打精简 zip → `_dist/temu-sellfox-linux-*.zip`（不含密钥）
+- `install-sellfox-linux.sh` 装到 `/opt/temu-monitor`，用户 `temu`，服务名 `temu-sellfox`
+- `sellfox.service` systemd 模板
+- `cli.js start` 支持 SIGTERM/SIGINT 打断 sleep（方便 systemctl stop）
+
+白名单：服务器 `curl -4 ifconfig.me` 的出口 IP；可与 sellfox-bridge 共用 clientId，白名单做并集。
+密钥：`sellfox.config.json` 单独 scp，chmod 600；已 gitignore。
+
+**Why:** 固定出口 IP 一次加白名单；模块无浏览器依赖，1 核 1G 足够。
+**How to apply:** 见 [[sellfox-delist-monitor]] 与 `deploy/README-SERVER.md`；打包用 pack-sellfox.ps1。

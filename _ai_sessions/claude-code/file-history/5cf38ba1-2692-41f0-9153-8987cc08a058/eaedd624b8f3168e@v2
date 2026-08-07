@@ -1,0 +1,16 @@
+﻿$ErrorActionPreference = 'Stop'
+. 'E:\project\清泉跨境系统（企业级）\collectors\tiktok-ads\scripts\qingquan-client.ps1'
+$ref = Get-Date '2026-07-31 12:00:00'
+$d1 = Resolve-TikTokOrderDateTime -Text '星期六 15:29:41' -Ref $ref
+$d2 = Resolve-TikTokOrderDateTime -Text '3 分钟前' -Ref $ref
+$d3 = Resolve-TikTokOrderDateTime -Text '送达截止日期：2026/8/3 23:59:59' -Ref $ref
+Write-Output ("sat={0}" -f $d1)
+Write-Output ("min={0}" -f $d2)
+Write-Output ("rejectNull={0}" -f ($null -eq $d3))
+$rows = @([pscustomobject]@{
+  orderId = 'T1'; createTime = '星期六 15:29:41'; payAmount = 1.2
+  quantity = 1; orderStatus = 'x'; currencyHint = 'GBP'
+})
+$items = ConvertTo-QingquanOrderIngestItems -Rows $rows -CollectedAt '2026-07-31T12:00:00+00:00' -StoreId '273' -StoreName 'Gardena' -Currency 'GBP'
+Write-Output ("biz={0}" -f $items[0].biz_date)
+Write-Output ("create={0}" -f $items[0].payload.create_time)

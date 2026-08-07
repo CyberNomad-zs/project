@@ -1,0 +1,50 @@
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+import { log } from './logger.js';
+
+/**
+ * 启动持久化浏览器上下文（复用登录态）。
+ * 首次需有头人工登录一次，之后 session 保存在 userDataDir 中复用。
+ */
+export async function launchBrowser(cfg, { headless } = {}) {
+  mkdirSync(cfg.userDataDir, { recursive: true });
+  const context = await chromium.launchPersistentContext(cfg.userDataDir, {
+    headless: headless ?? cfg.headless,
+    viewport: { width: 1440, height: 900 },
+    locale: 'zh-CN',
+    timezoneId: 'Asia/Shanghai',
+    args: ['--disable-blink-features=AutomationControlled'],
+  });
+  context.setDefaultNavigationTimeout(cfg.navTimeoutMs);
+  context.setDefaultTimeout(15000);
+  const page = context.pages()[0] || await context.newPage();
+  return { context, page };
+}
+
+/**
+ * 判断当前是否已登录：访问商品列表页，若被重定向到登录页或出现登录表单则未登录。
+ */
+export async function isLoggedIn(page, cfg) {
+  try {
+    await page.goto(cfg.goodsListUrl, { waitUntil: 'domcontentloaded' });
+  } catch (e) {
+    log.warn('打开商品列表页失败：', e.message);
+  }
+  await page.waitForTimeout(3000);
+  const url = page.url();
+  // 登录页通常包含 login 关键字，或出现「登录」「密码」输入
+  if (/login|signin|account/i.test(url)) return false;
+  const loginForm = await page
+    .locator('input[type="password"], text=账号登录, text=扫码登录')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (loginForm) return false;
+  // 已登录时商品列表页应能看到「商品列表」或状态标签
+  const ok = await page
+    .getByText(/商品列表|在售中|全部\s*\d+/)
+    .first()
+    .isVisible()
+    .catch(() => false);
+  return ok;
+}

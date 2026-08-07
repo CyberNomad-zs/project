@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cat > /tmp/run_tk_sync.py <<'PY'
+import asyncio
+import json
+import logging
+import sys
+from uuid import uuid4
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+
+from app.config import get_settings
+from app.infra.db import SessionLocal
+from app.jobs.tk_feishu_sync import run_feishu_job
+from sqlalchemy import text
+
+s = get_settings()
+print("tk_token", s.feishu_bitable_app_token_tk or s.feishu_bitable_app_token)
+print("t1", s.feishu_bitable_table_tk_shop_daily)
+print("t2", s.feishu_bitable_table_tk_ads_campaign)
+print("app_id", s.feishu_app_id, "secret", bool(s.feishu_app_secret))
+
+KEYS = ["tk_ads_campaign", "tk_shop_daily"]
+LOOKBACK = 60
+LIMIT = 2000
+
+
+async def probe(db, sql: str, label: str) -> None:
+    try:
+        row = (await db.execute(text(sql))).mappings().first()
+        print("src", label, dict(row) if row else None)
+    except Exception as e:
+        await db.rollback()
+        print("src", label, "ERR", type(e).__name__, str(e)[:180])
+
+
+async def main() -> int:
+    rc = 0
+    async with SessionLocal() as db:
+        await probe(
+            db,
+            "SELECT count(*) AS n, min(biz_date)::text AS dmin, max(biz_date)::text AS dmax FROM tk.fact_ads_campaign_daily",
+            "ads",
+        )
+        await probe(
+            db,
+            "SELECT count(*) AS n, min(biz_date)::text AS dmin, max(biz_date)::text AS dmax FROM tk.fact_tiktok_shop_daily",
+            "shop_daily",
+        )
+        await probe(
+            db,
+            "SELECT count(*) AS n FROM tk.fact_tiktok_health_daily",
+            "health",
+        )
+        await probe(
+            db,
+            "SELECT count(*) AS n FROM tk.fact_tiktok_finance_daily",
+            "finance",
+        )
+
+        for key in KEYS:
+            job_id = str(uuid4())
+            payload = {
+                "lookback_days": LOOKBACK,
+                "limit": LIMIT,
+                "dry_run": False,
+            }
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO sync_feishu_job (id, table_key, mode, status, payload)
+                    VALUES (:id, :table_key, :mode, 'pending', CAST(:payload AS jsonb))
+                    """
+                ),
+                {
+                    "id": job_id,
+                    "table_key": key,
+                    "mode": "incremental",
+                    "payload": json.dumps(payload, ensure_ascii=False),
+                },
+            )
+            await db.commit()
+            print("---", key, "job", job_id)
+            try:
+                stats = await run_feishu_job(db, job_id)
+                print("OK", json.dumps(stats, ensure_ascii=False, default=str))
+                st = stats.get("status")
+                if st not in ("success", "skipped", "dry_run") or stats.get("failed"):
+                    rc = 1
+            except Exception as e:
+                logging.exception("fail %s", key)
+                print("ERR", key, e)
+                rc = 1
+                try:
+                    await db.rollback()
+                except Exception:
+                    pass
+    return rc
+
+
+sys.exit(asyncio.run(main()))
+PY
+
+echo "== run sync in api container =="
+docker cp /tmp/run_tk_sync.py qingquan-api-1:/tmp/run_tk_sync.py
+set +e
+docker exec -w /app -e PYTHONPATH=/app qingquan-api-1 python /tmp/run_tk_sync.py
+rc=$?
+set -e
+docker exec qingquan-api-1 rm -f /tmp/run_tk_sync.py || true
+rm -f /tmp/run_tk_sync.py
+
+echo "== recent jobs =="
+docker exec -i qingquan-db-1 psql -U qingquan -d qingquan <<'SQL'
+SELECT left(id::text,8) AS id, table_key, mode, status,
+       left(coalesce(error_message,''),160) AS err,
+       created_at AT TIME ZONE 'Asia/Shanghai' AS created_cst,
+       finished_at AT TIME ZONE 'Asia/Shanghai' AS finished_cst
+FROM sync_feishu_job
+ORDER BY created_at DESC
+LIMIT 8;
+
+SELECT table_key, count(*) AS mapped
+FROM sync_feishu_map
+WHERE table_key LIKE 'tk_%'
+GROUP BY 1
+ORDER BY 1;
+SQL
+
+exit $rc

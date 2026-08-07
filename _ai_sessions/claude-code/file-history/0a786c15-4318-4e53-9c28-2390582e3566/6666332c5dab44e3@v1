@@ -1,0 +1,109 @@
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ROOT } from './config.js';
+import { launchBrowser, isLoggedIn } from './browser.js';
+import { closePopups } from './popups.js';
+import { log } from './logger.js';
+
+/**
+ * 校准脚本：有头登录态下，抓取商品列表页 & 店铺切换相关的
+ *   - 所有 XHR/fetch 接口 URL（帮助确定商品列表 API）
+ *   - 顶部 header / 店铺切换器的 HTML（帮助确定选择器）
+ * 结果写入 data/calibrate-*.txt，供人工核对后微调选择器。
+ */
+export async function calibrate(cfg) {
+  const { context, page } = await launchBrowser(cfg, { headless: false });
+  const apiUrls = new Set();
+  page.on('request', (req) => {
+    const t = req.resourceType();
+    if (t === 'xhr' || t === 'fetch') apiUrls.add(`${req.method()} ${req.url()}`);
+  });
+
+  if (!(await isLoggedIn(page, cfg))) {
+    log.error('未登录，请先 npm run login');
+    await context.close();
+    return;
+  }
+  await closePopups(page);
+  log.info('已进入商品列表页，采集接口与 DOM 中…（10 秒）');
+  await page.waitForTimeout(4000);
+
+  // 点一下「在售中」标签，触发列表接口
+  const tab = page.getByText(/在售中\s*\d*/).first();
+  await tab.click({ timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(4000);
+
+  // 保存接口清单
+  const apiList = [...apiUrls].filter((u) => /goods|product|list|query|mms|mall|shop|search/i.test(u));
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-apis.txt'),
+    [...apiUrls].sort().join('\n'),
+    'utf8'
+  );
+  log.info(`接口清单已保存（${apiUrls.size} 条），疑似相关：`);
+  for (const u of apiList.slice(0, 40)) log.info('  ', u);
+
+  // 保存顶部 header HTML（含店铺切换器）
+  const headerHtml = await page
+    .locator('header, [class*="header" i], [class*="Header" i]')
+    .first()
+    .innerHTML()
+    .catch(() => '');
+  writeFileSync(resolve(ROOT, 'data', 'calibrate-header.html'), headerHtml, 'utf8');
+
+  // 保存整页可见文本片段（辅助核对标签/芯片文案）
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  writeFileSync(resolve(ROOT, 'data', 'calibrate-bodytext.txt'), bodyText, 'utf8');
+
+  // 保存「切换前」整页 HTML，供离线核对
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-page-before.html'),
+    await page.content().catch(() => ''),
+    'utf8'
+  );
+
+  // 自动尝试打开店铺切换器：逐个试候选触发区，打开后把整页 HTML 存盘，
+  // 供离线分析下拉结构（stores.js 的 SWITCHER_TRIGGERS / STORE_ITEM_SELECTORS 据此微调）。
+  const SWITCHER_CANDIDATES = [
+    '[class*="MallSelect"]',
+    '[class*="mall-select"]',
+    '[class*="shopSelect"]',
+    '[class*="StoreSelect"]',
+    '[class*="mallName" i]',
+    '[class*="shopName" i]',
+    'header [class*="select" i]',
+  ];
+  let openedBy = '';
+  for (const sel of SWITCHER_CANDIDATES) {
+    const el = page.locator(sel).first();
+    if (await el.isVisible({ timeout: 400 }).catch(() => false)) {
+      await el.click({ timeout: 1500 }).catch(() => {});
+      await page.waitForTimeout(1200);
+      openedBy = sel;
+      break;
+    }
+  }
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-page-switcher-open.html'),
+    await page.content().catch(() => ''),
+    'utf8'
+  );
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-switcher-meta.txt'),
+    `openedBy=${openedBy || '(未命中任何候选，见下方手动观察)'}\n候选清单:\n${SWITCHER_CANDIDATES.join('\n')}\n`,
+    'utf8'
+  );
+  if (openedBy) log.info(`已自动点开疑似店铺切换器（命中 ${openedBy}），整页 HTML 已存盘。`);
+  else log.warn('未自动命中店铺切换器候选，请在接下来 20 秒内手动点开，我已存下切换前整页 HTML 供比对。');
+
+  log.info('校准文件已写入 data/：calibrate-apis.txt / calibrate-header.html / calibrate-bodytext.txt / calibrate-page-before.html / calibrate-page-switcher-open.html / calibrate-switcher-meta.txt');
+  log.info('浏览器保持打开，请手动点开右上角店铺切换器再观察一次。20 秒后自动关闭。');
+  await page.waitForTimeout(20000);
+  // 手动打开后再存一次，兜底自动点击没命中的情况
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-page-switcher-manual.html'),
+    await page.content().catch(() => ''),
+    'utf8'
+  );
+  await context.close().catch(() => {});
+}

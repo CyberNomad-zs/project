@@ -1,0 +1,11 @@
+{"ts_ms":1785285415028,"kind":"start","pid":1476,"version":"0.2.112"}
+{"ts_ms":1785285415044,"kind":"sample"}
+{"ts_ms":1785285425134,"kind":"purge","reason":"session-load-replay","hook_installed":false,"purge_us":0}
+{"ts_ms":1785285445206,"kind":"sample"}
+{"ts_ms":1785285475206,"kind":"sample"}
+{"ts_ms":1785285505206,"kind":"sample"}
+{"ts_ms":1785285535208,"kind":"sample"}
+{"ts_ms":1785285565208,"kind":"sample"}
+{"ts_ms":1785285595209,"kind":"sample"}
+{"ts_ms":1785285625210,"kind":"sample"}
+{"ts_ms":1785285655211,"kind":"sample"}

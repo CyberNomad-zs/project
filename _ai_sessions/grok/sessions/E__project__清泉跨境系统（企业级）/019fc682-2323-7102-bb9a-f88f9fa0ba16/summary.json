@@ -1,0 +1,24 @@
+{
+  "info": {
+    "id": "019fc682-2323-7102-bb9a-f88f9fa0ba16",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "",
+  "created_at": "2026-08-03T07:24:05.340628200Z",
+  "updated_at": "2026-08-03T07:24:06.968062300Z",
+  "num_messages": 0,
+  "num_chat_messages": 2,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 0,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "63430e8dca93151f6f79975299cc51ce8a293530",
+  "head_branch": "feature/tk-products-kpi",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

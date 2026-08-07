@@ -1,0 +1,24 @@
+---
+name: traffic-plugin-primary
+description: 2026-07-31 起日常流量用 Chrome 插件 v14，上下架服务器赛狐，本机 Playwright 流量退役
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 4769de39-59f6-4d8a-bc7b-a82e02b2a9a3
+  modified: 2026-08-06T08:49:15.497Z
+---
+
+主路径（2026-07-31 定）：
+
+| 通道 | 职责 |
+|------|------|
+| **temu-plugin v19+**（同事日常 Chrome） | 限流分级（VIP/JM+热销）+ **在售 A+B 上下架兜底**（count 即时数量 + 清单点名；上架二次确认；6h 冷却）+ 09:30/16:30 汇总；切店限流静默吸收 |
+| **服务器 temu-sellfox** | 赛狐 `selectStatus=12` 上下架（可能滞后于 Temu 后台） |
+| **本机 Playwright temu-monitor** | 代码保留作应急/DOM 回归；**停发** traffic-local 给同事日常；勿与插件双开 |
+
+插件 bgVersion：`v19-上下架A+B`；manifest `0.2.5`。升级须 chrome://extensions **关开开关**重建 SW。
+
+分发包：加载已解压 `temu-plugin/` 即可。
+
+**Why:** 本机第二套 `.userdata` Chrome 与日常同账号双端易互踢。2026-08-06 实锤赛狐对平台下架不同步（茶蜡 SKC 7636599333 后台已下架仍 12）→ v19 插件以 agentseller 后台为兜底，卡片标「插件·后台」；赛狐保留作服务器通道。限流逻辑仍 v15–v18。
+**How to apply:** 同事装 v19 + 关开开关；服务器 sellfox 不动。改监测优先 `temu-plugin/`。相关 [[temu-plugin-versions]] [[sellfox-server-deploy]] [[temu-monitor-project]]。

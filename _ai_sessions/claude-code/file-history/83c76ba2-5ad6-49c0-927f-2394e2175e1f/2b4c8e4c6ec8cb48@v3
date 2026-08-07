@@ -1,0 +1,66 @@
+# Night loop for TK collectors (ads + orders)
+# Runs until stopped. When Ziniao Bridge is up, executes collect scripts.
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\night-loop.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\night-loop.ps1 -IntervalSec 600
+
+param(
+  [int]$IntervalSec = 900,
+  [switch]$AdsOnly,
+  [switch]$OrdersOnly,
+  [string]$DryRun = "false"
+)
+
+$ErrorActionPreference = 'Continue'
+$root = Split-Path $PSScriptRoot -Parent
+$logs = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $logs | Out-Null
+$logFile = Join-Path $logs ("night-loop-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+
+function Log([string]$m) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m
+  Write-Host $line
+  Add-Content -LiteralPath $logFile -Value $line -Encoding UTF8
+}
+
+function Test-Bridge {
+  try {
+    # Bridge often returns 401 without auth — that still means process is listening
+    Invoke-WebRequest -Uri 'http://127.0.0.1:9481/' -TimeoutSec 3 -UseBasicParsing | Out-Null
+    return $true
+  } catch {
+    $msg = [string]$_.Exception.Message
+    if ($msg -match '401|403|400|200') { return $true }
+    if ($_.Exception.Response) { return $true }
+    return $false
+  }
+}
+
+Log "night-loop start interval=${IntervalSec}s log=$logFile"
+$round = 0
+while ($true) {
+  $round++
+  Log "===== round $round ====="
+  $up = Test-Bridge
+  if (-not $up) {
+    Log "Bridge down — skip scrape (code already landed; waiting)"
+  } else {
+    Log "Bridge seems up — run collectors"
+    if (-not $OrdersOnly) {
+      Log "run-multi-store (ads)..."
+      try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-multi-store.ps1') -DryRun $DryRun
+        Log "ads exit=$LASTEXITCODE"
+      } catch { Log "ads error: $_" }
+    }
+    if (-not $AdsOnly) {
+      Log "run-orders..."
+      try {
+        & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-orders.ps1') -DryRun $DryRun
+        Log "orders exit=$LASTEXITCODE"
+      } catch { Log "orders error: $_" }
+    }
+  }
+  Log "sleep ${IntervalSec}s"
+  Start-Sleep -Seconds $IntervalSec
+}

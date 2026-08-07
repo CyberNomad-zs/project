@@ -1,0 +1,106 @@
+@echo off
+rem Pure ASCII menu (cmd codepage-safe). Prefer 美化启动器.bat for GUI.
+cd /d "%~dp0"
+title Temu Monitor Launcher
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [ERR] Node.js not found. Install LTS: https://nodejs.org
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [First run] npm install ...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   npm install failed.
+    pause
+    exit /b 1
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo            Temu Monitor Launcher
+echo   GUI: double-click  美化启动器.bat
+echo   Docs: 使用说明.txt  PLUGIN_PARITY.md
+echo ============================================
+echo.
+echo    1.  Login Temu          (first time / expired)
+echo    2.  Full start once     (sellfox delist + browser traffic)
+echo    3.  Full start loop     (foreground, keep window open)
+echo    4.  Enable auto-start   (Task TemuMonitor)
+echo    5.  Disable auto-start
+echo    6.  Sellfox probe only
+echo    7.  Sellfox once only
+echo    0.  Exit
+echo.
+set /p "c=Choice: "
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_once
+if "%c%"=="3" goto do_start
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="6" goto do_sf_probe
+if "%c%"=="7" goto do_sf_once
+if "%c%"=="0" exit /b 0
+goto menu
+
+:do_login
+echo.
+echo Browser will open. Log in to Temu Seller Central.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo Full monitor loop. Keep window open. Ctrl+C to stop.
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_sf_probe
+echo.
+node src\sellfox\cli.js probe
+echo.
+pause
+goto menu
+
+:do_sf_once
+echo.
+node src\sellfox\cli.js once
+echo.
+pause
+goto menu

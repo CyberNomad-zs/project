@@ -1,0 +1,4 @@
+{"timestamp":"2026-07-28T07:24:19.557638500Z","session_id":"019fa79c-251c-7431-9957-6e97486a8c45","prompt":"这是什么项目？","is_bash":false}
+{"timestamp":"2026-07-30T05:00:51.556652Z","session_id":"019fb165-69a9-7151-b805-ca4325dd0e4a","prompt":"后台定时任务停掉","is_bash":false}
+{"timestamp":"2026-07-30T06:03:00.225089700Z","session_id":"019fb165-69a9-7151-b805-ca4325dd0e4a","prompt":"这个任务是做什么的？","is_bash":false}
+{"timestamp":"2026-07-30T06:04:36.580569700Z","session_id":"019fb165-69a9-7151-b805-ca4325dd0e4a","prompt":"SellfoxBridge-Recon-Daily → E:\\project\\...\\sellfox-bridge\\run_recon_daily.bat  这个任务是做什么的？","is_bash":false}

@@ -1,0 +1,14 @@
+{"ts":"2026-07-30T03:36:21.411Z","type":"mcp_config_resolved","servers":[{"name":"playwright","transport":"stdio","source":"local"}],"disabled":[]}
+{"ts":"2026-07-30T03:36:21.411Z","type":"mcp_managed_config_result","server_count":0}
+{"ts":"2026-07-30T03:36:21.458Z","type":"mcp_server_starting","server_name":"playwright","transport":"stdio","target":"cmd /c npx @playwright/mcp@latest","timeout_sec":30}
+{"ts":"2026-07-30T03:36:21.587Z","type":"turn_started","session_id":"019fb118-3387-76e2-9e4b-9bee6d9f6a69","turn_number":0,"model_id":"grok-4.5","yolo_mode":true,"conversation_message_count":4,"session_relationship":"primary","schema_version":"1.0"}
+{"ts":"2026-07-30T03:36:21.593Z","type":"loop_started","loop_index":0}
+{"ts":"2026-07-30T03:36:21.594Z","type":"phase_changed","phase":"waiting_for_model"}
+{"ts":"2026-07-30T03:36:51.473Z","type":"mcp_server_failed","server_name":"playwright","transport":"stdio","target":"cmd /c npx @playwright/mcp@latest","error_type":"timeout","error_message":"MCP server 'playwright' timed out after 30s","duration_ms":30014,"timeout_sec":30}
+{"ts":"2026-07-30T03:36:51.473Z","type":"mcp_init_completed","total_servers":1,"succeeded":0,"failed":1,"auth_required":0,"total_tools":0,"duration_ms":30015,"is_reinit":false,"failed_servers":["playwright"]}
+{"ts":"2026-07-30T03:39:08.555Z","type":"turn_ended","outcome":"cancelled","cancellation_category":"mid_turn_abort","cancellation_context":{"trigger":"esc"}}
+{"ts":"2026-07-30T03:40:58.815Z","type":"mcp_config_resolved","servers":[{"name":"playwright","transport":"stdio","source":"local"}],"disabled":[]}
+{"ts":"2026-07-30T03:40:58.815Z","type":"mcp_managed_config_result","server_count":0}
+{"ts":"2026-07-30T03:40:58.838Z","type":"mcp_server_starting","server_name":"playwright","transport":"stdio","target":"cmd /c npx @playwright/mcp@latest","timeout_sec":30}
+{"ts":"2026-07-30T03:41:04.027Z","type":"mcp_server_connected","server_name":"playwright","transport":"stdio","tool_count":24,"duration_ms":5188,"tools":["browser_close","browser_resize","browser_console_messages","browser_handle_dialog","browser_evaluate","browser_file_upload","browser_drop","browser_find","browser_fill_form","browser_press_key","browser_type","browser_navigate","browser_navigate_back","browser_network_requests","browser_network_request","browser_run_code_unsafe","browser_take_screenshot","browser_snapshot","browser_click","browser_drag","browser_hover","browser_select_option","browser_tabs","browser_wait_for"]}
+{"ts":"2026-07-30T03:41:04.027Z","type":"mcp_init_completed","total_servers":1,"succeeded":1,"failed":0,"auth_required":0,"total_tools":24,"duration_ms":5189,"is_reinit":false}

@@ -1,0 +1,215 @@
+﻿# P2.0: open data-overview -> click content/product-card nav -> scrape
+# Save as UTF-8 with BOM for Windows PowerShell 5.1.
+# Usage: powershell -ExecutionPolicy Bypass -File .\scripts\run-content-click-poc.ps1
+
+param(
+  [string]$StoreId = "27501502216807",
+  [string]$StartUrl = "https://seller-uk.tiktok.com/compass/data-overview?shop_region=GB"
+)
+
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+$logsDir = Join-Path $root "logs"
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+
+# Chinese labels via char codes (avoid encoding breakage if BOM stripped)
+$LabelContent = -join [char[]](0x5185, 0x5BB9, 0x5206, 0x6790)  # content analysis
+$LabelVideoPhotos = -join [char[]](0x89C6, 0x9891, 0x548C, 0x7167, 0x7247)  # video and photos
+$LabelVideoOverview = $LabelVideoPhotos + (-join [char[]](0x6982, 0x89C8))  # overview
+$LabelShortVideo = -join [char[]](0x77ED, 0x89C6, 0x9891)  # short video
+$LabelProductCard = -join [char[]](0x5546, 0x54C1, 0x5361)  # product card
+$LabelProductData = -join [char[]](0x5546, 0x54C1, 0x6570, 0x636E, 0x5206, 0x6790)  # product data analysis
+
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg)
+}
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw "node not found" }
+  $runJs = Join-Path $env:APPDATA "npm\node_modules\@ziniao-open\cli\scripts\run.js"
+  if (-not (Test-Path $runJs)) { throw "ziniao-cli run.js not found" }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join " "
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr) { Write-Host $stderr }
+  return $stdout
+}
+function ConvertTo-ScrapeOneLine([string]$js) {
+  return (($js -replace "(?m)^\s*//.*$", "" -replace "\r?\n", " " -replace "\s+", " ").Trim())
+}
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      return ([string]$j.data.data.result | ConvertFrom-Json)
+    }
+    if ($null -ne $j.ok) { return $j }
+  } catch { }
+  $m = [regex]::Matches($execOut, "\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}")
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+function Write-Utf8File([string]$Path, [string]$Content) {
+  $text = ""
+  if ($null -ne $Content) { $text = [string]$Content }
+  [System.IO.File]::WriteAllText($Path, $text, [System.Text.UTF8Encoding]::new($false))
+}
+function Invoke-PageExec([string]$sid, [string]$oneLiner) {
+  return Invoke-Ziniao @("page", "exec", "--store-id", $sid, "--script", $oneLiner, "--timeout", "60000")
+}
+function Invoke-ClickNav([string]$sid, [string]$label) {
+  $jsPath = Join-Path $PSScriptRoot "_click-compass-nav.js"
+  $js = Get-Content $jsPath -Raw -Encoding UTF8
+  $escaped = $label.Replace("\", "\\").Replace("'", "\'")
+  $js = [regex]::Replace($js, "var DEFAULT_LABEL = '[^']*';", ("var DEFAULT_LABEL = '{0}';" -f $escaped))
+  $one = ConvertTo-ScrapeOneLine $js
+  Write-Step ("  click nav label={0}" -f $label)
+  $out = Invoke-PageExec $sid $one
+  $payload = Get-ScrapePayload $out
+  $safe = ($label -replace "[^\w]+", "_")
+  if ([string]::IsNullOrWhiteSpace($safe)) { $safe = "label" }
+  $path = Join-Path $logsDir ("content-click-{0}-{1}-{2}.json" -f $safe, $sid, $stamp)
+  Write-Utf8File $path (($payload | ConvertTo-Json -Depth 8))
+  $after = ""
+  $okc = $false
+  if ($payload) {
+    $okc = [bool]$payload.ok
+    if ($payload.afterUrl) { $after = [string]$payload.afterUrl }
+  }
+  Write-Step ("  click ok={0} afterUrl={1} file={2}" -f $okc, $after, $path)
+  return $payload
+}
+
+$sid = $StoreId
+Write-Step "===== content-click-poc START ====="
+Write-Step ("store={0} start={1}" -f $sid, $StartUrl)
+Write-Step ("labels content=[{0}] product=[{1}]" -f $LabelContent, $LabelProductCard)
+
+$ziniaoWinLib = Join-Path $PSScriptRoot 'ziniao-window.ps1'
+if (Test-Path $ziniaoWinLib) { . $ziniaoWinLib }
+if (Get-Command New-ZiniaoStoreOpenArgs -ErrorAction SilentlyContinue) {
+  Write-Host (Invoke-Ziniao (New-ZiniaoStoreOpenArgs -StoreId $sid -Url $StartUrl -WindowRatio 'full'))
+} else {
+  Write-Host (Invoke-Ziniao @("store", "open", "--id", $sid, "--url", $StartUrl, "--window-ratio", "full"))
+}
+Start-Sleep -Seconds 28
+if (Get-Command Invoke-ZiniaoStoreMaximize -ErrorAction SilentlyContinue) {
+  Invoke-ZiniaoStoreMaximize -StoreId $sid -InvokeZiniao ${function:Invoke-Ziniao} -WriteStep ${function:Write-Step} | Out-Null
+}
+$null = Invoke-Ziniao @("page", "visit", "--store-id", $sid, "--url", $StartUrl, "--wait-until", "load", "--timeout", "120000")
+Start-Sleep -Seconds 40
+if (Get-Command Invoke-ZiniaoStoreMaximize -ErrorAction SilentlyContinue) {
+  Invoke-ZiniaoStoreMaximize -StoreId $sid -InvokeZiniao ${function:Invoke-Ziniao} -WriteStep ${function:Write-Step} | Out-Null
+}
+
+$probe = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot "_discover-content-nav-deep.js") -Raw -Encoding UTF8)
+$shell = Get-ScrapePayload (Invoke-PageExec $sid $probe)
+Write-Utf8File (Join-Path $logsDir ("content-shell-{0}-{1}.json" -f $sid, $stamp)) (($shell | ConvertTo-Json -Depth 10))
+$bl = 0
+$th = 0
+if ($shell) {
+  if ($shell.bodyLen) { $bl = [int]$shell.bodyLen }
+  if ($shell.textHits) { $th = @($shell.textHits).Count }
+}
+Write-Step ("shell bodyLen={0} textHits={1}" -f $bl, $th)
+
+$results = @()
+
+# content analysis branch
+$null = Invoke-ClickNav $sid $LabelContent
+Start-Sleep -Seconds 25
+foreach ($lab in @($LabelVideoPhotos, $LabelVideoOverview, $LabelShortVideo)) {
+  $cx = Invoke-ClickNav $sid $lab
+  Start-Sleep -Seconds 12
+  if ($cx -and $cx.ok) { break }
+}
+Start-Sleep -Seconds 20
+$contentScrape = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot "scrape-content-overview-page.js") -Raw -Encoding UTF8)
+$cPayload = $null
+for ($a = 1; $a -le 3; $a++) {
+  Write-Step ("  scrape content_overview attempt {0}" -f $a)
+  $cPayload = Get-ScrapePayload (Invoke-PageExec $sid $contentScrape)
+  if ($cPayload -and $cPayload.ok) { break }
+  Start-Sleep -Seconds 15
+}
+$cPath = Join-Path $logsDir ("content_overview-click-debug-{0}-{1}.json" -f $sid, $stamp)
+Write-Utf8File $cPath ((@{ module = "content_overview"; scrapeOk = [bool]($cPayload -and $cPayload.ok); payload = $cPayload } | ConvertTo-Json -Depth 12))
+$cOk = [bool]($cPayload -and $cPayload.ok)
+$cUrl = $null
+$cErr = "no payload"
+if ($cPayload) {
+  if ($cPayload.url) { $cUrl = [string]$cPayload.url }
+  if ($cPayload.error) { $cErr = [string]$cPayload.error } elseif ($cOk) { $cErr = $null }
+}
+Write-Step ("  content_overview ok={0} url={1}" -f $cOk, $cUrl)
+$results += [pscustomobject]@{ module = "content_overview"; ok = $cOk; url = $cUrl; path = $cPath; error = $cErr }
+
+# product card branch
+$null = Invoke-Ziniao @("page", "visit", "--store-id", $sid, "--url", $StartUrl, "--wait-until", "load", "--timeout", "120000")
+Start-Sleep -Seconds 35
+$c2 = Invoke-ClickNav $sid $LabelProductCard
+Start-Sleep -Seconds 8
+if (-not ($c2 -and $c2.ok)) {
+  $null = Invoke-ClickNav $sid $LabelProductData
+  Start-Sleep -Seconds 8
+}
+Start-Sleep -Seconds 25
+$trafficScrape = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot "scrape-product-traffic-page.js") -Raw -Encoding UTF8)
+$tPayload = $null
+for ($a = 1; $a -le 3; $a++) {
+  Write-Step ("  scrape product_traffic attempt {0}" -f $a)
+  $tPayload = Get-ScrapePayload (Invoke-PageExec $sid $trafficScrape)
+  if ($tPayload -and $tPayload.ok) { break }
+  Start-Sleep -Seconds 15
+}
+$tPath = Join-Path $logsDir ("product_traffic-click-debug-{0}-{1}.json" -f $sid, $stamp)
+Write-Utf8File $tPath ((@{ module = "product_traffic"; scrapeOk = [bool]($tPayload -and $tPayload.ok); payload = $tPayload } | ConvertTo-Json -Depth 12))
+$tOk = [bool]($tPayload -and $tPayload.ok)
+$tUrl = $null
+$tErr = "no payload"
+if ($tPayload) {
+  if ($tPayload.url) { $tUrl = [string]$tPayload.url }
+  if ($tPayload.error) { $tErr = [string]$tPayload.error } elseif ($tOk) { $tErr = $null }
+}
+Write-Step ("  product_traffic ok={0} url={1}" -f $tOk, $tUrl)
+$results += [pscustomobject]@{ module = "product_traffic"; ok = $tOk; url = $tUrl; path = $tPath; error = $tErr }
+
+try { $null = Invoke-Ziniao @("store", "close", "--id", $sid) } catch { }
+
+$sumPath = Join-Path $logsDir ("content-click-poc-summary-{0}.json" -f $stamp)
+Write-Utf8File $sumPath (($results | ConvertTo-Json -Depth 6))
+Write-Step "======== CLICK-POC SUMMARY ========"
+$results | Format-Table module, ok, url, error -AutoSize
+Write-Step ("summary: {0}" -f $sumPath)
+Write-Step "===== content-click-poc END ====="

@@ -1,0 +1,61 @@
+# -*- coding: utf-8 -*-
+"""复用 ERP 会话，进入 待处理 视图，抓取 物流下单 按钮/渠道下拉/表格 结构。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=True, no_viewport=True,
+            args=["--no-sandbox"], ignore_https_errors=True)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        core.safe_goto(page, config.ERP_URL)
+        for _ in range(30):
+            time.sleep(1)
+            if page.query_selector(".el-table"):
+                break
+        time.sleep(2)
+
+        # 进入 待处理 视图
+        try:
+            page.click("text=待处理", timeout=6000)
+            time.sleep(4)
+            print("已切到 待处理")
+        except Exception as e:
+            print("切待处理失败:", e)
+
+        # 工具栏按钮
+        btns = page.eval_on_selector_all("button",
+            "els=>els.filter(e=>!!(e.offsetWidth||e.offsetHeight)).map(e=>e.innerText.trim()).filter(Boolean)")
+        print("可见按钮:", [b for b in btns if len(b) < 12][:40])
+
+        # 左侧导航
+        navs = page.eval_on_selector_all("*",
+            "els=>els.filter(e=>e.children.length===0&&e.innerText&&e.innerText.trim().length<10).map(e=>e.innerText.trim())")
+        import re
+        nav_uniq = [n for n in dict.fromkeys(navs) if re.search(r'待|仓|货|发货|处理|审核|异常', n)]
+        print("导航候选:", nav_uniq[:30])
+
+        # 打开 全部渠道 下拉，抓渠道选项
+        try:
+            page.click("text=全部渠道", timeout=5000)
+            time.sleep(1.5)
+            opts = page.eval_on_selector_all(".el-select-dropdown__item, .el-checkbox__label, li",
+                "els=>els.map(e=>e.innerText.trim()).filter(t=>t&&t.length<40)")
+            chan = [o for o in dict.fromkeys(opts) if ('海外仓' in o or 'BLACKCAT' in o or 'RM' in o or 'DPD' in o or 'EH' in o)]
+            print("渠道选项:", chan[:30])
+        except Exception as e:
+            print("渠道下拉失败:", e)
+
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_daichuli.png"), full_page=True)
+        with open(os.path.join(config.DUMP_DIR, "erp_daichuli.html"), "w", encoding="utf-8") as f:
+            f.write(page.content())
+        print("saved erp_daichuli.*")
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

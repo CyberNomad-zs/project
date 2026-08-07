@@ -1,0 +1,35 @@
+import os, glob
+from PIL import Image
+
+fdir = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\dce5b0ea-d0d2-42df-858e-039f76260a64\scratchpad\frames"
+outdir = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\dce5b0ea-d0d2-42df-858e-039f76260a64\scratchpad\montage"
+os.makedirs(outdir, exist_ok=True)
+
+files = sorted(glob.glob(os.path.join(fdir, "f_*.jpg")))
+print("total frames:", len(files))
+
+cols, rows = 4, 5           # 20 per sheet
+tw, th = 480, 270           # thumb size
+per = cols*rows
+sheets = (len(files)+per-1)//per
+
+for s in range(sheets):
+    sheet = Image.new("RGB", (cols*tw, rows*th), (20,20,20))
+    from PIL import ImageDraw
+    d = ImageDraw.Draw(sheet)
+    for i in range(per):
+        idx = s*per + i
+        if idx >= len(files): break
+        im = Image.open(files[idx]).resize((tw, th))
+        c, r = i % cols, i // cols
+        x, y = c*tw, r*th
+        sheet.paste(im, (x, y))
+        # label with frame number = seconds*2 (approx time)
+        n = int(os.path.basename(files[idx]).split("_")[1].split(".")[0])
+        secs = (n-1)*2
+        label = f"#{n} {secs//60}:{secs%60:02d}"
+        d.rectangle([x, y, x+90, y+16], fill=(0,0,0))
+        d.text((x+2, y+2), label, fill=(255,255,0))
+    out = os.path.join(outdir, f"sheet_{s+1:02d}.jpg")
+    sheet.save(out, quality=80)
+    print("saved", out)

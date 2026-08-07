@@ -1,0 +1,801 @@
+// 隔离世界：① 注入 inject.js；② 转发接口响应(带当前店名)；③ 读流量待关注 chip；
+// ④ 接收后台指令自动切店(轮巡用)。
+(function () {
+  var LOG = TemuLogger.createLogger('content');
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  LOG.info('content.js loaded -- v14');
+
+  // 页面操作互斥锁：scanWatchList/scanOnSaleList/switchTo 都会改动「快速筛选/tab/切店」状态，
+  // 绝不能并发——否则「商品流量待关注」筛选一打开，并发的在售扫描就只扫到筛选后的几条，
+  // 误判成「下架 N 个」（这是历史假告警「在售 13→3」的根因）。所有改动型指令排队串行执行。
+  let opChain = Promise.resolve();
+  function withLock(fn) {
+    const run = opChain.then(fn, fn); // 无论上一个成功/失败都接着跑（fn 不依赖上个结果）
+    opChain = run.then(() => {}, (e) => { LOG.warn('Locked operation failed: ' + (e && e.message || e)); }); // 吞掉结果/异常，保持链条连续
+    return run; // 调用方拿到 fn 的真实结果/异常
+  }
+
+  // 注入 MAIN world hook
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+    LOG.info('inject.js injected into MAIN world');
+  } catch (e) { LOG.warn('inject.js injection failed: ' + (e && e.message || e)); }
+
+  // ---------- 读当前店铺名（右上角英文店名） ----------
+  // 假店名黑名单：商品颜色/规格/尺码常被误读成「店名」写进 storage
+  // （历史假店：Beige/Black/Charcoal/Grey/Rustic Brown/White Grey/Black Grey…）
+  const FAKE_STORE_WORDS = /^(black|white|grey|gray|beige|brown|charcoal|red|blue|green|pink|purple|yellow|orange|gold|silver|ivory|cream|navy|olive|tan|khaki|maroon|coral|mint|teal|cyan|magenta|wine|rose|nude|camel|sand|stone|rustic|dark|light|natural|clear|multi|assorted|random|one size|os|xs|s|m|l|xl|xxl|xxxl|sku|skc|spu|usd|cny|eur|gbp|new|beta|seller|central|best|seller|english|chinese|all|more|less|edit|save|submit|cancel|close|next|prev|back|home|cart|account|login|sign|menu|search|help|support|local|warehouse|free|shipping|sale|off|pack|size|color|colour|style|qty|quantity|option|select)$/i;
+  function isFakeStoreName(t) {
+    if (!t) return true;
+    const s = String(t).trim();
+    if (s.length < 2 || s.length > 30) return true;
+    // 纯大写+数字货号
+    if (/^[A-Z0-9]+$/.test(s)) return true;
+    // UI 固定词
+    if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(s)) return true;
+    // 整句是颜色/规格词（含多词如 "Rustic Brown" / "Black Grey" / "Ivory White"）
+    const words = s.split(/\s+/);
+    if (words.every((w) => FAKE_STORE_WORDS.test(w))) return true;
+    // 单色词（"Black"）
+    if (words.length === 1 && FAKE_STORE_WORDS.test(words[0])) return true;
+    return false;
+  }
+  function findStoreNameEl() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (isFakeStoreName(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue;
+      if (r.left < W * 0.5) continue;
+      if (!best || r.left > best.left) best = { el, left: r.left };
+    }
+    return best ? best.el : null;
+  }
+  function readStoreName() {
+    const el = findStoreNameEl();
+    if (!el) return null;
+    const t = (el.textContent || '').trim();
+    return isFakeStoreName(t) ? null : t;
+  }
+
+  // ---------- 转发接口响应 ----------
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try { chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body, store: readStoreName() }); } catch (err) {}
+  });
+
+  // ---------- 读流量异常 ----------
+  // ①「商品流量待关注」是常驻的快速筛选 chip，实测 DOM（勿凭空改）：
+  //     <div class="use-quick-field_tsx_card__HASH"><span>商品流量待关注</span>
+  //       <span class="use-quick-field_tsx_countDistance__HASH">4</span></div>
+  //   计数在独立的 countDistance span 里（chip 常驻，N=0 也在，只有 N 变大才是真异常）。
+  // ②「商品流量近期有下降」不是 chip，是逐行红色徽标（见 countDeclineBadges）。
+  // 关键坑：行内徽标「商品流量待关注 ›」嵌在价格 TD 里 → 价格单元格文本也含该标签。
+  //   旧的"全页捞文本+最短优先"靠排序巧合才没读到价格数字；这里改为直接锚定 chip 容器。
+  function readChipCount(all, label) {
+    const re = new RegExp(label);
+    // 精确路径：定位快速筛选 chip 容器（class 前缀 use-quick-field_tsx_card__ 稳定，
+    // hash 后缀随构建变，用 *= 匹配前缀；card__ 带双下划线以免误匹配 cardBlock__）。
+    for (const card of document.querySelectorAll('[class*="use-quick-field_tsx_card__"]')) {
+      if (!re.test(card.textContent || '')) continue;
+      const cnt = card.querySelector('[class*="countDistance"]');
+      if (cnt && /\d/.test(cnt.textContent || '')) {
+        return Number((cnt.textContent || '').replace(/[^\d]/g, ''));
+      }
+      const m = (card.textContent || '').match(new RegExp(label + '[^\\d]{0,3}([\\d,]+)'));
+      if (m) return Number(m[1].replace(/,/g, ''));
+    }
+    // 兜底：chip class 若被改名，退回旧的全页文本匹配（最短优先 + 就近数字）
+    const labels = all
+      .filter((e) => re.test(e.textContent || '') && (e.textContent || '').trim().length < 24)
+      .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of labels) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(new RegExp(label + '[^\\d]{0,3}([\\d,]+)'));
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+      let sib = el.nextElementSibling;
+      for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+        const st = (sib.textContent || '').trim();
+        if (/^[\d,]+$/.test(st)) return Number(st.replace(/,/g, ''));
+      }
+    }
+    return null; // 读不到 → 未知（不当作 0，也不当作"有"）
+  }
+  // 「商品流量近期有下降」不是带计数的筛选 chip，而是逐行的红色徽标（列「商品优化事项」下）。
+  // 因此按"当前页可见的行内徽标个数"来统计。注意：只覆盖当前页（默认 20 条/页），
+  // 下降商品若在其它页则数不到——被动读数的固有限制，要精确总数得点筛选（主动模式）。
+  function countDeclineBadges(all) {
+    let n = 0;
+    for (const e of all) {
+      const t = (e.textContent || '').trim();
+      if (!/商品流量近期有下降/.test(t) || t.length > 20) continue;
+      // 只数最内层节点，避免父容器重复计数
+      if ([...e.children].some((c) => /商品流量近期有下降/.test(c.textContent || ''))) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) n++; // 只数真正渲染出来的行徽标，排除隐藏的筛选项/图例
+    }
+    return n;
+  }
+  // 扫描当前页商品行：按「SPU ID(=productId)」边界把行分组成商品，
+  // 识别哪些商品带「商品流量待关注 / 商品流量近期有下降」徽标，取 productId + 商品名 + SKC。
+  // 局限：只覆盖当前页(默认 20 条/页)，跨页的限流/下降商品扫不到——被动读的固有限制
+  //（chip 计数 trafficWatch 才是全量总数；这里只为「点名 + 给编辑链接」）。
+  function scanProducts() {
+    const rows = [...document.querySelectorAll('[data-testid="beast-core-table-body-tr"]')];
+    const products = [];
+    let cur = null;
+    for (const tr of rows) {
+      const t = tr.textContent || '';
+      const spu = t.match(/SPU\s*ID[:：]\s*(\d+)/); // DOM「SPU ID」= API/编辑页的 productId
+      if (spu) {
+        // 商品名只在「商品信息」那一格取（含 SPU ID 的 td），排除「标签：值」属性行，取最长一段。
+        // （曾扫整行 → 第 3 条抓成隔壁「商品属性」列的「主体材质：铝合金」，故限定到该 td。）
+        const infoTd = [...tr.querySelectorAll('td')].find((td) => /SPU\s*ID/.test(td.textContent || '')) || tr;
+        const name = [...infoTd.querySelectorAll('*')].map((e) => (e.textContent || '').trim())
+          .filter((x) => x.length >= 6 && x.length <= 80 && /[一-龥]/.test(x) && !/^.{0,6}[:：]/.test(x) && !/SPU|SKC/.test(x))
+          .sort((a, b) => b.length - a.length)[0] || '';
+        cur = { productId: spu[1], skc: (t.match(/SKC\s*ID[:：]\s*(\d+)/) || [])[1] || '', name: name, watch: false, decline: false };
+        products.push(cur);
+      }
+      if (cur) {
+        if (/商品流量待关注/.test(t)) cur.watch = true;
+        if (/商品流量近期有下降/.test(t)) cur.decline = true;
+      }
+    }
+    return products;
+  }
+  function readTraffic() {
+    const all = [...document.querySelectorAll('*')];
+    return {
+      watch: readChipCount(all, '商品流量待关注'),
+      decline: countDeclineBadges(all),
+    };
+  }
+  const pickItem = (p) => ({ productId: p.productId, name: p.name, skc: p.skc });
+  // 常驻轮询：每 2s 读一次 chip 计数 + 扫一次商品明细，但**只在结果变化时上报**
+  //（靠 dedupe 避免刷爆后台）。这样用户后点「商品流量待关注」筛选/翻页时，
+  // 明细也会在 2s 内自动刷新——旧版只在加载后 40s 内扫、之后点筛选就不扫了。
+  let tries = 0;
+  let lastKey = '';
+  setInterval(() => {
+    tries++;
+    // 商品表格是否已渲染出行——徽标在行里，必须等行出来再扫，否则会在徽标出现前就读成空
+    const gridReady = !!document.querySelector('[data-testid="beast-core-table-body-tr"]');
+    const { watch, decline } = readTraffic();
+    const msg = { type: 'chipStats', store: readStoreName() };
+    if (watch != null) msg.trafficWatch = watch;
+    let watchItems = [];
+    let declineItems = [];
+    if (gridReady) {
+      const products = scanProducts();
+      watchItems = products.filter((p) => p.watch).map(pickItem);
+      declineItems = products.filter((p) => p.decline).map(pickItem);
+      msg.trafficDecline = decline; // 仅在表格渲染后 decline 才可信
+      msg.watchItems = watchItems;
+      msg.declineItems = declineItems;
+    }
+    // 有 count 时等网格就绪再发（尽量带上明细）；网格长时间卡「加载中」(tries>8≈16s)时 count-only 兜底
+    const readyOrTimedOut = gridReady || tries > 8;
+    if (!((msg.trafficWatch != null && readyOrTimedOut) || 'trafficDecline' in msg)) return;
+    // 结果没变化就不重发；变化了（如刚点了筛选、切了店）才上报
+    const key = JSON.stringify([msg.store, msg.trafficWatch, msg.trafficDecline,
+      watchItems.map((i) => i.productId), declineItems.map((i) => i.productId)]);
+    if (key === lastKey) return;
+    lastKey = key;
+    LOG.info('Traffic update: watch=' + (watch != null ? watch : 'null') + ' decline=' + (decline != null ? decline : 'null') + ' watchItems=' + watchItems.length + ' declineItems=' + declineItems.length);
+    try { chrome.runtime.sendMessage(msg); } catch (e) {}
+  }, 2000);
+
+  // ---------- 切店自动化（轮巡用，由后台指令驱动） ----------
+  async function waitFor(fn, timeout, step) {
+    const t0 = Date.now();
+    for (;;) { let r; try { r = fn(); } catch (e) { r = null; } if (r) return r; if (Date.now() - t0 > (timeout || 6000)) return null; await sleep(step || 200); }
+  }
+  function textEls(re, maxLen) {
+    return [...document.querySelectorAll('*')].filter((e) => { const t = (e.textContent || '').trim(); return re.test(t) && t.length <= (maxLen || 40); });
+  }
+  function innermost(els) { return els.slice().sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0] || null; }
+  function clickableAncestor(el) {
+    let n = el;
+    for (let i = 0; i < 6 && n; i++) {
+      if (n.tagName === 'BUTTON' || n.tagName === 'A' || n.getAttribute('role') === 'button') return n;
+      try { if (window.getComputedStyle(n).cursor === 'pointer') return n; } catch (e) {}
+      n = n.parentElement;
+    }
+    return el;
+  }
+  // 完整鼠标事件序列（很多组件要 mousedown/up 才触发，单纯 click 不生效）
+  function realClick(el) {
+    if (!el) return false;
+    try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+    const r = el.getBoundingClientRect();
+    const x = r.left + Math.min(r.width / 2, 20);
+    const y = r.top + Math.min(r.height / 2, 12);
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0, pointers: 1 };
+    try {
+      el.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, opts, { pointerId: 1, pointerType: 'mouse' })));
+    } catch (e) {}
+    for (const type of ['mousedown', 'mouseup', 'click']) {
+      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (e) {}
+    }
+    try {
+      el.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, opts, { pointerId: 1, pointerType: 'mouse' })));
+    } catch (e) {}
+    try { el.click(); } catch (e) {}
+    return true;
+  }
+  function visible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const b = el.getBoundingClientRect();
+    if (b.width <= 0 || b.height <= 0) return false;
+    try {
+      const st = window.getComputedStyle(el);
+      if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) return false;
+    } catch (e) {}
+    return true;
+  }
+  function modalOpen() {
+    // 标题「切换店铺」或副文案「您的账户存在…」；maxLen 放宽，副文案可能整段在一个节点
+    return textEls(/切换店铺/, 12).filter(visible).length > 0
+      || textEls(/您的账户存在/, 40).filter(visible).length > 0;
+  }
+  // 定位切店弹窗根节点（标题向上找合适宽高的容器）
+  function findModalRoot() {
+    const title = innermost(textEls(/切换店铺|您的账户存在/, 40).filter(visible));
+    if (!title) return null;
+    let best = null;
+    let node = title;
+    for (let i = 0; i < 16 && node && node !== document.body; i++) {
+      const r = node.getBoundingClientRect();
+      const cls = String(node.className || '');
+      if (r.width >= 280 && r.width <= Math.min(960, window.innerWidth) && r.height >= 160) {
+        best = node;
+        if (/modal|dialog|popup|drawer|Modal|Dialog|Popup|Drawer/i.test(cls)) return node;
+      }
+      node = node.parentElement;
+    }
+    return best;
+  }
+  function isStoreNameText(t) {
+    if (!t) return false;
+    const s = String(t).trim();
+    if (s.length < 2 || s.length > 36) return false;
+    if (!/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,4}$/.test(s)) return false;
+    if (isFakeStoreName(s)) return false;
+    if (/^(NEW|Beta|Seller|Central|Temu|Close|Switch)$/i.test(s)) return false;
+    return true;
+  }
+  // 从「HomeCove半托管」「Twilight Cove半托管切换」里抠出英文店名
+  // （真实 DOM：店名文本节点和半托管标签在同一父级，textContent 无空格粘连）
+  function extractStoreName(t) {
+    if (!t) return null;
+    const s = String(t).replace(/\s+/g, ' ').trim();
+    if (isStoreNameText(s)) return s;
+    const m = s.match(/^([A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,4})/);
+    if (m && isStoreNameText(m[1])) return m[1];
+    // 去掉中文后缀再试
+    const stripped = s.replace(/(半托管|全托管|当前店铺|切换|\s)+/g, ' ').trim();
+    if (isStoreNameText(stripped)) return stripped;
+    return null;
+  }
+  // 弹窗内「切换」控件：不限 button（beast-core 常用可点 div/span）
+  function modalSwitchControls(root) {
+    const scope = root || document;
+    const out = [];
+    for (const el of scope.querySelectorAll('*')) {
+      if (!visible(el)) continue;
+      const t = (el.textContent || '').trim();
+      // 只要自身（或仅一层子节点）文本是「切换」，避免吃到整行
+      if (t !== '切换') continue;
+      if (el.children.length > 2) continue;
+      out.push(clickableAncestor(el));
+    }
+    return [...new Set(out)];
+  }
+  // 从切店弹窗一行里抠英文店名
+  function storeNameNear(el) {
+    let node = el;
+    for (let i = 0; i < 10 && node; i++) {
+      const cands = [];
+      // 直接文本节点（HomeCove 常是 mallName 下的裸文本，不在单独 span 里）
+      for (const child of node.childNodes) {
+        if (child.nodeType === 3) {
+          const n = extractStoreName(child.textContent || '');
+          if (n) cands.push(n);
+        }
+      }
+      for (const e of node.querySelectorAll('span,div,p,a,button,b,strong,label')) {
+        const n = extractStoreName((e.textContent || '').trim());
+        if (n) cands.push(n);
+        for (const child of e.childNodes) {
+          if (child.nodeType === 3) {
+            const n2 = extractStoreName(child.textContent || '');
+            if (n2) cands.push(n2);
+          }
+        }
+      }
+      const self = extractStoreName((node.textContent || '').trim());
+      if (self) cands.push(self);
+      // 优先较短的纯店名
+      cands.sort((a, b) => a.length - b.length);
+      if (cands.length) return cands[0];
+      node = node.parentElement;
+    }
+    return null;
+  }
+  // 在弹窗内枚举店名
+  function listStoreNamesInModal(root) {
+    if (!root) return [];
+    const names = [];
+    // ① 最稳：class 含 mallName（真实结构 account-info_mallName__xxx）
+    for (const el of root.querySelectorAll('[class*="mallName"],[class*="mallInfo"],[class*="MallName"]')) {
+      // 优先第一个文本节点 = 纯店名
+      for (const child of el.childNodes) {
+        if (child.nodeType === 3) {
+          const n = extractStoreName(child.textContent || '');
+          if (n) { names.push(n); break; }
+        }
+      }
+      const n2 = extractStoreName((el.textContent || '').trim());
+      if (n2) names.push(n2);
+    }
+    // ② innerText / textContent 整段（"HomeCove半托管 切换 Twilight Cove半托管…"）
+    try {
+      const raw = String(root.innerText || root.textContent || '');
+      // 全局扫：英文店名紧贴可选的半托管/切换
+      const re = /([A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,4})(?=半托管|全托管|当前店铺|\s*切换|$|\n)/g;
+      let m;
+      while ((m = re.exec(raw))) {
+        const n = extractStoreName(m[1]);
+        if (n) names.push(n);
+      }
+      for (const line of raw.split(/\r?\n/)) {
+        const n = extractStoreName(line);
+        if (n) names.push(n);
+      }
+    } catch (e) {}
+    // ③ 「切换」按钮向上回溯
+    for (const sw of modalSwitchControls(root)) {
+      const n = storeNameNear(sw);
+      if (n) names.push(n);
+    }
+    // ④ 卡片 section
+    for (const sec of root.querySelectorAll('[class*="mallSection"],[class*="switchSection"]')) {
+      const n = extractStoreName((sec.textContent || '').trim());
+      if (n) names.push(n);
+      for (const child of sec.childNodes) {
+        if (child.nodeType === 3) {
+          const n2 = extractStoreName(child.textContent || '');
+          if (n2) names.push(n2);
+        }
+      }
+    }
+    return [...new Set(names)].filter((n) => n && !isFakeStoreName(n));
+  }
+  function closeModal() {
+    if (!modalOpen()) return true;
+    const root = findModalRoot();
+    const sels = [
+      '[aria-label="Close"]',
+      '[aria-label="close"]',
+      '[aria-label="关闭"]',
+      '.beast-core-modal-close',
+      '.semi-modal-close',
+      '.SnowModal_closeIcon',
+      '[class*="modal-close"]',
+      '[class*="Modal_close"]',
+      '[class*="closeIcon"]',
+      '[class*="CloseIcon"]',
+      '[class*="close-icon"]',
+      '[data-testid*="close"]',
+    ];
+    const scopes = root ? [root, document] : [document];
+    for (const scope of scopes) {
+      for (const s of sels) {
+        let nodes = [];
+        try { nodes = [...scope.querySelectorAll(s)]; } catch (e) { continue; }
+        for (const x of nodes) {
+          if (x && visible(x)) {
+            realClick(x);
+            if (!modalOpen()) return true;
+          }
+        }
+      }
+    }
+    // 坐标点弹窗右上角 X（截图里是圆形关闭，常无文字/无 close class）
+    if (root) {
+      const r = root.getBoundingClientRect();
+      const points = [
+        [r.right - 18, r.top + 18],
+        [r.right - 28, r.top + 28],
+        [r.right - 22, r.top + 22],
+        [r.right - 36, r.top + 20],
+        [r.right - 14, r.top + 32],
+        [r.right - 44, r.top + 24],
+      ];
+      for (const [x, y] of points) {
+        const el = document.elementFromPoint(x, y);
+        if (!el) continue;
+        // 不要点到标题文字本身
+        if (/切换店铺|您的账户/.test((el.textContent || '').trim()) && (el.textContent || '').trim().length > 2) continue;
+        realClick(clickableAncestor(el));
+        if (!modalOpen()) return true;
+      }
+    }
+    // 点遮罩
+    const masks = document.querySelectorAll('[class*="modal-mask"],[class*="Modal_mask"],[class*="mask"],[class*="Mask"]');
+    for (const m of masks) {
+      if (visible(m) && m.getBoundingClientRect().width > window.innerWidth * 0.5) {
+        realClick(m);
+        if (!modalOpen()) return true;
+      }
+    }
+    // Escape 兜底
+    for (const type of ['keydown', 'keyup']) {
+      document.dispatchEvent(new KeyboardEvent(type, { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+    }
+    try { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true })); } catch (e) {}
+    if (!modalOpen()) return true;
+    // 最终手段：直接隐藏弹窗+遮罩，避免卡死页面（不依赖 React 是否吃合成点击）
+    try {
+      const hide = (el) => { if (el && el.style) { el.style.setProperty('display', 'none', 'important'); el.style.setProperty('pointer-events', 'none', 'important'); } };
+      if (root) {
+        hide(root);
+        let p = root.parentElement;
+        for (let i = 0; i < 6 && p && p !== document.body; i++) {
+          const cls = String(p.className || '');
+          const r = p.getBoundingClientRect();
+          if (/modal|dialog|popup|wrapper|portal|Mask|mask/i.test(cls) || (r.width > window.innerWidth * 0.8 && r.height > window.innerHeight * 0.8)) {
+            hide(p);
+          }
+          p = p.parentElement;
+        }
+      }
+      document.querySelectorAll('[class*="modal-mask"],[class*="Modal_mask"],[class*="mask"],[class*="Mask"],[class*="modal-wrapper"],[class*="Modal_wrapper"]').forEach((el) => {
+        const r = el.getBoundingClientRect();
+        if (r.width > 100) hide(el);
+      });
+      // 清掉 body 滚动锁
+      try { document.body.style.removeProperty('overflow'); document.documentElement.style.removeProperty('overflow'); } catch (e) {}
+      LOG.warn('closeModal: forced hide overlay');
+    } catch (e) { LOG.warn('closeModal force hide error: ' + (e && e.message || e)); }
+    return !modalOpen();
+  }
+
+  // 压缩输出某元素的 HTML 骨架（去 style/data 属性），便于回传诊断
+  function domSkel(el, maxLen) {
+    if (!el) return 'null';
+    let h = (el.outerHTML || '');
+    h = h.replace(/\s(style|data-[\w-]+|aria-[\w-]+)="[^"]*"/g, '').replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ');
+    return h.slice(0, maxLen || 2200);
+  }
+
+  async function openStoreModal(diag) {
+    diag = diag || [];
+    try { window.scrollTo(0, 0); document.documentElement.scrollTop = 0; } catch (e) {}
+    await sleep(150);
+    if (modalOpen()) { diag.push('弹窗已开'); return true; }
+    const nameEl = findStoreNameEl();
+    diag.push('店名=' + (nameEl ? (nameEl.textContent || '').trim() : 'null'));
+    if (nameEl) {
+      // 只点一次触发下拉：点店名的可点祖先 + 店名右侧箭头坐标（避免多次点击把下拉又关掉）
+      const r = nameEl.getBoundingClientRect();
+      realClick(clickableAncestor(nameEl));
+      await sleep(120);
+      const el = document.elementFromPoint(Math.min(window.innerWidth - 3, r.right + 14), r.top + r.height / 2);
+      if (el && el !== nameEl) realClick(el);
+    } else {
+      // 读不到店名：点右上角头像/热区
+      const W = window.innerWidth || 1280;
+      for (const y of [24, 36, 48]) {
+        for (const x of [W - 40, W - 80, W - 120, W - 160]) {
+          const el = document.elementFromPoint(x, y);
+          if (el) realClick(clickableAncestor(el));
+        }
+      }
+      diag.push('无店名,已点右上热区');
+    }
+    // 下拉里“切换”按钮：只认可见的、精确文本“切换”，取最后一个（下拉通常在 DOM 靠后）
+    const sw = await waitFor(() => {
+      const cands = textEls(/^切换$/, 6).filter(visible);
+      return cands.length ? clickableAncestor(cands[cands.length - 1]) : null;
+    }, 3500);
+    diag.push('下拉切换按钮=' + !!sw);
+    if (sw) realClick(sw);
+    let ok = !!(await waitFor(() => (modalOpen() ? true : null), 4500));
+    // 仍未开：再点一次右上 + 宽松「切换」
+    if (!ok) {
+      const W = window.innerWidth || 1280;
+      for (const x of [W - 48, W - 100, W - 140]) {
+        const el = document.elementFromPoint(x, 32);
+        if (el) realClick(clickableAncestor(el));
+      }
+      await sleep(300);
+      const loose = textEls(/^切换/, 12).filter(visible);
+      if (loose.length) realClick(clickableAncestor(loose[loose.length - 1]));
+      ok = !!(await waitFor(() => (modalOpen() ? true : null), 4000));
+      diag.push('重试打开=' + ok);
+    }
+    diag.push('弹窗打开=' + ok);
+    if (!ok) {
+      LOG.warn('Open store modal failed: ' + diag.join(' ; '));
+    }
+    return ok;
+  }
+
+  // 等弹窗里店铺行渲染完（必须在 modal root 内看到店名/切换/托管）
+  async function waitModalStoreRows() {
+    return !!(await waitFor(() => {
+      const root = findModalRoot();
+      if (!root) return null;
+      if (listStoreNamesInModal(root).length > 0) return true;
+      if (modalSwitchControls(root).length > 0) return true;
+      if (/托管|当前店铺/.test(root.textContent || '')) return true;
+      return null;
+    }, 6000, 250));
+  }
+
+  async function listStores() {
+    if (!(await openStoreModal())) return [];
+    const rowsReady = await waitModalStoreRows();
+    if (!rowsReady) LOG.warn('listStores: modal opened but store rows not ready');
+    await sleep(400);
+    const root = findModalRoot();
+    let names = listStoreNamesInModal(root);
+    // 诊断：0 店时把弹窗里短文本打出来，方便对照 DOM
+    if (!names.length) {
+      const sample = [];
+      const scope = root || document.body;
+      for (const el of scope.querySelectorAll('span,div,p,button,a')) {
+        if (!visible(el) || el.children.length > 2) continue;
+        const t = (el.textContent || '').trim();
+        if (t && t.length <= 24) sample.push(el.tagName + ':' + t);
+        if (sample.length >= 25) break;
+      }
+      let textPreview = '';
+      try { textPreview = String((root && (root.innerText || root.textContent)) || '').replace(/\s+/g, ' ').trim().slice(0, 240); } catch (e) {}
+      LOG.warn('listStores empty diag: root=' + !!(root) + ' switches=' + modalSwitchControls(root).length
+        + ' text="' + textPreview + '" sample=' + sample.join(' | '));
+      if (root) LOG.warn('listStores root skel: ' + domSkel(root, 1200));
+    }
+    // 务必关掉弹窗
+    for (let i = 0; i < 3 && modalOpen(); i++) {
+      closeModal();
+      await sleep(250);
+    }
+    if (modalOpen()) LOG.warn('listStores: modal still open after close attempts');
+    const uniq = [...new Set(names)];
+    LOG.info('listStores: ' + uniq.length + ' stores: ' + uniq.join(', '));
+    return uniq;
+  }
+
+  async function switchTo(target) {
+    const diag = [];
+    const cur = readStoreName();
+    // 已是目标店：绝不要再点弹窗
+    if (cur && String(cur) === String(target)) {
+      if (modalOpen()) closeModal();
+      LOG.info('switchTo skip: already on ' + target);
+      return { ok: true, msg: '已是当前店 ' + target + '，无需切换' };
+    }
+    if (!(await openStoreModal(diag))) return { ok: false, msg: '打不开弹窗 | ' + diag.join(' ; ') };
+    await waitModalStoreRows();
+    await sleep(250);
+    const root = findModalRoot();
+    const esc = String(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const nameRe = new RegExp('^' + esc + '$', 'i');
+    let btn = null;
+    for (const b of modalSwitchControls(root)) {
+      const name = storeNameNear(b);
+      if (name && nameRe.test(name)) {
+        if (b.disabled || b.getAttribute('aria-disabled') === 'true') {
+          closeModal();
+          return { ok: true, msg: '弹窗显示已是当前店 ' + target };
+        }
+        // 当前店行常带「当前店铺」且切换按钮灰色
+        let card = b.parentElement;
+        let cardText = '';
+        for (let i = 0; i < 6 && card; i++) {
+          cardText = card.textContent || '';
+          if (/半托管|全托管|当前店铺/.test(cardText)) break;
+          card = card.parentElement;
+        }
+        if (/当前店铺/.test(cardText) && nameRe.test(name)) {
+          // 若目标就是当前店
+          closeModal();
+          return { ok: true, msg: '已标记当前店铺 ' + target };
+        }
+        btn = b;
+        break;
+      }
+    }
+    // 点 mallName / 店名文本旁的切换按钮
+    if (!btn && root) {
+      for (const el of root.querySelectorAll('[class*="mallName"],[class*="mallSection"],span,div,p,a')) {
+        if (!visible(el)) continue;
+        const n = extractStoreName((el.textContent || '').trim());
+        if (!n || !nameRe.test(n)) continue;
+        // 同卡片内找切换按钮
+        let card = el;
+        for (let i = 0; i < 6 && card; i++) {
+          const sw = [...card.querySelectorAll('button,[role=button],div,span')].find((b) => {
+            const t = (b.textContent || '').trim();
+            return t === '切换' && visible(b) && !b.disabled;
+          });
+          if (sw) { btn = clickableAncestor(sw); break; }
+          card = card.parentElement;
+        }
+        if (btn) break;
+      }
+    }
+    if (!btn) {
+      closeModal();
+      return { ok: false, msg: '没找到可点的切换入口(' + target + ')' };
+    }
+    LOG.info('Switching store to: ' + target);
+    realClick(btn);
+    await sleep(1500);
+    if (modalOpen()) {
+      const now = readStoreName();
+      if (now && String(now) === String(target)) {
+        closeModal();
+        return { ok: true, msg: '已在 ' + target + '（弹窗已关）' };
+      }
+      if (now && cur && String(now) === String(cur)) {
+        closeModal();
+        return { ok: false, msg: '已点切换但未离开 ' + cur + '，已关弹窗' };
+      }
+    }
+    return { ok: true, msg: '已点击切换到 ' + target };
+  }
+
+  // ---------- 主动捞「商品流量待关注」明细（发现异常时调，点筛选→扫→重置） ----------
+  // 读列表底部「共有 N 条」（筛选生效后该数=待关注总数）
+  function readTotalCount() {
+    const el = [...document.querySelectorAll('*')].find(
+      (x) => x.children.length === 0 && /共有\s*[\d,]+\s*条/.test(x.textContent || '')
+    );
+    if (!el) return null;
+    const m = (el.textContent || '').match(/共有\s*([\d,]+)\s*条/);
+    return m ? Number(m[1].replace(/,/g, '')) : null;
+  }
+  // 定位「商品流量待关注」快速筛选 chip 容器（与 readChipCount 同一稳定 class 前缀）
+  function findWatchChip() {
+    for (const card of document.querySelectorAll('[class*="use-quick-field_tsx_card__"]')) {
+      if (/商品流量待关注/.test(card.textContent || '')) return card;
+    }
+    return null;
+  }
+  // 点「重置」清掉快速筛选，恢复用户视图
+  function clickReset() {
+    const btn = textEls(/^重置$/, 6).filter(visible)[0];
+    if (btn) realClick(clickableAncestor(btn));
+  }
+  // 点开「商品流量待关注」筛选 → 扫出这几条商品(productId+name+skc) → 重置。
+  // 筛选生效后网格里每行都是待关注商品，故取全部行（不再依赖行内徽标）。
+  // 只覆盖筛选后的当前页(默认 20 条)，>20 条的溢出由 total 提示行说明。
+  async function scanWatchList() {
+    LOG.info('scanWatchList: scanning...');
+    const chip = findWatchChip();
+    if (!chip) { LOG.warn('scanWatchList: chip not found'); return { store: readStoreName(), items: [], applied: false, msg: '未找到待关注筛选 chip' }; }
+    const before = readTotalCount();
+    realClick(clickableAncestor(chip));
+    // 等列表真正刷新：底部「共有 N 条」的数值发生变化（通常变小）才算筛选生效
+    await waitFor(() => {
+      const t = readTotalCount();
+      return (t != null && before != null && t !== before) ? t : null;
+    }, 8000, 300);
+    await sleep(1200); // 等筛选后的网格稳定渲染
+    const after = readTotalCount();
+    // 仅当确实生效（数值变化且不大于原总数）才采纳，绝不把未筛选的整页当成待关注
+    const applied = after != null && before != null && after !== before && after <= before;
+    let items = [];
+    if (applied) items = scanProducts().map((p) => ({ productId: p.productId, name: p.name, skc: p.skc }));
+    // 复位（必须彻底清掉筛选，否则会污染随后的在售扫描 → 误报下架）：
+    //   ① 若已生效，再点一次同一 chip toggle 回未选中（比只点「重置」更精准可靠）；
+    //   ② 再点「重置」兜底；③ 等「共有 N 条」回升到筛选前的值，确认筛选真的清掉了。
+    if (applied) realClick(clickableAncestor(chip));
+    clickReset();
+    await waitFor(() => {
+      const t = readTotalCount();
+      return (t != null && before != null && t >= before) ? t : null;
+    }, 6000, 300);
+    await sleep(600);
+    LOG.info('scanWatchList done: applied=' + applied + ' items=' + items.length + ' total=' + after);
+    return { store: readStoreName(), items: items, total: after, applied: applied };
+  }
+
+  // 读某个 tab 标签上印的数字（形如「在售中 13」/「全部 214」）。干净无筛选视图下=真实数量。
+  function readTabCount(re) {
+    const labels = [...document.querySelectorAll('[data-testid="beast-core-tab-itemLabel"]')].filter(visible);
+    for (const el of labels) {
+      const t = (el.textContent || '').trim();
+      if (re.test(t)) { const m = t.match(/(\d[\d,]*)/); if (m) return Number(m[1].replace(/,/g, '')); }
+    }
+    return null;
+  }
+  // 扫「在售中」商品清单：先复位到干净视图 → 点在售 tab → 确认视图生效 → scanProducts 取 productId+name+skc。
+  // 用于 background diff 出"上轮在售、这轮不在"的下架商品。仅轮巡(空闲)时调，扫完点回「全部」。
+  // ⚠️ 关键①：扫描前**必须**清掉一切快速筛选（尤其「商品流量待关注」）——否则会只扫到筛选后的
+  //    几条在售商品，误报「下架 N 个」（历史假告警根因）。这里主动复位，不依赖调用时机的干净。
+  // ⚠️ 关键②：点完「在售中」必须验证视图真的生效（底部「共有 N 条」== tab 上「在售中 N」）再扫。
+  //    点击可能被切店残留弹窗/背挡拦截，点了 ≠ 生效；若在「全部」「未发布」视图下扫，
+  //    会混入从未上架的商品写进基准（污染扫描只增不减、当时不告警，悄悄脏掉基准，
+  //    下一轮干净扫描才引爆「下架15个(在售20→13)」式假告警）。验证不过就放弃本轮——宁可漏一轮，不脏基准。
+  async function scanOnSaleList() {
+    LOG.info('scanOnSaleList: scanning...');
+    const findTab = (re) => {
+      const labels = [...document.querySelectorAll('[data-testid="beast-core-tab-itemLabel"]')].filter(visible);
+      return labels.find((e) => re.test((e.textContent || '').trim())) || textEls(re, 14).filter(visible)[0] || null;
+    };
+    const backToAll = () => { const t = findTab(/^全部/); if (t) realClick(clickableAncestor(t)); };
+    // ① 复位到干净、无快速筛选的状态：先回「全部」tab，再点「重置」清掉任何快速筛选 chip。
+    backToAll();
+    await sleep(300);
+    clickReset();
+    await sleep(1000);
+    // ② 点「在售中」tab 并等视图生效（底部总数 == 在售 tab 计数）；点击可能被残留弹窗拦截 → 失败重试一次
+    let tabCount = null;
+    let viewOk = false;
+    for (let attempt = 1; attempt <= 2 && !viewOk; attempt++) {
+      const onSaleTab = findTab(/^在售中/);
+      if (onSaleTab) realClick(clickableAncestor(onSaleTab));
+      await waitFor(() => document.querySelector('[data-testid="beast-core-table-body-tr"]'), 8000, 300);
+      await sleep(1800); // 等在售网格稳定渲染（避免只扫到半页）
+      tabCount = readTabCount(/^在售中/);
+      if (tabCount == null) { viewOk = true; break; } // 读不到 tab 数 → 无法交叉验证，放行（后台仍有数量上限兜底）
+      const ok = await waitFor(() => { const t = readTotalCount(); return (t != null && t === tabCount) ? true : null; }, 6000, 300);
+      if (ok || readTotalCount() == null) { viewOk = true; break; } // 生效；footer 读不到 → 放行
+      LOG.warn('scanOnSaleList: 在售视图未生效(第' + attempt + '次) gridTotal=' + readTotalCount() + ' tabCount=' + tabCount);
+      clickReset();
+      await sleep(800);
+    }
+    if (!viewOk) {
+      LOG.warn('scanOnSaleList aborted: 在售视图两次都未生效，本轮放弃（不动基准）');
+      backToAll();
+      return { store: readStoreName(), items: [], onSaleTabCount: tabCount, msg: '在售视图未生效，本轮放弃扫描' };
+    }
+    // ③ 读干净视图下「在售中 N」的真实数字——作为 background 判定"是否扫全/是否被筛选污染"的权威值
+    const onSaleTabCount = readTabCount(/^在售中/);
+    const products = scanProducts();
+    const items = products.map((p) => ({ productId: p.productId, name: p.name, skc: p.skc }));
+    // ④ 扫到的行数比「在售中 N」还多 = 视图污染（全部/未发布/别店商品混入）→ 放弃，绝不让它进基准
+    if (onSaleTabCount != null && items.length > onSaleTabCount) {
+      LOG.warn('scanOnSaleList aborted: scanned=' + items.length + ' > tabCount=' + onSaleTabCount + '（视图污染，本轮放弃）');
+      backToAll();
+      return { store: readStoreName(), items: [], onSaleTabCount: onSaleTabCount, msg: '扫描行数超过在售数，疑似视图污染，本轮放弃' };
+    }
+    var scanMsg = 'scanOnSale: tabCount=' + onSaleTabCount + ' scanned=' + items.length;
+    if (items.length && onSaleTabCount && items.length < onSaleTabCount) scanMsg += ' (WARNING: possible page truncation)';
+    LOG.info(scanMsg);
+    // 恢复到「全部」tab（轮巡时用户看不到，但保持视图干净）
+    backToAll();
+    LOG.info('scanOnSaleList done: items=' + items.length + ' onSaleTabCount=' + onSaleTabCount);
+    return { store: readStoreName(), items: items, onSaleTabCount: onSaleTabCount };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || !msg.cmd) return;
+    (async () => {
+      try {
+        if (msg.cmd === 'ping') { sendResponse({ store: readStoreName() }); return; } // 只读，不入锁
+        if (msg.cmd === 'listStores') { sendResponse({ names: await withLock(listStores) }); return; }
+        if (msg.cmd === 'switchTo') { sendResponse(await withLock(() => switchTo(msg.target))); return; }
+        if (msg.cmd === 'scanOnSale') { sendResponse(await withLock(scanOnSaleList)); return; }
+        if (msg.cmd === 'scanWatchList') { sendResponse(await withLock(scanWatchList)); return; }
+      } catch (e) { LOG.error('Command handler error: cmd=' + msg.cmd + ' error=' + String((e && e.message) || e)); sendResponse({ ok: false, msg: String((e && e.message) || e) }); }
+    })();
+    return true;
+  });
+})();

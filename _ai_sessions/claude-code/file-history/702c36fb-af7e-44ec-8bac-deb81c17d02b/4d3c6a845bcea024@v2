@@ -1,0 +1,826 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
+
+
+@dataclass
+class Anomaly:
+    anomaly_type: str
+    name: str
+    level: str  # yellow | orange | red
+    current_value: float | None
+    baseline_value: float | None
+    change_value: float | None
+    message: str
+    shop_name: str
+    asin: str
+    product_title: str | None = None
+    product_title_cn: str | None = None
+    owner: str | None = None
+    product_grade: str | None = None
+    # 指标语义：不同异常类型下「当前值/对比值/变化幅度」含义不同
+    current_label: str | None = None
+    baseline_label: str | None = None
+    change_label: str | None = None
+    value_summary: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+LEVEL_RANK = {"yellow": 1, "orange": 2, "red": 3}
+
+Fmt = Literal["raw", "pct", "pp", "days", "units", "money", "rating", "ratio_or_pct"]
+
+
+def _f(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _is_core(grade: str | None, core_grades: list[str]) -> bool:
+    if not grade:
+        return False
+    return str(grade).upper() in {g.upper() for g in core_grades}
+
+
+def _drop_pct(change_pct: float | None) -> float | None:
+    """Normalize to positive drop magnitude if change is negative."""
+    if change_pct is None:
+        return None
+    if change_pct >= 0:
+        return None
+    return abs(change_pct)
+
+
+def _fmt_value(v: float | None, style: Fmt = "raw") -> str:
+    if v is None:
+        return "—"
+    if style == "pct":
+        # 入库多为小数环比（-0.3）；>1.5 视为已是百分数
+        if abs(v) <= 2:
+            return f"{v:+.0%}" if v != 0 else "0%"
+        return f"{v:+.1f}%"
+    if style == "pp":
+        return f"{v:+.1f}pp"
+    if style == "days":
+        return f"{v:.1f}天" if abs(v - round(v)) > 1e-6 else f"{int(round(v))}天"
+    if style == "units":
+        return f"{v:.0f}件"
+    if style == "money":
+        return f"{v:.1f}"
+    if style == "rating":
+        return f"{v:.2f}"
+    if style == "ratio_or_pct":
+        # ACOS：0.35 或 35 都能读
+        if abs(v) <= 1.5:
+            return f"{v:.1%}"
+        return f"{v:.1f}%"
+    if abs(v - round(v)) < 1e-6:
+        return str(int(round(v)))
+    return f"{v:.2f}"
+
+
+def build_value_summary(
+    *,
+    current: float | None,
+    baseline: float | None,
+    change: float | None,
+    current_label: str | None,
+    baseline_label: str | None,
+    change_label: str | None,
+    current_fmt: Fmt = "raw",
+    baseline_fmt: Fmt = "raw",
+    change_fmt: Fmt = "raw",
+) -> str:
+    """一行可读摘要，例如：可售天数 1.6天 | ACOS 105.5% vs 目标 35%（超 70.5pp）。"""
+    parts: list[str] = []
+    if current_label and current is not None:
+        parts.append(f"{current_label} {_fmt_value(current, current_fmt)}")
+    elif current is not None:
+        parts.append(_fmt_value(current, current_fmt))
+    if baseline_label and baseline is not None:
+        parts.append(f"{baseline_label} {_fmt_value(baseline, baseline_fmt)}")
+    elif baseline is not None:
+        parts.append(f"对比 {_fmt_value(baseline, baseline_fmt)}")
+    if change_label and change is not None:
+        parts.append(f"{change_label} {_fmt_value(change, change_fmt)}")
+    elif change is not None:
+        parts.append(f"变化 {_fmt_value(change, change_fmt)}")
+    return " · ".join(parts) if parts else ""
+
+
+def evaluate_row(row: dict[str, Any], rules_cfg: dict[str, Any]) -> list[Anomaly]:
+    rules = rules_cfg.get("rules") or {}
+    core_grades = list(rules_cfg.get("core_grades") or ["S", "A"])
+    grade = row.get("product_grade")
+    core = _is_core(grade, core_grades)
+    shop = str(row.get("shop_name") or "")
+    asin = str(row.get("asin") or "")
+    title = row.get("title")
+    title_cn = row.get("title_cn")
+    owner = row.get("owner")
+    out: list[Anomaly] = []
+
+    def add(
+        key: str,
+        level: str,
+        *,
+        current: float | None,
+        baseline: float | None,
+        change: float | None,
+        message: str,
+        current_label: str | None = None,
+        baseline_label: str | None = None,
+        change_label: str | None = None,
+        current_fmt: Fmt = "raw",
+        baseline_fmt: Fmt = "raw",
+        change_fmt: Fmt = "raw",
+    ) -> None:
+        meta = rules.get(key) or {}
+        summary = build_value_summary(
+            current=current,
+            baseline=baseline,
+            change=change,
+            current_label=current_label,
+            baseline_label=baseline_label,
+            change_label=change_label,
+            current_fmt=current_fmt,
+            baseline_fmt=baseline_fmt,
+            change_fmt=change_fmt,
+        )
+        out.append(
+            Anomaly(
+                anomaly_type=key,
+                name=str(meta.get("name") or key),
+                level=level,
+                current_value=current,
+                baseline_value=baseline,
+                change_value=change,
+                message=message,
+                shop_name=shop,
+                asin=asin,
+                product_title=title,
+                product_title_cn=title_cn,
+                owner=owner,
+                product_grade=grade,
+                current_label=current_label,
+                baseline_label=baseline_label,
+                change_label=change_label,
+                value_summary=summary or None,
+            )
+        )
+
+    # --- sales drop ---
+    r = rules.get("sales_drop") or {}
+    if r.get("enabled", True):
+        ch = _f(row.get("sale_price_change_pct"))
+        drop = _drop_pct(ch)
+        base = _f(row.get("sale_price_baseline"))
+        cur = _f(row.get("sale_price"))
+        orders = _f(row.get("order_num"))
+        zero_days = _f(row.get("zero_order_streak"))
+        red = r.get("red") or {}
+        orange = r.get("orange") or {}
+        yellow = r.get("yellow") or {}
+        _sales_labels = dict(
+            current_label="当日销售额",
+            baseline_label="对比基线销售额",
+            change_label="销售额环比",
+            current_fmt="money",
+            baseline_fmt="money",
+            change_fmt="pct",
+        )
+        if core and drop is not None and drop >= float(red.get("sa_drop_pct_min", 0.40)):
+            add(
+                "sales_drop",
+                "red",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"S/A级销售额下降 {drop:.0%}",
+                **_sales_labels,
+            )
+        elif orders == 0 and zero_days is not None and zero_days >= float(red.get("zero_order_days", 3)):
+            add(
+                "sales_drop",
+                "red",
+                current=orders,
+                baseline=base,
+                change=ch,
+                message=f"连续 {int(zero_days)} 天无订单",
+                current_label="当日订单量",
+                baseline_label="对比基线销售额",
+                change_label="销售额环比",
+                current_fmt="raw",
+                baseline_fmt="money",
+                change_fmt="pct",
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(orange.get("baseline_sales_min", 3000))
+            and drop >= float(orange.get("drop_pct_min", 0.20))
+        ):
+            add(
+                "sales_drop",
+                "orange",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"销售额下降 {drop:.0%}（基线≥{orange.get('baseline_sales_min')}）",
+                **_sales_labels,
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(yellow.get("baseline_sales_min", 3000))
+            and float(yellow.get("drop_pct_min", 0.10))
+            <= drop
+            < float(yellow.get("drop_pct_max", 0.20))
+        ):
+            add(
+                "sales_drop",
+                "yellow",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"销售额下降观察 {drop:.0%}",
+                **_sales_labels,
+            )
+
+    # --- order drop ---
+    r = rules.get("order_drop") or {}
+    if r.get("enabled", True):
+        ch = _f(row.get("order_num_change_pct"))
+        drop = _drop_pct(ch)
+        base = _f(row.get("order_num_baseline"))
+        cur = _f(row.get("order_num"))
+        red = r.get("red") or {}
+        orange = r.get("orange") or {}
+        yellow = r.get("yellow") or {}
+        _order_labels = dict(
+            current_label="当日订单量",
+            baseline_label="对比基线订单量",
+            change_label="订单环比",
+            current_fmt="raw",
+            baseline_fmt="raw",
+            change_fmt="pct",
+        )
+        if core and drop is not None and drop >= float(red.get("core_drop_pct_min", 0.50)):
+            add(
+                "order_drop",
+                "red",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"核心ASIN订单下降 {drop:.0%}",
+                **_order_labels,
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(orange.get("baseline_orders_min", 20))
+            and drop >= float(orange.get("drop_pct_min", 0.25))
+        ):
+            add(
+                "order_drop",
+                "orange",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"订单下降 {drop:.0%}",
+                **_order_labels,
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(yellow.get("baseline_orders_min", 20))
+            and float(yellow.get("drop_pct_min", 0.10))
+            <= drop
+            < float(yellow.get("drop_pct_max", 0.25))
+        ):
+            add(
+                "order_drop",
+                "yellow",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"订单下降观察 {drop:.0%}",
+                **_order_labels,
+            )
+
+    # --- traffic ---
+    r = rules.get("traffic_drop") or {}
+    if r.get("enabled", True):
+        ch = _f(row.get("sessions_change_pct"))
+        drop = _drop_pct(ch)
+        base = _f(row.get("sessions_baseline"))
+        cur = _f(row.get("sessions"))
+        red = r.get("red") or {}
+        orange = r.get("orange") or {}
+        yellow = r.get("yellow") or {}
+        _traffic_labels = dict(
+            current_label="当日Sessions",
+            baseline_label="对比基线Sessions",
+            change_label="Sessions环比",
+            current_fmt="raw",
+            baseline_fmt="raw",
+            change_fmt="pct",
+        )
+        if core and drop is not None and drop >= float(red.get("core_drop_pct_min", 0.40)):
+            add(
+                "traffic_drop",
+                "red",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"核心ASIN Sessions下降 {drop:.0%}",
+                **_traffic_labels,
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(orange.get("baseline_sessions_min", 300))
+            and drop >= float(orange.get("drop_pct_min", 0.20))
+        ):
+            add(
+                "traffic_drop",
+                "orange",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"Sessions下降 {drop:.0%}",
+                **_traffic_labels,
+            )
+        elif (
+            drop is not None
+            and base is not None
+            and base >= float(yellow.get("baseline_sessions_min", 300))
+            and float(yellow.get("drop_pct_min", 0.10))
+            <= drop
+            < float(yellow.get("drop_pct_max", 0.20))
+        ):
+            add(
+                "traffic_drop",
+                "yellow",
+                current=cur,
+                baseline=base,
+                change=ch,
+                message=f"Sessions下降观察 {drop:.0%}",
+                **_traffic_labels,
+            )
+
+    # --- conversion (pp) ---
+    r = rules.get("conversion_drop") or {}
+    if r.get("enabled", True):
+        pp = _f(row.get("conversion_rate_change_pp"))
+        # negative means drop
+        drop_pp = abs(pp) if pp is not None and pp < 0 else None
+        sessions = _f(row.get("sessions"))
+        cur = _f(row.get("conversion_rate"))
+        red = r.get("red") or {}
+        orange = r.get("orange") or {}
+        yellow = r.get("yellow") or {}
+        _conv_labels = dict(
+            current_label="当日转化率",
+            baseline_label=None,
+            change_label="转化率变化",
+            current_fmt="ratio_or_pct",
+            baseline_fmt="raw",
+            change_fmt="pp",
+        )
+        if drop_pp is not None and drop_pp >= float(red.get("drop_pp_min", 4.0)):
+            add(
+                "conversion_drop",
+                "red",
+                current=cur,
+                baseline=None,
+                change=pp,
+                message=f"转化率下降 {drop_pp:.1f} 个百分点",
+                **_conv_labels,
+            )
+        elif (
+            drop_pp is not None
+            and drop_pp >= float(orange.get("drop_pp_min", 2.0))
+            and (sessions is None or sessions >= float(orange.get("sessions_min", 200)))
+        ):
+            add(
+                "conversion_drop",
+                "orange",
+                current=cur,
+                baseline=None,
+                change=pp,
+                message=f"转化率下降 {drop_pp:.1f} 个百分点",
+                **_conv_labels,
+            )
+        elif (
+            drop_pp is not None
+            and float(yellow.get("drop_pp_min", 1.0))
+            <= drop_pp
+            < float(yellow.get("drop_pp_max", 2.0))
+        ):
+            add(
+                "conversion_drop",
+                "yellow",
+                current=cur,
+                baseline=None,
+                change=pp,
+                message=f"转化率下降观察 {drop_pp:.1f}pp",
+                **_conv_labels,
+            )
+
+    # --- acos ---
+    r = rules.get("acos_abnormal") or {}
+    if r.get("enabled", True):
+        acos = _f(row.get("acos"))
+        ad_cost = _f(row.get("ad_cost")) or 0.0
+        min_ad_cost = float(r.get("min_ad_cost") or 0)
+        target = _f(row.get("target_acos"))
+        if target is None:
+            target = float(r.get("default_target_acos") or 0.30)
+        # normalize percent vs ratio
+        if acos is not None and acos > 1.5:
+            acos_r = acos / 100.0
+        else:
+            acos_r = acos
+        if target is not None and target > 1.5:
+            target_r = target / 100.0
+        else:
+            target_r = target
+        over_pp = None
+        if acos_r is not None and target_r is not None:
+            over_pp = (acos_r - target_r) * 100.0
+        yellow = r.get("yellow") or {}
+        orange = r.get("orange") or {}
+        red = r.get("red") or {}
+        _acos_labels = dict(
+            current_label="当前ACOS",
+            baseline_label="目标ACOS",
+            change_label="高于目标",
+            current_fmt="ratio_or_pct",
+            baseline_fmt="ratio_or_pct",
+            change_fmt="pp",
+        )
+        if ad_cost < min_ad_cost:
+            pass  # 花费过低不告警，避免小样本失真
+        elif over_pp is not None and over_pp >= float(red.get("over_pp_min", 15)):
+            add(
+                "acos_abnormal",
+                "red",
+                current=acos,
+                baseline=target,
+                change=over_pp,
+                message=f"ACOS 高于目标 {over_pp:.1f}pp",
+                **_acos_labels,
+            )
+        elif over_pp is not None and over_pp >= float(orange.get("over_pp_min", 5)):
+            add(
+                "acos_abnormal",
+                "orange",
+                current=acos,
+                baseline=target,
+                change=over_pp,
+                message=f"ACOS 高于目标 {over_pp:.1f}pp",
+                **_acos_labels,
+            )
+        elif (
+            over_pp is not None
+            and float(yellow.get("over_pp_min", 0))
+            <= over_pp
+            < float(yellow.get("over_pp_max", 5))
+        ):
+            add(
+                "acos_abnormal",
+                "yellow",
+                current=acos,
+                baseline=target,
+                change=over_pp,
+                message=f"ACOS 略高 {over_pp:.1f}pp",
+                **_acos_labels,
+            )
+
+    # --- ad spend ---
+    # 仅当同时有花费与广告销售环比数据时判断，避免缺字段时「销售未增」恒为真
+    r = rules.get("ad_spend_abnormal") or {}
+    if r.get("enabled", True):
+        ch = _f(row.get("ad_cost_change_pct"))
+        up = ch if ch is not None and ch > 0 else None
+        ad_sales_ch = _f(row.get("ad_sales_change_pct"))
+        cur = _f(row.get("ad_cost"))
+        min_cost = float(r.get("min_ad_cost") or 20)
+        yellow = r.get("yellow") or {}
+        orange = r.get("orange") or {}
+        red = r.get("red") or {}
+        _ad_labels = dict(
+            current_label="当日广告花费",
+            baseline_label=None,
+            change_label="广告花费环比",
+            current_fmt="money",
+            baseline_fmt="raw",
+            change_fmt="pct",
+        )
+        if (
+            up is not None
+            and cur is not None
+            and cur >= min_cost
+            and ad_sales_ch is not None
+            and ad_sales_ch <= 0
+        ):
+            if up >= float(red.get("spend_up_pct_min", 0.50)):
+                add(
+                    "ad_spend_abnormal",
+                    "red",
+                    current=cur,
+                    baseline=None,
+                    change=ch,
+                    message=f"广告花费上涨 {up:.0%} 且广告销售未增",
+                    **_ad_labels,
+                )
+            elif up >= float(orange.get("spend_up_pct_min", 0.20)):
+                add(
+                    "ad_spend_abnormal",
+                    "orange",
+                    current=cur,
+                    baseline=None,
+                    change=ch,
+                    message=f"广告花费上涨 {up:.0%} 且广告销售未增",
+                    **_ad_labels,
+                )
+            elif float(yellow.get("spend_up_pct_min", 0.10)) <= up < float(
+                yellow.get("spend_up_pct_max", 0.20)
+            ):
+                add(
+                    "ad_spend_abnormal",
+                    "yellow",
+                    current=cur,
+                    baseline=None,
+                    change=ch,
+                    message=f"广告花费上涨观察 {up:.0%}",
+                    **_ad_labels,
+                )
+
+    # --- inventory low ---
+    # 无动销且库存为 0：视为清仓/下架噪音，默认不报红（require_activity）
+    r = rules.get("inventory_low") or {}
+    if r.get("enabled", True):
+        days = _f(row.get("available_days"))
+        available = _f(row.get("available"))
+        sale_num = _f(row.get("sale_num")) or 0.0
+        order_num = _f(row.get("order_num")) or 0.0
+        active = sale_num > 0 or order_num > 0
+        require_activity = bool(r.get("require_activity", True))
+        yellow = r.get("yellow") or {}
+        orange = r.get("orange") or {}
+        red = r.get("red") or {}
+        # 仅当 available 有值时才判断货，避免脏数据
+        stockout = available is not None and available <= 0
+        if require_activity and not active:
+            pass  # 无动销：不足库存不建任务
+        elif stockout:
+            add(
+                "inventory_low",
+                "red",
+                current=available,
+                baseline=None,
+                change=None,
+                message="FBA可售为0（断货）",
+                current_label="FBA可售件数",
+                current_fmt="units",
+            )
+        elif (
+            days is not None
+            and available is not None
+            and available > 0
+            and days <= float(red.get("days_max", 7))
+        ):
+            add(
+                "inventory_low",
+                "red",
+                current=days,
+                baseline=available,
+                change=None,
+                message=f"可售天数≤{red.get('days_max', 7)}天且仍有动销",
+                current_label="可售天数",
+                baseline_label="FBA可售件数",
+                current_fmt="days",
+                baseline_fmt="units",
+            )
+        elif (
+            days is not None
+            and available is not None
+            and available > 0
+            and float(orange.get("days_min", 15)) <= days < float(orange.get("days_max", 30))
+        ):
+            add(
+                "inventory_low",
+                "orange",
+                current=days,
+                baseline=available,
+                change=None,
+                message=f"可售天数 {days:.0f}",
+                current_label="可售天数",
+                baseline_label="FBA可售件数",
+                current_fmt="days",
+                baseline_fmt="units",
+            )
+        elif (
+            days is not None
+            and available is not None
+            and available > 0
+            and float(yellow.get("days_min", 30)) <= days < float(yellow.get("days_max", 45))
+        ):
+            add(
+                "inventory_low",
+                "yellow",
+                current=days,
+                baseline=available,
+                change=None,
+                message=f"可售天数观察 {days:.0f}",
+                current_label="可售天数",
+                baseline_label="FBA可售件数",
+                current_fmt="days",
+                baseline_fmt="units",
+            )
+
+    # --- inventory high ---
+    r = rules.get("inventory_high") or {}
+    if r.get("enabled", True):
+        days = _f(row.get("available_days"))
+        age = _f(row.get("inv_age_365_plus"))
+        available = _f(row.get("available")) or 0.0
+        sale_num = _f(row.get("sale_num")) or 0.0
+        order_num = _f(row.get("order_num")) or 0.0
+        active = sale_num > 0 or order_num > 0
+        min_units = float(r.get("min_units") or 20)
+        require_activity = bool(r.get("require_activity", True))
+        yellow = r.get("yellow") or {}
+        orange = r.get("orange") or {}
+        red = r.get("red") or {}
+        age_qty_min = float(red.get("age_qty_min") or 1)
+        min_units_for_age = float(red.get("min_units_for_age") or 5)
+
+        # 库龄红：有一定库存且 365+ 件数达到阈值（不要求当日动销）
+        if (
+            age is not None
+            and age >= age_qty_min
+            and available >= min_units_for_age
+        ):
+            add(
+                "inventory_high",
+                "red",
+                current=age,
+                baseline=available,
+                change=None,
+                message=f"365+库龄件数 {age:.0f}",
+                current_label="365+库龄件数",
+                baseline_label="FBA可售件数",
+                current_fmt="units",
+                baseline_fmt="units",
+            )
+        elif available < min_units:
+            pass
+        elif require_activity and not active:
+            pass  # 无动销的高可售天数：一期不建橙/黄任务，减少噪音
+        elif days is not None and days > float(orange.get("days_min", 180)):
+            add(
+                "inventory_high",
+                "orange",
+                current=days,
+                baseline=available,
+                change=None,
+                message=f"可售天数过高 {days:.0f}",
+                current_label="可售天数",
+                baseline_label="FBA可售件数",
+                current_fmt="days",
+                baseline_fmt="units",
+            )
+        elif days is not None and float(yellow.get("days_min", 120)) <= days <= float(
+            yellow.get("days_max", 180)
+        ):
+            add(
+                "inventory_high",
+                "yellow",
+                current=days,
+                baseline=available,
+                change=None,
+                message=f"可售天数偏高 {days:.0f}",
+                current_label="可售天数",
+                baseline_label="FBA可售件数",
+                current_fmt="days",
+                baseline_fmt="units",
+            )
+
+    # --- review ---
+    r = rules.get("review_abnormal") or {}
+    if r.get("enabled", True):
+        rating = _f(row.get("rating"))
+        rating_ch = _f(row.get("rating_change"))
+        low = _f(row.get("low_review_num"))
+        yellow = r.get("yellow") or {}
+        orange = r.get("orange") or {}
+        red = r.get("red") or {}
+        drop = abs(rating_ch) if rating_ch is not None and rating_ch < 0 else None
+        _review_labels = dict(
+            current_label="当前星级",
+            baseline_label="中差评数",
+            change_label="星级变化",
+            current_fmt="rating",
+            baseline_fmt="raw",
+            change_fmt="raw",
+        )
+        # 无评价数据时不告警
+        if rating is None and low is None and rating_ch is None:
+            pass
+        elif rating is not None and rating < float(red.get("rating_floor", 3.5)):
+            add(
+                "review_abnormal",
+                "red",
+                current=rating,
+                baseline=low,
+                change=rating_ch,
+                message=f"星级跌破 {red.get('rating_floor')}: {rating}",
+                **_review_labels,
+            )
+        elif (drop is not None and drop >= float(orange.get("rating_drop_min", 0.2))) or (
+            low is not None and low >= float(orange.get("low_star_7d_min", 3))
+        ):
+            add(
+                "review_abnormal",
+                "orange",
+                current=rating,
+                baseline=low,
+                change=rating_ch,
+                message="星级明显下降或中差评增多",
+                **_review_labels,
+            )
+        elif (drop is not None and drop >= float(yellow.get("rating_drop_min", 0.1))) or (
+            low is not None and low >= float(yellow.get("low_star_count_min", 1))
+        ):
+            add(
+                "review_abnormal",
+                "yellow",
+                current=rating,
+                baseline=low,
+                change=rating_ch,
+                message="评价异常观察",
+                **_review_labels,
+            )
+
+    return out
+
+
+def _enrich_from_raw(row: dict[str, Any]) -> dict[str, Any]:
+    """从 raw_json 补齐库表未落库的辅助字段（如广告销售环比）。"""
+    out = dict(row)
+    raw = row.get("raw_json")
+    if isinstance(raw, str) and raw:
+        import json
+
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = None
+    if not isinstance(raw, dict):
+        return out
+    fm = raw.get("fieldsMap") if isinstance(raw.get("fieldsMap"), dict) else {}
+
+    def mom_pct(key: str) -> float | None:
+        node = fm.get(key) if isinstance(fm.get(key), dict) else {}
+        p = _f(node.get("momPercent"))
+        return None if p is None else p / 100.0
+
+    if out.get("ad_sales_change_pct") is None:
+        out["ad_sales_change_pct"] = mom_pct("adTotalSale") or mom_pct(
+            "adSalePriceDirectTotal"
+        )
+    if out.get("sale_price_baseline") is None:
+        node = fm.get("salePrice") if isinstance(fm.get("salePrice"), dict) else {}
+        out["sale_price_baseline"] = _f(node.get("momValue"))
+    if out.get("order_num_baseline") is None:
+        node = fm.get("orderNum") if isinstance(fm.get("orderNum"), dict) else {}
+        out["order_num_baseline"] = _f(node.get("momValue"))
+    if out.get("sessions_baseline") is None:
+        node = fm.get("sessions") if isinstance(fm.get("sessions"), dict) else {}
+        out["sessions_baseline"] = _f(node.get("momValue"))
+    return out
+
+
+def evaluate_rows(
+    rows: list[dict[str, Any]], rules_cfg: dict[str, Any]
+) -> list[Anomaly]:
+    anomalies: list[Anomaly] = []
+    for row in rows:
+        anomalies.extend(evaluate_row(_enrich_from_raw(row), rules_cfg))
+    return anomalies
+
+
+def highest_level(anomalies: list[Anomaly]) -> str | None:
+    if not anomalies:
+        return None
+    return max(anomalies, key=lambda a: LEVEL_RANK.get(a.level, 0)).level

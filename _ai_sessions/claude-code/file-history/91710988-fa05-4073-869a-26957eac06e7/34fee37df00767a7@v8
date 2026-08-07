@@ -1,0 +1,240 @@
+# TK · P3.0 达人表现（联盟中心·表现）采集 POC 结论
+
+> 日期：2026-08-06 · **门禁 verdict：G1–G4 🟢 / G5 🟡 / G6 🟢 → 可开 P3.1（窄表）**  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · **经营计划 P3**（≠ 采集路线图旧称 P4 联盟）  
+> 镜像写法：[P2 内容分析 POC](./TK-P2-内容分析POC结论.md) · [P1.7 广告细粒度 POC](./TK-P1-广告细粒度POC结论.md)  
+> **P3.1–P3.5 已交**（022 + ingest + T7 + TAB + 023 规则 + [分盘口径](./TK-P3-分盘与口径.md) + 店→达人下钻）；飞书 **D4 联盟达人** ✅（2026-08-07，旧称 D5）；**默认仍 SkipIngest**；日更未挂
+
+---
+
+## 0. 命名冻结（本轮即生效，避免与现网飞书冲突）
+
+| 用途 | 建议编号 | 说明 |
+|------|----------|------|
+| 达人事实 → 飞书多维表（过门禁后） | **T7 达人日** | **不要**用整体计划旧文「T5」（建表方案 T5=财务结算日） |
+| 达人看板（过门禁后） | **D4 联盟达人**（现网侧栏；旧文 D5 作废） | 视频内容现网是 **D3**（绑 T6）；**不要**占 T5 财务表号 |
+| 异常 `object_type`（过门禁后） | 预留 **`creator`**（或 `affiliate`） | **本轮不改** anomaly CHECK |
+| 异常域中文 | **达人表现** | 与店铺分析 / 视频内容 / 广告 / 库存并列 |
+| PG 表名（过门禁后草案） | `fact_tiktok_affiliate_daily` + `fact_tiktok_affiliate_creator_daily` | 寄样 `fact_creator_sample` 另议，不阻塞表现页 |
+
+**本轮禁止：** 建空 fact 表、ingest source、任务台达人 TAB 空壳、用广告花费/店日 GMV 假填达人归因、把未采投入填 0。  
+**本轮允许：** 紫鸟 debug JSON、配置写入真 URL、书面 G1–G6 判定。
+
+---
+
+## 1. POC 问题
+
+运营五维 / XMind / 三大块 **③ 达人表现** 需要：
+
+1. **联盟中心 → 数据分析 → 表现**：店级达人归因 GMV、成交件数、动销达人数、预计佣金、退款等  
+2. **达人明细行** + **稳定 creator_id**（是否出单、排行、异常对象）  
+3. **三类投入**分项来源：佣金 / 达人投流 / 寄样·合作费——缺项「暂不采」  
+4. 可重复紫鸟抓取 → `logs/affiliate-*-debug-*.json`  
+5. **字段字典 + 门禁 verdict**，通过后才开 P3.1 schema
+
+**店范围（已拍板）：** Deal `27501502216807` · INOUT `27328767468273` · Pop/Gardena `27758103898326`（**含欧盟**，POC **不**应用 `opsExcludeStoreIds`）
+
+---
+
+## 2. 仓库已交付
+
+| 文件 | 作用 |
+|------|------|
+| `collectors/tiktok-ads/scripts/_discover-affiliate-nav.js` | 商家中心扫「联盟/Affiliate」链接与可点文案 |
+| `collectors/tiktok-ads/scripts/_probe-affiliate-page.js` | 落地页粗 dump：KPI 卡片、表头、首行 |
+| `collectors/tiktok-ads/scripts/_click-affiliate-cta.js` | landing 点「合作数据分析 / 数据洞察」进表现 |
+| `collectors/tiktok-ads/scripts/scrape-affiliate-performance-page.js` | 结构化 `kpis` + `creators[]` + handle 作 `creatorId` + `window` |
+| `collectors/tiktok-ads/scripts/run-affiliate-poc.ps1` | 三店编排；**默认 SkipIngest**；`-SkipIngest:$false` 时 performance→daily+creator |
+| `collectors/tiktok-ads/scripts/qingquan-client.ps1` | `ConvertTo-QingquanAffiliateDaily/CreatorIngestItems`（P3.1） |
+| `backend/migrations/022_tk_affiliate_daily.sql` | 店级 + 达人级窗口快照表 + public 视图 |
+| `backend/app/api/ingest.py` | sources `tiktok_affiliate_daily` / `tiktok_affiliate_creator`（及兼容别名） |
+| `config/stores.config.example.json` | `affiliateNavStartUrl` + `affiliateLandingUrl` + `affiliateUrl` |
+
+```powershell
+cd collectors\tiktok-ads
+
+# 默认：enter_center → probe → performance（SkipIngest）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-affiliate-poc.ps1
+
+# 单店 Deal
+powershell -ExecutionPolicy Bypass -File .\scripts\run-affiliate-poc.ps1 `
+  -StoreIds 27501502216807 -Modules affiliate_enter_center,affiliate_performance
+
+# 仅导航探路
+powershell -ExecutionPolicy Bypass -File .\scripts\run-affiliate-poc.ps1 `
+  -Modules affiliate_nav_discover
+```
+
+日志：`logs/affiliate-poc-run-*.log`、`logs/affiliate_*-debug-{storeId}-{stamp}.json`、`logs/affiliate-poc-summary-*.json`
+
+**入口路径（实证）：**
+```text
+seller-*/affiliate/landing
+  → 点「合作数据分析」(UK) / 「数据洞察」(EU Pop)
+  → affiliate(.tiktokshopglobalselling).com/insights/transaction-analysis?shop_region=&shop_id=
+     （即联盟中心 · 数据分析 · 表现）
+```
+
+SSO：必须先经 seller 登录态再进 affiliate 子域；POC 用 `affiliate_enter_center` 点击落地最稳，直访深链可能丢 session。
+
+---
+
+## 3. 实页 URL（分平台 · 2026-08-06 实证）
+
+| 模块 | UK（Deal / INOUT） | EU（Pop/Gardena） | 备注 |
+|------|-------------------|-------------------|------|
+| 探路起点 | `seller-uk.tiktok.com/homepage` | `seller.eu.tiktokshopglobalselling.com/homepage` | discover |
+| seller 联盟门户 | `seller-uk.tiktok.com/affiliate/landing` | `seller.eu…/affiliate/landing` | `affiliateLandingUrl` |
+| **表现（主采）** | `https://affiliate.tiktok.com/insights/transaction-analysis?shop_region=GB&shop_id={oec_shop_id}` | `https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=GB&shop_id={oec_shop_id}` | `affiliateUrl`；**shop_id 为 TikTok OEC id，≠ 紫鸟 storeId** |
+| 联盟中心首页（非主采） | — | `…/platform/homepage` | 首页仅有概览 KPI，**无达人明细表**；须再进 transaction-analysis |
+
+**实测 shop_id（OEC，供对照，不写死进 runner）：**
+
+| 店 | 紫鸟 storeId | OEC shop_id（URL） |
+|----|--------------|-------------------|
+| Deal | 27501502216807 | 7496236979605834243 |
+| INOUT | 27328767468273 | 7496008380703541424 |
+| Pop | 27758103898326 | 7494573656167253993 |
+
+---
+
+## 4. 字段映射（scrape key · 按实页表头）
+
+### 4.1 店级 KPI → 日后 `fact_tiktok_affiliate_daily`
+
+| 页面文案 | scrape `kpis.*` | 日后列 | Deal 样例 | INOUT | Pop |
+|----------|-----------------|--------|-----------|-------|-----|
+| 达人归因 GMV | `gmvAffiliate` | `gmv_affiliate` | 164.96 GBP | 1229.46 | 158.03 |
+| 达人归因成交件数 | `orderUnits` | `order_units` | 11 | 92 | 12 |
+| 退款金额 | `refundAmount` | `refund_amount` | 0 | 85.66 | 0 |
+| 视频数 | `videoCnt` | `video_cnt` | 10 | 36 | 35 |
+| 直播数 | `liveCnt` | `live_cnt` | 2 | 40 | 9 |
+| 已发布内容的达人数 | `creatorsPublished` | `creators_published` | 9 | 49 | 26 |
+| 动销达人数 | `creatorsSold` | `creators_sold` | 5 | 46 | 5 |
+| 预计佣金 | `estCommission` | `est_commission` | 9.69 | 44.91 | 3.73 |
+| 窗口文案 | `window` | `window_label` | **近 7 天**（2026/7/29–2026/8/4） | 同左 | 同左 |
+| 币种 | `currency` | `currency` | GBP | GBP | GBP |
+
+**窗口策略（对齐 P2 内容）：** 页面默认 **近 7 天滚动窗**，**不**拆成 7 行自然日；入库用 `window_label='近7天'` + 锚点日（更新时间/窗末日）。禁止把 7 日汇总当成「昨天」。
+
+### 4.2 达人行 → 日后 `fact_tiktok_affiliate_creator_daily`
+
+表头（三店一致）：
+
+`达人 | 达人归因 GMV | 退款金额 | 预计佣金 | 归因订单数 | 达人归因成交件数 | 已退款的商品件数 | 视频数 | 直播数 | 商品销量 | 已发货样品数 | 点击成交转化率 | 样品内容合计 | 视频播放量 | 操作`
+
+| 表头 | scrape | 说明 |
+|------|--------|------|
+| 达人 | `creatorName` + `creatorHandle` | 首格 = handle + 昵称 + 类目 + 粉丝 |
+| （主键） | `creatorId` | **POC = TikTok handle**（如 `countrylass65`）；页面无 numeric uid；跨刷新同 handle 稳定。跨店同 handle 视为同一达人需另证 |
+| 达人归因 GMV | `gmv` | |
+| 退款金额 | `refundAmount` | |
+| 预计佣金 | `estCommission` | |
+| 归因订单数 | `orders` | |
+| 达人归因成交件数 | `orderUnits` | |
+| 视频数 / 直播数 | `videoCnt` / `liveCnt` | |
+| 已发货样品数 | `samplesShipped` | 行级寄样件数（有数可采） |
+| 视频播放量 | `videoViews` | |
+
+**是否出单（定稿）：** `gmv > 0 OR orderUnits > 0`（与动销达人卡片口径一致）。
+
+**Deal 首行样例：** handle=`countrylass65` name=`Gillian Dickin` gmv=69.1 orders=2 orderUnits=4 estCommission=3 videoViews=8117
+
+### 4.3 三类投入（G5）
+
+| 分项 | 结论 | 来源 |
+|------|------|------|
+| 佣金 | 🟢 可采 | 店级 + 达人行 `estCommission`（预计佣金） |
+| 达人投流花费 | 🟡 **暂不采** | 表现页无独立「达人投流」花费列；勿用广告 GMV/spend 顶替 |
+| 寄样/合作费 | 🟡 **部分可见、金额暂不采** | 行有「已发货样品数」；金额/合作费未见 → 件数可后续可选，**金额禁止填 0** |
+
+---
+
+## 5. 门禁判定
+
+| # | 门禁 | 判定 | 证据 |
+|---|------|------|------|
+| G1 | 三店可达联盟中心/表现 | 🟢 | Deal/INOUT → `affiliate.tiktok.com/insights/transaction-analysis`；Pop → `affiliate.tiktokshopglobalselling.com/insights/transaction-analysis`；均经 landing CTA |
+| G2 | 店级 KPI≥归因 GMV·成交件·动销·佣金 | 🟢 | 三店 `kpiHitCount=8`（含 gmvAffiliate/orderUnits/creatorsSold/estCommission） |
+| G3 | 达人行 + 稳定 creator_id | 🟢 | 三店 `creatorIdCount=20`（表页首屏）；id=**handle**；无 numeric oec creator id。跨刷新同 handle（POC 接受 handle 作业务主键；P3.1 UNIQUE 用 handle） |
+| G4 | 是否出单口径 + 窗口 | 🟢 | 出单=`gmv>0 OR orderUnits>0`；窗口=**近 7 天**滚动，不拆日 |
+| G5 | 投入分项 | 🟡 | 佣金🟢；投流暂不采；寄样金额暂不采（件数可选） |
+| G6 | 禁混加 | 🟢 | 归因 GMV **≠** ads spend；与 ① 渠道「达人带货」**仅对照不互填** |
+
+**总 verdict：🟢 可开 P3.1（窄表）**  
+- 建 `fact_tiktok_affiliate_daily` + `fact_tiktok_affiliate_creator_daily`  
+- 投入：只落 `est_commission`；投流/寄样金额列 **不建或 nullable + UI「无数据」**  
+- creator 主键：`creator_id = handle`（文档注明非平台内部 uid）  
+- **禁止**自然日拆窗、禁止用广告花费假填
+
+---
+
+## 6. 与编号对照
+
+| 文档 | 「P3 / 联盟」含义 |
+|------|------------------|
+| **TK-整体开发计划** | **P3 = 达人表现**（本 POC） |
+| TK-整站运营数据采集路线图 | 旧 **P3a/b=健康/财务**；联盟写在 **P4 按需** ≈ 本经营 P3 |
+| 飞书建表方案 T5 | **财务**，不是达人 → 达人用 **T7** |
+
+---
+
+## 7. 下一步 / 禁止项
+
+**P3.1 已交（2026-08-06）：**  
+1. ✅ migration `022_tk_affiliate_daily.sql`：`tk.fact_tiktok_affiliate_daily` + `fact_tiktok_affiliate_creator_daily`（`window_label` + 锚点日；creator_id=handle）  
+2. ✅ ingest：`tiktok_affiliate_daily` / `tiktok_affiliate_creator`（refreshable；兼容 `tiktok_affiliate_shop` / `tiktok_affiliate_creators` / `tiktok_affiliate`）  
+3. ✅ 采集：`ConvertTo-QingquanAffiliate*IngestItems` + `run-affiliate-poc -SkipIngest:$false`（仅 `affiliate_performance` 上报）  
+4. ✅ 生产（2026-08-06）：`022_tk_affiliate_daily.sql` 已 apply；`ingest.py` 已 docker cp 进 api/worker 并 restart  
+
+**P3.2 已交（2026-08-06）：**  
+1. ✅ 飞书 T7「达人日」`tblsoAKtF05YyyWd`（`scripts/feishu-tk-create-t7-affiliate.py`）  
+2. ✅ mapper `tk_affiliate_creator_daily_to_fields` + `tk_feishu_sync` key + `--affiliate-only`  
+3. ✅ API `GET /api/v1/tk/affiliate` + `/affiliate/shop-daily`；freshness `affiliate_max`  
+4. ✅ 任务台 TAB「达人表现」`tk-affiliate`（达人明细 / 店级汇总）  
+5. ✅ 飞书看板 **D4 联盟达人** 已搭（2026-08-07：GMV/成交件/佣金/出单数 + TOP + 明细；旧称 D5）；日更未挂  
+
+**P3.3 已交（2026-08-07）：**  
+1. ✅ migration `023_tk_affiliate_anomaly.sql`：object_type +`creator`；dim `creator_invest_no_sale` / `creator_gmv_drop` / `affiliate_creators_sold_drop` / `creator_refund_high`  
+2. ✅ `tk_affiliate_rules.py` + CLI `tk_affiliate_anomaly_eval`；窗口快照环比，不拆日  
+3. ✅ API `GET/POST /api/v1/tk/affiliate/anomaly-eval`；ingest 批末 auto-eval（affiliate sources）  
+4. ✅ 任务台筛「达人表现」+ 预览/写入按钮；投入判定**仅** est_commission（投流/寄样不参与）  
+
+**P3.4 已交（2026-08-07）：**  
+1. ✅ [TK-P3-分盘与口径.md](./TK-P3-分盘与口径.md)：①/②/③/广告 SoT、禁混加、对照不互填、窗口、异常边界、T7 + 现网页 D4 达人 
+
+**P3.5 已交（2026-08-07）：**  
+1. ✅ 任务台下钻：总览店日行 / 平台店铺 / 店级联盟 → 达人明细（带 `shop_external_id`）  
+2. ✅ 达人明细/店级 → 达人异常（`object_type=creator`）；异常行 → 回达人 TAB  
+
+**下一步：**  
+1. ✅ 飞书看板 **D4 联盟达人** UI（2026-08-07 已搭；绑 T7；禁 T2 spend）  
+2. 日更：独立模块或 shop-modules 增项；仍建议 enter_center 或缓存 OEC shop_id  
+3. 业务批后：`-SkipIngest:$false` 三店实报 + 多锚点窗 + `--affiliate-only` + 规则 write  
+ 
+
+**禁止：**  
+- 用 campaign 日或 shop_daily 假填达人  
+- 未采投入写 0（投流/寄样金额仍 🟡 暂不采）  
+- 占用 T5 表号；把达人页再叫回旧 D5 导致和现网 D3/D4 对不上  
+- 恢复已砍的 AI 素材盘  
+- 把 Pop 首页 `/platform/homepage` 当表现主采（无明细表）  
+- 把「近 7 天」窗口均摊成 7 行日事实
+
+---
+
+## 8. 实跑记录
+
+| 时间 | 店 | 模块 | ok | kpi | creators(id) | 备注 |
+|------|----|------|----|-----|--------------|------|
+| 2026-08-06 19:56 | Deal | enter+perf | ✅ | 8 | 20 | stamp `20260806-195337`；GMV 164.96 |
+| 2026-08-06 20:03 | INOUT | enter+perf | ✅ | 8 | 20 | stamp `20260806-195616`；GMV 1229.46 |
+| 2026-08-06 20:09 | Pop | enter+perf | ✅ | 8 | 20 | stamp `20260806-200513`；CTA=数据洞察；host=tiktokshopglobalselling |
+
+```text
+Deal   affiliate_performance  ok creatorIdCount=20 kpiHitCount=8
+INOUT  affiliate_performance  ok creatorIdCount=20 kpiHitCount=8
+Pop    affiliate_performance  ok creatorIdCount=20 kpiHitCount=8
+```
+
+Debug 根目录：`collectors/tiktok-ads/logs/affiliate_*-debug-*-20260806-*.json`

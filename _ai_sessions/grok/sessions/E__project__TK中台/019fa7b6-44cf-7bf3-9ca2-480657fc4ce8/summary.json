@@ -1,0 +1,21 @@
+{
+  "info": {
+    "id": "019fa7b6-44cf-7bf3-9ca2-480657fc4ce8",
+    "cwd": "E:\\project\\TK中台"
+  },
+  "session_summary": "What is ai-dev-sop-v2.3.1",
+  "created_at": "2026-07-28T07:52:48.087953200Z",
+  "updated_at": "2026-07-28T07:59:58.365373900Z",
+  "num_messages": 80,
+  "num_chat_messages": 36,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 2,
+  "chat_format_version": 1,
+  "request_id": "f0bfa4cf-c481-45c9-bc99-1d6aa496ddd8",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T07:59:58.365373900Z",
+  "generated_title": "What is ai-dev-sop-v2.3.1",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

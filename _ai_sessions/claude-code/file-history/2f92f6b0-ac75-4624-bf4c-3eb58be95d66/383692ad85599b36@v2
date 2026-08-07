@@ -1,0 +1,196 @@
+"""将「执行日期」重命名为「执行日期(系统)」，并尽量提示不可手改。
+
+飞书普通版不支持字段级只读权限（Business/Enterprise 才有 field_perm）。
+本脚本：
+1. 开启高级权限（若尚未开启）——不影响字段只读，但便于后续企业版配置
+2. 母表 + 异常任务子表：字段名 执行日期 → 执行日期(系统)
+3. 清理探测时残留的测试角色（名称以「测试_」或「运营负责人2」开头的可选手动删）
+
+用法：
+  python scripts/lock_exec_date_field.py
+  python scripts/lock_exec_date_field.py --dry-run
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient, FeishuError
+from app.config import get_settings
+from app.sync.shops import ShopTableRegistry, dual_write_enabled
+from app.sync.writer import EXEC_DATE_FIELD, EXEC_DATE_FIELD_ALIASES
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger("lock_exec_date_field")
+
+OLD_NAME = "执行日期"
+NEW_NAME = EXEC_DATE_FIELD  # 执行日期_系统
+
+
+def _task_table_targets(settings) -> list[tuple[str, str]]:
+    targets: list[tuple[str, str]] = []
+    if settings.feishu_table_tasks:
+        targets.append(("母表-异常任务", settings.feishu_table_tasks))
+    if dual_write_enabled():
+        try:
+            reg = ShopTableRegistry.load(settings.shop_tables_path)
+            for shop, tid in reg.all_table_ids("tasks"):
+                targets.append((f"子表-{shop}", tid))
+        except Exception:
+            logger.exception("加载子表注册失败")
+    # 兜底：按表名扫描
+    return targets
+
+
+def ensure_advanced(client: FeishuClient, app: str, *, dry_run: bool) -> bool:
+    meta = client._api("GET", f"/bitable/v1/apps/{app}")
+    app_info = (meta.get("data") or {}).get("app") or {}
+    advanced = bool(app_info.get("is_advanced"))
+    logger.info("is_advanced=%s advance_version=%s", advanced, app_info.get("advance_version"))
+    if advanced:
+        return True
+    if dry_run:
+        logger.info("[DRY-RUN] 将开启高级权限 is_advanced=true")
+        return False
+    client._api("PUT", f"/bitable/v1/apps/{app}", json_body={"is_advanced": True})
+    logger.info("已开启高级权限")
+    return True
+
+
+def rename_exec_date_on_table(
+    client: FeishuClient,
+    app: str,
+    label: str,
+    table_id: str,
+    *,
+    dry_run: bool,
+) -> str:
+    fields = client.list_fields(app, table_id)
+    by_name = {f.get("field_name"): f for f in fields if f.get("field_name")}
+    if NEW_NAME in by_name:
+        logger.info("[%s] 已是 %s", label, NEW_NAME)
+        return "already"
+    if OLD_NAME not in by_name:
+        # 可能字段缺失
+        logger.warning("[%s] 未找到 %s / %s", label, OLD_NAME, NEW_NAME)
+        return "missing"
+    field = by_name[OLD_NAME]
+    fid = field.get("field_id")
+    ftype = field.get("type")
+    prop = field.get("property")
+    if not fid:
+        return "no_id"
+    if dry_run:
+        logger.info("[DRY-RUN][%s] 重命名 %s → %s (field_id=%s)", label, OLD_NAME, NEW_NAME, fid)
+        return "dry_run"
+    client.update_field(
+        app,
+        table_id,
+        fid,
+        field_name=NEW_NAME,
+        field_type=int(ftype) if ftype is not None else 5,
+        property_=prop if isinstance(prop, dict) else None,
+    )
+    logger.info("[%s] 已重命名 %s → %s", label, OLD_NAME, NEW_NAME)
+    return "renamed"
+
+
+def cleanup_probe_roles(client: FeishuClient, app: str, *, dry_run: bool) -> int:
+    """删除探测脚本残留角色。"""
+    try:
+        data = client._api("GET", f"/bitable/v1/apps/{app}/roles")
+    except FeishuError as e:
+        logger.warning("list roles failed: %s", e)
+        return 0
+    items = (data.get("data") or {}).get("items") or []
+    n = 0
+    for r in items:
+        name = str(r.get("role_name") or "")
+        rid = r.get("role_id")
+        if not rid:
+            continue
+        if name.startswith("测试_") or name in {"运营负责人2"}:
+            if dry_run:
+                logger.info("[DRY-RUN] 删除角色 %s %s", name, rid)
+            else:
+                try:
+                    client._api("DELETE", f"/bitable/v1/apps/{app}/roles/{rid}")
+                    logger.info("已删除角色 %s %s", name, rid)
+                except Exception as e:
+                    logger.warning("删除角色失败 %s: %s", name, e)
+                    continue
+            n += 1
+    return n
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="锁定/标注 执行日期 为系统字段")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--skip-rename", action="store_true")
+    parser.add_argument("--scan-all-task-tables", action="store_true", help="按表名扫描全部异常任务表")
+    args = parser.parse_args()
+
+    settings = get_settings()
+    if not settings.has_feishu or not settings.feishu_bitable_app_token:
+        logger.error("飞书未配置")
+        return 2
+    app = settings.feishu_bitable_app_token
+
+    with FeishuClient(settings) as client:
+        ensure_advanced(client, app, dry_run=args.dry_run)
+
+        targets = _task_table_targets(settings)
+        if args.scan_all_task_tables or not targets:
+            for t in client.list_tables(app):
+                name = str(t.get("name") or "")
+                tid = t.get("table_id")
+                if tid and name.startswith("异常任务"):
+                    pair = (name, tid)
+                    if pair not in targets and (name, tid) not in [(a, b) for a, b in targets]:
+                        targets.append((name, tid))
+
+        # dedupe by table_id
+        seen: set[str] = set()
+        uniq: list[tuple[str, str]] = []
+        for label, tid in targets:
+            if tid in seen:
+                continue
+            seen.add(tid)
+            uniq.append((label, tid))
+
+        summary = {"renamed": 0, "already": 0, "missing": 0, "dry_run": 0, "errors": 0}
+        if not args.skip_rename:
+            for label, tid in uniq:
+                try:
+                    st = rename_exec_date_on_table(
+                        client, app, label, tid, dry_run=args.dry_run
+                    )
+                    summary[st] = summary.get(st, 0) + 1
+                except Exception as e:
+                    summary["errors"] += 1
+                    logger.exception("[%s] 重命名失败: %s", label, e)
+
+        deleted = cleanup_probe_roles(client, app, dry_run=args.dry_run)
+        logger.info(
+            "done summary=%s deleted_roles=%s aliases=%s",
+            summary,
+            deleted,
+            EXEC_DATE_FIELD_ALIASES,
+        )
+        logger.info(
+            "注意：普通版无法 API 禁人手改；系统会在日批/fill-exec-date 把人工修改纠正回锁定值。"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

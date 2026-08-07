@@ -1,0 +1,50 @@
+function send(type) {
+  return new Promise((res) => chrome.runtime.sendMessage({ type }, res));
+}
+function setMsg(text, cls) {
+  const el = document.getElementById('msg');
+  el.textContent = text || '';
+  el.className = cls || '';
+}
+function fmtTs(ts) {
+  if (!ts) return '—';
+  return new Date(ts).toLocaleString('zh-CN');
+}
+
+async function refresh() {
+  const s = await send('getStatus');
+  const latest = (s && s.latest) || {};
+  const cfg = (s && s.config) || {};
+  document.getElementById('onSale').textContent = latest.onSale != null ? latest.onSale : '—';
+  document.getElementById('total').textContent = latest.total != null ? latest.total : '—';
+  document.getElementById('others').textContent =
+    (latest.unpublished != null ? latest.unpublished : '—') + ' / ' + (latest.removed != null ? latest.removed : '—');
+  document.getElementById('ts').textContent = fmtTs(latest.ts);
+  document.getElementById('cfg').textContent = cfg.webhook ? (cfg.enabled ? '已启用' : '已停用') : '未配置';
+
+  // 流量字段诊断样本
+  const ts = s && s.trafficSample;
+  if (ts && ts.flowItems) {
+    document.getElementById('diagWrap').style.display = 'block';
+    document.getElementById('diag').textContent =
+      `筛选结果 total=${ts.total}  抓取时间=${fmtTs(ts.capturedAt)}\n分布：${JSON.stringify(ts.dist, null, 0)}\n\n逐条：\n${JSON.stringify(ts.flowItems, null, 1)}`;
+  }
+}
+
+document.getElementById('check').addEventListener('click', async () => {
+  setMsg('正在刷新后台页…');
+  const r = await send('checkNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 4000);
+});
+document.getElementById('test').addEventListener('click', async () => {
+  setMsg('正在发送测试…');
+  const r = await send('testFeishu');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+});
+document.getElementById('opt').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+refresh();

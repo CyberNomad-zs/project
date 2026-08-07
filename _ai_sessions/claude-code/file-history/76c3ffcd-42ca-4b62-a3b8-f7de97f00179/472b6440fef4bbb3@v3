@@ -1,0 +1,787 @@
+// Service worker：接收接口数据 → 按【店铺名】分别解析/对比/告警。
+// 多店铺：同一账号下有多个店(HomeCove/Twilight Cove/Agnis)，切到哪个店就记哪个店，各自独立快照与告警。
+// 数据只存本机 chrome.storage.local，不上传任何服务器。
+
+importScripts('logger.js');
+var log = TemuLogger.createLogger('bg');
+
+const GOODS_URL = 'https://agentseller.temu.com/goods/list';
+const DEFAULT_CONFIG = {
+  webhook: '',
+  intervalMinutes: 15,
+  enabled: true,
+  storeName: '',
+  // 定时必提醒：每天固定时刻强制发飞书状态汇报（无异常也发，证明插件活着）
+  mustRemindEnabled: true,
+  mustRemindTimes: ['09:30', '16:30'],
+};
+const MUST_REMIND_PREFIX = 'mustRemind|';
+
+// ---------------- 解析 ----------------
+function parseCountStatus(body) {
+  try {
+    const j = JSON.parse(body);
+    const list = j && j.result && j.result.skcTopStatusCountList;
+    if (!Array.isArray(list)) return null;
+    const pick = (s) => {
+      const x = list.find((e) => e && e.skcTopStatus === s);
+      return x && typeof x.skcTotal === 'number' ? x.skcTotal : null;
+    };
+    return { onSale: pick(100), unpublished: pick(0), removed: pick(200), deleted: pick(300) };
+  } catch (e) { log.warn('parseCountStatus: failed to parse response'); return null; }
+}
+function parsePageQuery(body) {
+  try {
+    const j = JSON.parse(body);
+    const r = j && j.result;
+    if (!r) return null;
+    return { total: r.total };
+  } catch (e) { log.warn('parsePageQuery: failed to parse response'); return null; }
+}
+function parseSkuSpecList(body) {
+  try {
+    const j = JSON.parse(body);
+    // 尝试多种可能的数据路径（API 格式可能漂移）
+    let list = j && j.result && j.result.list;
+    if (!Array.isArray(list)) list = j && j.result && j.result.skuSpecList;
+    if (!Array.isArray(list)) list = j && j.result && j.result.skuSpecs;
+    if (!Array.isArray(list)) list = j && j.result && j.result.data;
+    if (!Array.isArray(list)) list = j && j.result && Array.isArray(j.result) ? j.result : null;
+    if (!Array.isArray(list)) list = j && j.data && j.data.list;
+    if (!Array.isArray(list)) list = j && Array.isArray(j.data) ? j.data : null;
+    if (!Array.isArray(list)) {
+      // 仍然找不到数组 → 保存原始响应便于排查并告警
+      log.warn('parseSkuSpecList: result.list is not an array, result keys=' +
+        (j && j.result ? Object.keys(j.result).slice(0, 12).join(',') : 'null'));
+      chrome.storage.local.set({ lastSkuSpecRawFail: body.slice(0, 3000) });
+      return null;
+    }
+    const specs = list.map((it) => {
+      if (!it || typeof it !== 'object') return null;
+      return {
+        skuId: it.skuId || it.skuIdStr || it.id || it.skuSpecId || it.parentSkuId || '',
+        name: it.specName || it.skuName || it.name || it.propValue || it.specValue || it.value || it.spec || '',
+        img: it.skuImgUrl || it.imageUrl || it.imgUrl || it.thumbUrl || '',
+      };
+    }).filter((s) => s && (s.skuId || s.name));
+    if (!specs.length) {
+      log.warn('parseSkuSpecList: parsed ' + list.length + ' items but none had skuId/name, first item keys=' +
+        (list[0] && typeof list[0] === 'object' ? Object.keys(list[0]).slice(0, 12).join(',') : typeof list[0]));
+      chrome.storage.local.set({ lastSkuSpecRawFail: body.slice(0, 3000) });
+      return null;
+    }
+    return { skuSpecs: specs, skuSpecCount: specs.length };
+  } catch (e) { log.warn('parseSkuSpecList: failed to parse response: ' + (e && e.message ? e.message : String(e))); return null; }
+}
+function parseSkuPriceQuery(body) {
+  try {
+    const j = JSON.parse(body);
+    const r = j && j.result;
+    if (!r) return null;
+    // 数据结构未知，先整体保存，后续按需解析
+    return { skuPriceRaw: r };
+  } catch (e) { log.warn('parseSkuPriceQuery: failed to parse response'); return null; }
+}
+
+// ---------------- 存取 ----------------
+async function getConfig() {
+  const { config } = await chrome.storage.local.get('config');
+  return Object.assign({}, DEFAULT_CONFIG, config || {});
+}
+async function getStores() {
+  const { stores } = await chrome.storage.local.get('stores');
+  return stores || {};
+}
+async function saveStores(stores) {
+  await chrome.storage.local.set({ stores });
+}
+// 更新某店的最新读数
+async function updateStoreLatest(name, patch) {
+  const stores = await getStores();
+  const s = stores[name] || { latest: {}, snapshot: {} };
+  s.latest = Object.assign({}, s.latest, patch, { ts: Date.now() });
+  stores[name] = s;
+  await saveStores(stores);
+  return s;
+}
+
+// ---------------- 飞书 ----------------
+// template：飞书卡片色条 red/orange/blue/green/turquoise/wathet/purple/violet/carmine/yellow/grey
+async function sendFeishu(webhook, title, lines, template) {
+  if (!webhook) return { ok: false, msg: '未配置飞书 webhook' };
+  const card = {
+    msg_type: 'interactive',
+    card: {
+      header: { title: { tag: 'plain_text', content: title }, template: template || 'red' },
+      elements: [{ tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } }],
+    },
+  };
+  try {
+    const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(card) });
+    const data = await resp.json().catch(() => ({}));
+    const ok = resp.ok && (data.code === 0 || data.StatusCode === 0 || data.code === undefined);
+    if (ok) log.info('Feishu sent OK: ' + title);
+    return { ok, msg: ok ? '已发送' : ('飞书返回：' + JSON.stringify(data)) };
+  } catch (e) {
+    log.error('Feishu send FAILED: ' + (e && e.message ? e.message : 'unknown'));
+    return { ok: false, msg: '发送失败：' + (e && e.message) };
+  }
+}
+
+// ---------------- 定时必提醒（每天固定时刻强制汇报各店状态） ----------------
+function parseHHMM(s) {
+  const m = String(s || '').trim().match(/^(\d{1,2})[:.：](\d{2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  if (h > 23 || min > 59) return null;
+  return { h, min, label: String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0') };
+}
+// 下一次触发时间戳（本地时区）；若今天该时刻已过（或 5 秒内），排到明天
+function nextWhen(hhmm) {
+  const p = parseHHMM(hhmm);
+  if (!p) return null;
+  const now = new Date();
+  const t = new Date(now.getFullYear(), now.getMonth(), now.getDate(), p.h, p.min, 0, 0);
+  if (t.getTime() <= now.getTime() + 5000) t.setDate(t.getDate() + 1);
+  return t.getTime();
+}
+function fmtNum(v) { return typeof v === 'number' ? String(v) : '—'; }
+async function sendMustRemind(slot) {
+  const cfg = await getConfig();
+  if (!cfg.enabled || cfg.mustRemindEnabled === false) {
+    log.info('MustRemind skipped: disabled');
+    return { ok: false, msg: '未启用' };
+  }
+  if (!cfg.webhook) {
+    log.warn('MustRemind skipped: no webhook');
+    return { ok: false, msg: '未配置飞书 webhook' };
+  }
+  const stores = await getStores();
+  const names = Object.keys(stores).sort();
+  const lines = [
+    '**定时必提醒' + (slot ? ' · ' + slot : '') + '**',
+    '_插件存活汇报（无异常也会发）_',
+    '',
+  ];
+  if (!names.length) {
+    lines.push('_暂无店铺数据。请打开 goods/list 或点「轮巡所有店」。_');
+  } else {
+    for (const name of names) {
+      const L = (stores[name] && stores[name].latest) || {};
+      const stale = L.ts && (Date.now() - L.ts > 2 * 60 * 60 * 1000);
+      lines.push('**🏬 ' + name + '**' + (stale ? ' ⚠️数据超过2小时未更新' : ''));
+      lines.push(
+        '在售 **' + fmtNum(L.onSale) + '**'
+        + ' · 待关注 **' + fmtNum(L.trafficWatch) + '**'
+        + ' · 下降 **' + fmtNum(L.trafficDecline) + '**'
+        + ' · 总数 ' + fmtNum(L.total)
+      );
+      lines.push('上次检查：' + (L.ts ? new Date(L.ts).toLocaleString('zh-CN') : '—'));
+      lines.push('');
+    }
+  }
+  const lastCycle = (await chrome.storage.local.get('lastCycle')).lastCycle;
+  if (lastCycle && lastCycle.ts) {
+    lines.push('上次轮巡：' + new Date(lastCycle.ts).toLocaleString('zh-CN'));
+  }
+  lines.push('_汇报时间：' + new Date().toLocaleString('zh-CN') + '_');
+  const r = await sendFeishu(cfg.webhook, '📋 Temu 监测定时汇报', lines, 'blue');
+  await chrome.storage.local.set({ lastMustRemind: { ts: Date.now(), ok: r.ok, msg: r.msg, slot: slot || '' } });
+  log.info('MustRemind done: slot=' + (slot || '') + ' ok=' + r.ok);
+  return r;
+}
+async function setupMustRemindAlarms() {
+  const all = await chrome.alarms.getAll();
+  for (const a of all) {
+    if (a.name.startsWith(MUST_REMIND_PREFIX)) await chrome.alarms.clear(a.name);
+  }
+  const cfg = await getConfig();
+  if (cfg.mustRemindEnabled === false) {
+    log.info('MustRemind alarms cleared (disabled)');
+    return;
+  }
+  const raw = Array.isArray(cfg.mustRemindTimes) && cfg.mustRemindTimes.length
+    ? cfg.mustRemindTimes
+    : DEFAULT_CONFIG.mustRemindTimes;
+  const seen = {};
+  for (const t of raw) {
+    const p = parseHHMM(t);
+    if (!p || seen[p.label]) continue;
+    seen[p.label] = true;
+    const when = nextWhen(p.label);
+    if (!when) continue;
+    chrome.alarms.create(MUST_REMIND_PREFIX + p.label, { when });
+    log.info('MustRemind alarm set: ' + p.label + ' → ' + new Date(when).toLocaleString('zh-CN'));
+  }
+}
+
+// ---------------- 商品明细 → 带链接的告警行 ----------------
+// 后台商品操作都是弹窗、无深链，唯一稳定可点的是编辑页（实测格式：SPU ID 即 productId）。
+function editLink(productId) {
+  return 'https://agentseller.temu.com/goods/edit?from=productList&productId=' + productId;
+}
+// items：当前页可见的限流/下降商品（content.js 扫描 DOM 得到）；total：chip 全量计数。
+function itemLines(items, total) {
+  const lines = [];
+  if (Array.isArray(items) && items.length) {
+    for (const it of items) {
+      const nm = String(it.name || '商品').replace(/[[\]]/g, '').slice(0, 30);
+      lines.push('• [' + nm + '](' + editLink(it.productId) + ')  SKC ' + (it.skc || '-'));
+    }
+    if (typeof total === 'number' && total > items.length) {
+      lines.push('_（本页可见 ' + items.length + ' 条，共 ' + total + ' 条，其余在其它页；点「商品流量待关注」筛选可看全）_');
+    }
+  } else if (typeof total === 'number' && total > 0) {
+    lines.push('_（当前页未显示具体商品，共 ' + total + ' 条；打开「商品流量待关注」筛选可查看）_');
+  }
+  return lines;
+}
+
+// 让 content.js 主动点「商品流量待关注」筛选，捞出这几条被限流的具体商品（productId+name+skc）
+async function scanWatchViaTab() {
+  const tab = await getGoodsTab();
+  if (!tab) return null;
+  return await sendTabRetry(tab.id, { cmd: 'scanWatchList' }, 3);
+}
+
+// ---------------- 对比 & 告警（按店） ----------------
+// 按店串行：同一店的多条读数消息（切店时常一秒内来两条）排队逐个处理，
+// 避免"都读到旧快照各报一次"的竞态导致同一事件重复告警。
+const alertChains = {};
+function diffAndAlert(name) {
+  const prev = alertChains[name] || Promise.resolve();
+  const next = prev.then(() => _diffAndAlert(name)).catch(() => {});
+  alertChains[name] = next;
+  return next;
+}
+
+async function _diffAndAlert(name) {
+  const cfg = await getConfig();
+  if (!cfg.enabled) return;
+  const stores = await getStores();
+  const s = stores[name];
+  if (!s) return;
+  const latest = s.latest || {};
+  const snap = s.snapshot || {};
+  const events = [];
+
+  // 在售数量下降：数字告警（被动监测第一时间发现），diffOnSale 在轮巡时带具体商品名+链接点名。
+  // v3 曾移除此项（担心与 diffOnSale 重复），但 diffOnSale 只在空闲轮巡触发，移除后用户手动刷新/页面
+  // 自然浏览时下架完全漏报——现在恢复，与 diffOnSale 互补：此处报数字，轮巡补点名。
+  if (typeof latest.onSale === 'number' && typeof snap.onSale === 'number' && latest.onSale < snap.onSale) {
+    events.push(`📉 在售数量下降：${snap.onSale} → ${latest.onSale}`);
+  }
+  if (typeof latest.trafficWatch === 'number' && typeof snap.trafficWatch === 'number' && latest.trafficWatch > snap.trafficWatch) {
+    events.push(`⚠️ 商品流量待关注增加：${snap.trafficWatch} → ${latest.trafficWatch}`);
+    // 被动扫到的 watchItems 往往为空（限流商品散落在其它页）→ 主动点筛选把这几条捞出来，带链接点名。
+    let items = Array.isArray(latest.watchItems) ? latest.watchItems : [];
+    let total = latest.trafficWatch;
+    const scan = await scanWatchViaTab();
+    if (scan && scan.applied && Array.isArray(scan.items) && scan.items.length) {
+      items = scan.items;
+      if (typeof scan.total === 'number') total = scan.total;
+    }
+    events.push(...itemLines(items, total));
+  }
+  // 「商品流量近期有下降」商品数增加（相对已建立的基准，首次不报）
+  if (typeof latest.trafficDecline === 'number' && typeof snap.trafficDecline === 'number' && latest.trafficDecline > snap.trafficDecline) {
+    events.push(`🔴 商品流量近期有下降增加：${snap.trafficDecline} → ${latest.trafficDecline}（本页可见）`);
+    events.push(...itemLines(latest.declineItems, null));
+  }
+
+  if (events.length > 0) {
+    log.info('Alert triggered: store=' + name + ' eventCount=' + events.length);
+    const lines = [`**🏬 ${name}**`, ...events, '', `_检查时间：${new Date().toLocaleString('zh-CN')}_`];
+    const r = await sendFeishu(cfg.webhook, '🔔 Temu 店铺监测告警', lines);
+    await chrome.storage.local.set({ lastAlert: { ts: Date.now(), ok: r.ok, msg: r.msg, store: name, lines } });
+  }
+
+  // 合并式更新该店基准快照（只覆盖本次拿到的数值），幂等只报一次。
+  // 重新取一次 store：主动扫筛选期间 content 可能又上报过 latest，避免用旧闭包覆盖。
+  const stores2 = await getStores();
+  const s2 = stores2[name] || s;
+  const L2 = s2.latest || latest;
+  const newSnap = Object.assign({}, s2.snapshot || snap);
+  if (typeof L2.onSale === 'number') newSnap.onSale = L2.onSale;
+  if (typeof L2.total === 'number') newSnap.total = L2.total;
+  if (typeof L2.trafficWatch === 'number') newSnap.trafficWatch = L2.trafficWatch;
+  if (typeof L2.trafficDecline === 'number') newSnap.trafficDecline = L2.trafficDecline;
+  newSnap.ts = Date.now();
+  s2.snapshot = newSnap;
+  stores2[name] = s2;
+  await saveStores(stores2);
+  log.info('Snapshot updated: store=' + name);
+}
+
+// 在售清单 diff：找出「上一轮在售、这一轮不在」的商品 = 下架/移出在售，带商品名+编辑链接告警。
+// items 为 content.js 扫「在售中」tab 得到的当前在售商品(productId+name+skc)。返回下架数量(供日志)。
+// scanStore 为扫描瞬间页面实际所在店：与 name 不符 = 切店竞态（这批是别店数据）→ 整轮作废。
+async function diffOnSale(name, items, onSaleTabCount, scanStore) {
+  if (!Array.isArray(items) || !items.length) return 0; // 空 = 扫描失败或真 0，稳妥起见不动基准、不报
+  if (scanStore && scanStore !== name) { log.warn('onSale scan store mismatch: want=' + name + ' got=' + scanStore + '，本轮作废'); return 0; }
+  const cfg = await getConfig();
+  const stores = await getStores();
+  const s = stores[name] || { latest: {}, snapshot: {} };
+  // 防残缺扫描/筛选污染误判：以"扫描当时在干净视图下读到的「在售中 N」"为权威在售数
+  // （content.js scanOnSaleList 复位后读的，不会被「商品流量待关注」筛选污染）；
+  // 读不到才回退 countStatus 的 latest.onSale。扫到的商品数必须恰好等于它：
+  //   少了 = 没扫全/分页 → 跳过；多了 = 视图污染（全部/未发布/别店商品混入，可能含从未上架商品）→ 跳过。
+  //   旧版只查"少"不查"多"，曾放过 20 条污染扫描（在售实为 13）写进基准，
+  //   下一轮干净扫描引爆「下架15个(在售20→13)」假告警。
+  const known = (typeof onSaleTabCount === 'number' && onSaleTabCount > 0)
+    ? onSaleTabCount
+    : (s.latest && typeof s.latest.onSale === 'number' ? s.latest.onSale : null);
+  if (known != null && items.length < known) { log.warn('onSale scan incomplete: store=' + name + ' scanned=' + items.length + ' known=' + known); return 0; }
+  if (known != null && items.length > known) { log.warn('onSale scan overflow: store=' + name + ' scanned=' + items.length + ' known=' + known + '，疑似视图污染，本轮作废'); return 0; }
+  const newMap = {};
+  for (const it of items) if (it && it.productId) newMap[it.productId] = { name: it.name || '', skc: it.skc || '' };
+  const prevMap = s.snapshot && s.snapshot.onSaleIds;
+  let delistedCount = 0;
+  if (prevMap && cfg.enabled) { // 首次无基准 → 只记录不报
+    const delisted = Object.keys(prevMap).filter((pid) => !(pid in newMap));
+    delistedCount = delisted.length;
+    if (delisted.length) {
+      const added = Object.keys(newMap).filter((pid) => !(pid in prevMap)).length;
+      log.warn('Delisted items: store=' + name + ' count=' + delisted.length + ' onSale=' + Object.keys(prevMap).length + '→' + items.length + ' added=' + added);
+      const its = delisted.map((pid) => ({ productId: pid, name: prevMap[pid].name, skc: prevMap[pid].skc }));
+      // 「在售 A → B」的差值 ≠ 下架数（同期可能有新品上架）；补上新增数让账算得平：A - 下架 + 新增 = B
+      const lines = [`**🏬 ${name}**`, `📉 在售商品下架 ${delisted.length} 个（在售 ${Object.keys(prevMap).length} → ${items.length}${added ? `，同期新增上架 ${added} 个` : ''}）:`,
+        ...itemLines(its, null), '', `_检查时间：${new Date().toLocaleString('zh-CN')}_`];
+      const r = await sendFeishu(cfg.webhook, '🔔 Temu 店铺监测告警', lines);
+      await chrome.storage.local.set({ lastAlert: { ts: Date.now(), ok: r.ok, msg: r.msg, store: name, lines } });
+    }
+  } else {
+    log.info('First onSale baseline: store=' + name + ' items=' + items.length);
+  }
+  // 重新取一次 stores 再写：_diffAndAlert 可能在 diffOnSale 处理期间并发更新过 snapshot 的
+  // 数值字段（onSale/trafficWatch 等），直接用初始读到的 s 会覆盖掉这些更新 → 基准腐败 → "数据后来不准"。
+  const stores2 = await getStores();
+  const s2 = stores2[name] || s;
+  s2.snapshot = Object.assign({}, s2.snapshot || s.snapshot, { onSaleIds: newMap, onSaleIdsTs: Date.now() });
+  stores2[name] = s2;
+  await saveStores(stores2);
+  return delistedCount;
+}
+
+// 解析店铺名：优先用页面读到的店名；读不到则退回配置里手填的，再退回“当前店铺”
+async function resolveStore(msgStore) {
+  if (msgStore && String(msgStore).trim()) return String(msgStore).trim();
+  const cfg = await getConfig();
+  return (cfg.storeName && cfg.storeName.trim()) || '当前店铺';
+}
+
+// ---------------- 消息处理 ----------------
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    try {
+    if (msg.type === 'log') {
+      if (msg.entry && msg.entry.ts && msg.entry.level) {
+        TemuLogger._writeEntry(msg.entry);
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === 'capture') {
+      const name = await resolveStore(msg.store);
+      log.info('Capture: kind=' + msg.kind + ' store=' + name);
+      if (msg.kind === 'countStatus') {
+        const p = parseCountStatus(msg.body);
+        if (p && p.onSale != null) {
+          await updateStoreLatest(name, { onSale: p.onSale, unpublished: p.unpublished, removed: p.removed, deleted: p.deleted });
+          await diffAndAlert(name);
+        }
+      } else if (msg.kind === 'pageQuery') {
+        const p = parsePageQuery(msg.body);
+        if (p) await updateStoreLatest(name, { total: p.total });
+      } else if (msg.kind === 'skuSpecList') {
+        // 始终保存原始响应便于排障（成功/失败都存）
+        await chrome.storage.local.set({ lastSkuSpecRaw: msg.body.slice(0, 3000) });
+        const p = parseSkuSpecList(msg.body);
+        if (p) {
+          log.info('skuSpecList captured: store=' + name + ' count=' + p.skuSpecCount);
+          await updateStoreLatest(name, { skuSpecs: p.skuSpecs, skuSpecCount: p.skuSpecCount });
+        } else {
+          log.warn('skuSpecList parse FAILED for store=' + name + ' — raw saved to lastSkuSpecRaw');
+        }
+      } else if (msg.kind === 'skuPriceQuery') {
+        const p = parseSkuPriceQuery(msg.body);
+        if (p) {
+          log.info('skuPriceQuery captured: store=' + name);
+          await updateStoreLatest(name, { skuPriceRaw: p.skuPriceRaw });
+        }
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+    // ---- 前台商品页 variant 监控 ----
+    if (msg.type === 'frontCapture') {
+      const d = msg.data;
+      if (!d || !d.url) { sendResponse({ ok: false, msg: 'invalid data' }); return; }
+      log.info('FrontCapture: url=' + d.url + ' title=' + (d.title || '').slice(0, 30) + ' variants=' + d.totalOptions + ' avail=' + d.availableOptions);
+      const cfg = await getConfig();
+      const productUrls = cfg.productUrls || {};
+      let store = null;
+      for (const [s, urls] of Object.entries(productUrls)) {
+        if (Array.isArray(urls) && urls.some((u) => {
+          const a = String(u || '').split('?')[0]; const b = String(d.url || '').split('?')[0];
+          return a === b || (d.fullUrl && a === String(d.fullUrl).split('?')[0]);
+        })) { store = s; break; }
+      }
+      if (!store) {
+        const known = Object.keys(await getStores()).filter((n) => n && n !== '当前店铺');
+        store = known.find((n) => (d.fullUrl || d.url).toLowerCase().includes(n.toLowerCase())) || null;
+      }
+      if (!store) { sendResponse({ ok: false, msg: 'URL not configured for any store' }); return; }
+      const stores = await getStores();
+      const s = stores[store] || { latest: {}, snapshot: {} };
+      if (!s.frontLatest) s.frontLatest = {};
+      if (!s.frontSnapshot) s.frontSnapshot = {};
+      const key = d.url;
+      const prev = s.frontLatest[key];
+      s.frontLatest[key] = { title: d.title, price: d.price, variants: d.variants, totalOptions: d.totalOptions,
+        availableOptions: d.availableOptions, fullUrl: d.fullUrl, ts: Date.now() };
+      const changes = [];
+      if (prev && prev.variants && d.variants) {
+        for (const g of d.variants) {
+          const prevG = (prev.variants || []).find((pg) => pg.group === g.group);
+          if (!prevG) continue;
+          const prevNames = new Set((prevG.options || []).filter((o) => !o.disabled).map((o) => o.name));
+          const currNames = new Set((g.options || []).filter((o) => !o.disabled).map((o) => o.name));
+          const added = [...currNames].filter((n) => !prevNames.has(n));
+          const removed = [...prevNames].filter((n) => !currNames.has(n));
+          if (added.length) changes.push('➕ ' + g.group + ' 新增：' + added.join('、'));
+          if (removed.length) changes.push('❌ ' + g.group + ' 下架/缺货：' + removed.join('、'));
+        }
+        if (prev.price && d.price && prev.price !== d.price) {
+          changes.push('💰 价格变化：' + prev.price + ' → ' + d.price);
+        }
+      } else if (prev) {
+        log.info('FrontSnapshot first diff baseline: store=' + store + ' url=' + key);
+      }
+      // update snapshot
+      s.frontSnapshot[key] = Object.assign({}, s.frontLatest[key]);
+      stores[store] = s;
+      await saveStores(stores);
+      if (changes.length > 0) {
+        log.info('FrontAlert: store=' + store + ' url=' + key + ' changes=' + changes.length);
+        const lines = ['**🏬 ' + store + ' 前台变体变化**',
+          '商品：[' + (d.title || key) + '](' + (d.fullUrl || key) + ')',
+          '', ...changes, '',
+          '_检测时间：' + new Date().toLocaleString('zh-CN') + '_'];
+        const r = await sendFeishu(cfg.webhook, '🔔 Temu 前台变体监测', lines, 'orange');
+        await chrome.storage.local.set({ lastFrontAlert: { ts: Date.now(), ok: r.ok, store, url: key, changes } });
+      }
+      sendResponse({ ok: true, store, changes });
+      return;
+    }
+    if (msg.type === 'addProductUrl') {
+      const name = (msg.store || '').trim();
+      const url = (msg.url || '').trim();
+      if (!name || !url) { sendResponse({ ok: false, msg: '店铺名和链接不能为空' }); return; }
+      const cfg = await getConfig();
+      const productUrls = Object.assign({}, cfg.productUrls || {});
+      if (!productUrls[name]) productUrls[name] = [];
+      const base = url.split('?')[0];
+      if (!productUrls[name].includes(base)) {
+        productUrls[name].push(base);
+        cfg.productUrls = productUrls;
+        await chrome.storage.local.set({ config: cfg });
+        log.info('ProductUrl added: store=' + name + ' url=' + base);
+        sendResponse({ ok: true, msg: '已添加', url: base });
+      } else {
+        sendResponse({ ok: false, msg: '该链接已存在' });
+      }
+      return;
+    }
+    if (msg.type === 'deleteProductUrl') {
+      const name = (msg.store || '').trim();
+      const url = (msg.url || '').trim();
+      const cfg = await getConfig();
+      const productUrls = Object.assign({}, cfg.productUrls || {});
+      if (productUrls[name]) {
+        productUrls[name] = productUrls[name].filter((u) => u !== url);
+        if (!productUrls[name].length) delete productUrls[name];
+        cfg.productUrls = productUrls;
+        await chrome.storage.local.set({ config: cfg });
+        const stores = await getStores();
+        const s = stores[name];
+        if (s) {
+          if (s.frontLatest && s.frontLatest[url]) delete s.frontLatest[url];
+          if (s.frontSnapshot && s.frontSnapshot[url]) delete s.frontSnapshot[url];
+          await saveStores(stores);
+        }
+        log.info('ProductUrl deleted: store=' + name);
+        sendResponse({ ok: true, msg: '已删除' });
+      } else { sendResponse({ ok: false, msg: '店铺不存在' }); }
+      return;
+    }
+    if (msg.type === 'checkFrontNow') {
+      const { store, url } = msg;
+      if (!url) { sendResponse({ ok: false, msg: 'URL 不能为空' }); return; }
+      log.info('FrontCheck manual: store=' + store + ' url=' + url);
+      let tab = null;
+      try {
+        const tabs = await chrome.tabs.query({ url: 'https://www.temu.com/*' });
+        tab = tabs.find((t) => {
+          return ((t.url || '').split('?')[0]) === ((url || '').split('?')[0]);
+        }) || null;
+      } catch (e) {}
+      if (tab) {
+        const r = await sendTabRetry(tab.id, { cmd: 'frontCheck' }, 5);
+        sendResponse(r ? { ok: true, msg: '已触发检查' } : { ok: false, msg: '无法与页面通信，请刷新后重试' });
+      } else {
+        try {
+          const newTab = await chrome.tabs.create({ url, active: false });
+          await sleep(8000);
+          const stores2 = await getStores();
+          const ss = stores2[store];
+          const key = (url || '').split('?')[0];
+          const got = ss && ss.frontLatest && ss.frontLatest[key];
+          try { await chrome.tabs.remove(newTab.id); } catch (e) {}
+          if (got) {
+            sendResponse({ ok: true, msg: '已捕获：' + (got.title || key).slice(0, 40) + '，' + got.totalOptions + ' 个变体' });
+          } else {
+            sendResponse({ ok: false, msg: '未能提取变体（可能是反爬拦截）。请手动打开商品页后再试。' });
+          }
+        } catch (e) {
+          sendResponse({ ok: false, msg: '打开页面失败：' + (e && e.message || '') });
+        }
+      }
+      return;
+    }
+    if (msg.type === 'chipStats') {
+      const patch = {};
+      if (typeof msg.trafficWatch === 'number') patch.trafficWatch = msg.trafficWatch;
+      if (typeof msg.trafficDecline === 'number') patch.trafficDecline = msg.trafficDecline;
+      if (Array.isArray(msg.watchItems)) patch.watchItems = msg.watchItems;
+      if (Array.isArray(msg.declineItems)) patch.declineItems = msg.declineItems;
+      if (Object.keys(patch).length) {
+        const name = await resolveStore(msg.store);
+        log.info('ChipStats: store=' + name + ' trafficWatch=' + (msg.trafficWatch != null ? msg.trafficWatch : 'null') + ' trafficDecline=' + (msg.trafficDecline != null ? msg.trafficDecline : 'null'));
+        await updateStoreLatest(name, patch);
+        await diffAndAlert(name);
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === 'getStatus') {
+      sendResponse({
+        bgVersion: 'v10-前台变体监测',
+        config: await getConfig(),
+        stores: await getStores(),
+        ...(await chrome.storage.local.get(['lastAlert', 'lastCycle', 'lastMustRemind'])),
+      });
+      return;
+    }
+    if (msg.type === 'addStore') {
+      const name = (msg.name || '').trim();
+      log.info('Add store: ' + name);
+      if (!name) { sendResponse({ ok: false, msg: '店铺名不能为空' }); return; }
+      const stores = await getStores();
+      if (stores[name]) { sendResponse({ ok: false, msg: '「' + name + '」已存在' }); return; }
+      stores[name] = { latest: {}, snapshot: {} };
+      await saveStores(stores);
+      sendResponse({ ok: true, msg: '已添加「' + name + '」，下次轮巡将尝试切到该店抓数' });
+      return;
+    }
+    if (msg.type === 'deleteStore') {
+      const name = (msg.name || '').trim();
+      log.info('Delete store: ' + name);
+      const stores = await getStores();
+      if (!stores[name]) { sendResponse({ ok: false, msg: '「' + name + '」不存在' }); return; }
+      delete stores[name];
+      await saveStores(stores);
+      sendResponse({ ok: true, msg: '已删除「' + name + '」' });
+      return;
+    }
+    if (msg.type === 'checkNow') {
+      log.info('Manual check requested');
+      sendResponse(await pollNow());
+      return;
+    }
+    if (msg.type === 'cycleNow') {
+      log.info('Manual cycle requested');
+      sendResponse(await cycleStores('manual'));
+      return;
+    }
+    if (msg.type === 'testFeishu') {
+      log.info('Test Feishu requested');
+      const cfg = await getConfig();
+      const r = await sendFeishu(cfg.webhook, '✅ Temu 监测测试', ['这是一条测试消息，收到说明飞书配置正常。', '', `_${new Date().toLocaleString('zh-CN')}_`], 'green');
+      sendResponse(r);
+      return;
+    }
+    if (msg.type === 'mustRemindNow') {
+      log.info('Manual mustRemind requested');
+      sendResponse(await sendMustRemind('手动'));
+      return;
+    }
+    } catch (e) {
+      log.error('Message handler error: ' + (e && e.message ? e.message : String(e)));
+      sendResponse({ ok: false, msg: 'Internal error' });
+    }
+  })();
+  return true;
+});
+
+// ---------------- 自动轮巡（切遍每个店抓数，再切回原店；仅空闲时触发） ----------------
+const IDLE_SECONDS = 240; // 无操作 4 分钟视为空闲
+let cycling = false;
+
+async function getGoodsTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://agentseller.temu.com/*' });
+  return tabs.find((t) => /goods\/list/.test(t.url || '')) || tabs[0] || null;
+}
+function sendTab(tabId, cmd) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, cmd, (resp) => {
+        if (chrome.runtime.lastError) resolve(null); else resolve(resp);
+      });
+    } catch (e) { resolve(null); }
+  });
+}
+async function sendTabRetry(tabId, cmd, tries) {
+  for (let i = 0; i < (tries || 8); i++) {
+    const r = await sendTab(tabId, cmd);
+    if (r) return r;
+    await new Promise((res) => setTimeout(res, 1000)); // 页面重载后 content 未就绪，重试
+  }
+  return null;
+}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// 等某店在切换后被重新抓到（latest.ts 比切换前更新、且有 onSale）
+async function waitForStoreCapture(name, sinceTs, timeout) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < (timeout || 25000)) {
+    const stores = await getStores();
+    const L = stores[name] && stores[name].latest;
+    if (L && typeof L.onSale === 'number' && (L.ts || 0) > sinceTs) return true;
+    await sleep(1500);
+  }
+  return false;
+}
+
+async function cycleStores(reason) {
+  if (cycling) return { ok: false, msg: '轮巡进行中' };
+  cycling = true;
+  log.info('Cycle started: reason=' + reason);
+  const cycleLog = [];
+  try {
+    const tab = await getGoodsTab();
+    if (!tab) { log.warn('Cycle: no goods tab found'); return { ok: false, msg: '没有打开的 Temu 商品页' }; }
+    const cur = await sendTabRetry(tab.id, { cmd: 'ping' }, 5);
+    const original = cur && cur.store;
+    cycleLog.push('当前店：' + (original || '未知'));
+
+    // 店铺清单：优先用”已知店”（之前逛各店时按顶栏店名记下的，干净准确）；
+    // 不足 2 个才去弹窗探测（探测会混入页面杂项英文，仅作兜底）。
+    const known = Object.keys(await getStores()).filter((n) => n && n !== '当前店铺');
+    let names;
+    if (known.length >= 2) {
+      names = known;
+      cycleLog.push('店铺(已知)：' + names.join(', '));
+    } else {
+      const listed = await sendTabRetry(tab.id, { cmd: 'listStores' }, 5);
+      names = [...new Set([...((listed && listed.names) || []), ...known])].filter(Boolean);
+      cycleLog.push('店铺(探测)：' + names.join(', '));
+    }
+    if (names.length === 0) { log.warn('Cycle: no stores identified'); return { ok: false, msg: '没识别到店铺清单' }; }
+    log.info('Cycle stores: ' + names.length + ' stores: ' + names.join(', '));
+
+    for (const name of names) {
+      if (name === original) continue; // 原店最后再确认；先切别的
+      const since = Date.now();
+      const r = await sendTabRetry(tab.id, { cmd: 'switchTo', target: name }, 5);
+      if (!r || !r.ok) { log.warn('Cycle switch FAILED: store=' + name); cycleLog.push('切到 ' + name + ' 失败：' + (r && r.msg)); continue; }
+      const got = await waitForStoreCapture(name, since, 25000);
+      cycleLog.push((got ? '✓ ' : '✗ ') + name);
+      if (got) {
+        log.info('Cycle captured: store=' + name);
+      } else {
+        log.warn('Cycle capture TIMEOUT: store=' + name);
+      }
+      // 扫在售清单 → diff 出下架商品（带链接告警）；os.store 用于校验扫描时页面确实在目标店
+      if (got) {
+        const os = await sendTabRetry(tab.id, { cmd: 'scanOnSale' }, 3);
+        if (os && os.msg) log.warn('scanOnSale aborted: store=' + name + ' ' + os.msg);
+        if (os && Array.isArray(os.items)) { const d = await diffOnSale(name, os.items, os.onSaleTabCount, os.store); if (d) { log.warn('Cycle delisted: store=' + name + ' count=' + d); cycleLog.push('  ↳下架' + d + '个'); } }
+      }
+    }
+    // 切回原店
+    if (original) {
+      const since = Date.now();
+      await sendTabRetry(tab.id, { cmd: 'switchTo', target: original }, 5);
+      const gotBack = await waitForStoreCapture(original, since, 25000);
+      if (gotBack) {
+        const os = await sendTabRetry(tab.id, { cmd: 'scanOnSale' }, 3);
+        if (os && os.msg) log.warn('scanOnSale aborted: store=' + original + ' ' + os.msg);
+        if (os && Array.isArray(os.items)) { const d = await diffOnSale(original, os.items, os.onSaleTabCount, os.store); if (d) cycleLog.push('  ↳' + original + '下架' + d + '个'); }
+      }
+      cycleLog.push('已切回 ' + original);
+    }
+    const summary = cycleLog.join(' | ');
+    log.info('Cycle completed: ' + summary);
+    await chrome.storage.local.set({ lastCycle: { ts: Date.now(), reason, summary } });
+    return { ok: true, msg: summary };
+  } catch (e) {
+    log.error('Cycle error: ' + (e && e.message ? e.message : String(e)));
+    throw e;
+  } finally { cycling = false; }
+}
+
+async function pollNow() {
+  log.info('Poll: reloading goods list page');
+  const tab = await getGoodsTab();
+  if (!tab) { log.warn('Poll: no goods tab found'); return { ok: false, msg: '未找到打开的 Temu 后台标签页，请先登录并打开商品列表页' }; }
+  if (/goods\/list/.test(tab.url || '')) { await chrome.tabs.reload(tab.id, { bypassCache: false }); return { ok: true, msg: '已刷新后台商品页' }; }
+  await chrome.tabs.update(tab.id, { url: GOODS_URL });
+  return { ok: true, msg: '已导航到商品列表页' };
+}
+
+// 定时：空闲则轮巡所有店，否则不打扰（靠随看随记覆盖当前店）
+// 必提醒：每天固定时刻强制发状态汇报（无异常也发）
+chrome.alarms.onAlarm.addListener((a) => {
+  log.info('Alarm fired: ' + a.name);
+  if (a.name === 'poll') {
+    chrome.idle.queryState(IDLE_SECONDS, (state) => {
+      if (state === 'idle' || state === 'locked') {
+        log.info('System idle, starting automatic cycle');
+        cycleStores('idle');
+      } else {
+        log.info('System active, skipping automatic cycle');
+      }
+    });
+    return;
+  }
+  if (a.name.startsWith(MUST_REMIND_PREFIX)) {
+    const slot = a.name.slice(MUST_REMIND_PREFIX.length);
+    // chrome.alarms 的 when 是一次性的 → 发完立刻重排下一天同一时刻
+    (async () => {
+      try {
+        await sendMustRemind(slot);
+      } catch (e) {
+        log.error('MustRemind error: ' + (e && e.message ? e.message : String(e)));
+      } finally {
+        await setupMustRemindAlarms();
+      }
+    })();
+  }
+});
+
+async function setupAlarm() {
+  await chrome.storage.local.remove('trafficSample'); // 清早期诊断残留
+  const cfg = await getConfig();
+  await chrome.alarms.clear('poll');
+  chrome.alarms.create('poll', { periodInMinutes: Math.max(1, cfg.intervalMinutes || 15) });
+  log.info('Alarm set: every ' + cfg.intervalMinutes + 'min, enabled=' + cfg.enabled);
+  await setupMustRemindAlarms();
+}
+chrome.runtime.onInstalled.addListener(() => { log.info('Extension installed/updated, setting up alarm'); setupAlarm(); });
+chrome.runtime.onStartup.addListener(() => { log.info('Chrome startup, setting up alarm'); setupAlarm(); });
+chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.config) { log.info('Config changed, reconfiguring alarm'); setupAlarm(); } });
+
+log.info('Service worker started');
+// SW 被唤醒时（非 install/startup）也补一次闹钟，避免长时间休眠后漏排
+setupAlarm();

@@ -1,0 +1,341 @@
+"""对账脚本（只读）：赛狐已发货包裹 ↔ WMS 运单号逐单核对，差异/漏提交/渠道不一致告警。
+
+背景（见 项目说明.md §6/§7-8）：
+  - 近 7 天赛狐已发货单，逐单去 WMS 核对运单号是否一致、承运商是否与赛狐指派渠道一致；
+  - 顺带查「赛狐已发货但无 submitTime」的漏提交单（平台未真正提交）；
+  - BLACKCAT 渠道的单在金猫商贸 WMS 账号下查无此单（走赛狐↔BLACKCAT 直连），属正常隔离，
+    只对昇新海外仓渠道做闭环核对（§6）。
+
+【只读】本脚本只调用查询类接口（getPackagePage / queryTrackingNumber / queryOrderStatus /
+queryShipChannel），不调任何写接口，可安全常跑/定时。
+
+用法：
+  python recon.py                 # 对账近 N 天已发货单，打印报告 + 告警
+  python recon.py --days 3        # 回看窗口 3 天
+  python recon.py --probe         # 只抓少量已发货单、打印其字段结构（首次用来确认字段名）
+  python recon.py --limit 50      # 最多核对 50 单（调试）
+  python recon.py --json out.json # 结果落盘
+  python recon.py --selftest      # 离线自测分类逻辑（不连网）
+"""
+import argparse
+import json
+import logging
+import sys
+
+import yaml
+
+from bridge.clients.sellfox import SellfoxClient, SellfoxError
+from bridge.clients.wms import WmsClient, WmsError
+from bridge.notify import Notifier
+
+log = logging.getLogger("recon")
+
+# 赛狐已发货状态（包裹状态机末态，见 项目说明.md §3）
+SELLFOX_SHIPPED_STATUS = "has_shipped"
+# WMS orderStatus：2已发货 4平台已发货（Constants.java 实测，见 pipeline.py）
+WMS_SHIPPED_STATUSES = {"2", "4"}
+
+# ---- 赛狐已发货包裹里几个字段的候选路径（点分路径，命中第一个非空）----
+# 赛狐 getPackagePage 对 has_shipped 的返回字段名未在本机联调过，故用多候选 + --probe 兜底：
+# 首次在能连赛狐的环境跑 `--probe` 打印真实字段，若与下面不符，改这里即可。
+SF_TRACKING_PATHS = ["logistics.trackingNo", "logistics.trackNo", "trackingNo",
+                     "trackNo", "trackingNumber", "logistics.trackingNumber"]
+SF_SUBMIT_PATHS = ["submitTime", "submitDate", "platformSubmitTime", "orders.0.submitTime"]
+SF_CHANNEL_PATHS = ["logistics.channelName", "channelName", "logistics.shipChannelName"]
+SF_CARRIER_PATHS = ["logistics.carrier", "carrier", "logistics.providerName", "logistics.logisticsName"]
+
+
+def _dig(obj, path):
+    """按点分路径取值，支持 orders.0.x 这种下标；取不到返回 None。"""
+    cur = obj
+    for part in path.split("."):
+        if cur is None:
+            return None
+        if isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
+def _first(obj, paths):
+    for p in paths:
+        v = _dig(obj, p)
+        if v not in (None, ""):
+            return v
+    return None
+
+
+def extract_sellfox_fields(pkg):
+    """从赛狐已发货包裹里抽出对账要用的字段（字段名不确定，用候选路径兜底）。"""
+    return {
+        "sn": pkg.get("packageSn"),
+        "channel_name": _first(pkg, SF_CHANNEL_PATHS),
+        "carrier": _first(pkg, SF_CARRIER_PATHS),
+        "tracking": _first(pkg, SF_TRACKING_PATHS),
+        "submit_time": _first(pkg, SF_SUBMIT_PATHS),
+        "country": _dig(pkg, "address.countryCode"),
+    }
+
+
+def match_channel(channels, channel_name):
+    """包裹渠道显示名（如 昇新海外仓-BLACKCAT-RM）后缀匹配 config 渠道（BLACKCAT-RM）。"""
+    if not channel_name:
+        return None
+    for ch in channels:
+        if channel_name.endswith(ch["name"]):
+            return ch
+    return None
+
+
+def _norm(s):
+    return str(s or "").strip().upper()
+
+
+def classify(sf, channel, wms_tracking, wms_status, wms_error):
+    """纯函数：据赛狐字段 sf、匹配到的 config 渠道 channel、WMS 查询结果，判定对账结论。
+    返回 (severity, code, detail)。severity: ok / info / medium / high。
+    wms_tracking: dict {express, trackingNumber} 或 None；wms_status: str 或 None；
+    wms_error: WMS 查询抛的异常文本或 None（如“未查询到订单”）。"""
+    sn = sf["sn"]
+    is_blackcat = bool(channel and str(channel["name"]).upper().startswith("BLACKCAT"))
+    is_shengxin = bool(channel and not is_blackcat)  # 昇新海外仓-*
+
+    # 1) WMS 查无此单
+    if wms_error and ("未查询" in wms_error or "no order" in wms_error.lower() or "不存在" in wms_error):
+        if is_blackcat:
+            return ("info", "BLACKCAT_NOT_IN_WMS",
+                    f"{sn} BLACKCAT 渠道单，金猫 WMS 账号无此单（正常隔离，运单走赛狐↔BLACKCAT 直连）")
+        if is_shengxin:
+            return ("high", "WMS_MISSING",
+                    f"{sn} 昇新渠道但 WMS 查无此单——疑似未过账/漏推（库存可能没扣），需人工核查")
+        return ("medium", "WMS_MISSING_UNKNOWN_CH",
+                f"{sn} 渠道未知({sf['channel_name']})且 WMS 查无此单，需人工核查")
+    if wms_error:
+        return ("medium", "WMS_QUERY_ERROR", f"{sn} WMS 查询异常：{wms_error}")
+
+    tn = (wms_tracking or {}).get("trackingNumber")
+    express = (wms_tracking or {}).get("express")
+
+    # 2) WMS 有单但没运单号
+    if not tn:
+        if wms_status is not None and str(wms_status) not in WMS_SHIPPED_STATUSES:
+            return ("medium", "WMS_NOT_SHIPPED",
+                    f"{sn} 赛狐已发货，但 WMS 状态={wms_status}（未出库）且无运单号——疑似回传超前/状态不同步")
+        return ("medium", "WMS_NO_TRACKING",
+                f"{sn} 赛狐已发货，WMS 有单但运单号未生成——疑似漏打单/延迟，需复查")
+
+    # 3) 承运商/渠道不一致（跨渠道误发的核心信号）
+    if channel:
+        expected = _norm(channel.get("expected_carrier"))
+        actual = _norm(express)
+        if expected and actual and expected not in actual:
+            return ("high", "CARRIER_MISMATCH",
+                    f"{sn} 渠道不一致：赛狐指派 {channel['name']}（应走 {expected}），"
+                    f"WMS 实际承运 {express}（运单 {tn}）——疑似跨渠道误改快递方，需核查")
+
+    # 4) 双边运单号不一致（赛狐侧运单号已知时才比）
+    sf_tn = sf.get("tracking")
+    if sf_tn and _norm(sf_tn) != _norm(tn):
+        return ("high", "TRACKING_MISMATCH",
+                f"{sn} 双边运单号不一致：赛狐 {sf_tn} ≠ WMS {tn}（承运 {express}）")
+
+    # 5) 漏提交：赛狐 has_shipped 却无 submitTime（平台未真正提交）
+    if not sf.get("submit_time"):
+        return ("medium", "SELLFOX_NOT_SUBMITTED",
+                f"{sn} 赛狐标记已发货但无 submitTime——疑似漏提交平台，需核查")
+
+    return ("ok", "OK", f"{sn} 一致（运单 {tn} / {express}）")
+
+
+# ---------------- 联网对账 ----------------
+
+def _iter_shipped_packages(sf, cfg, days, limit):
+    """分页拉赛狐 has_shipped 包裹（白名单店铺、近 days 天），逐个 yield 原始包裹 dict。"""
+    import datetime
+    end = datetime.datetime.now()
+    start = end - datetime.timedelta(days=days)
+    page_no, yielded = 1, 0
+    while True:
+        data = sf.get_package_page(
+            SELLFOX_SHIPPED_STATUS,
+            start.strftime("%Y-%m-%d %H:%M:%S"),
+            end.strftime("%Y-%m-%d %H:%M:%S"),
+            page_no=page_no,
+            shop_ids=cfg["run"].get("shop_whitelist") or None,
+        ) or {}
+        for p in data.get("rows", []):
+            yield p
+            yielded += 1
+            if limit and yielded >= limit:
+                return
+        if page_no >= data.get("totalPage", 1):
+            return
+        page_no += 1
+
+
+def recon_once(cfg, sf, wms, limit=0):
+    """对账一轮。返回 (results, summary)。results: [{sn, code, severity, detail, ...}]。"""
+    channels = cfg["channels"]
+    results = []
+    for pkg in _iter_shipped_packages(sf, cfg, cfg["run"].get("purchase_date_days", 7), limit):
+        s = extract_sellfox_fields(pkg)
+        if not s["sn"]:
+            continue
+        channel = match_channel(channels, s["channel_name"])
+        wms_tracking, wms_status, wms_error = None, None, None
+        try:
+            wms_tracking = wms.query_tracking_number(s["sn"]) or {}
+        except WmsError as e:
+            wms_error = str(e)
+        except Exception as e:  # 网络等
+            wms_error = f"{type(e).__name__}: {e}"
+        # 无运单号时补查状态，帮助区分「未出库」与「漏打单」
+        if wms_error is None and not (wms_tracking or {}).get("trackingNumber"):
+            try:
+                st = wms.query_order_status(s["sn"]) or {}
+                wms_status = str(st.get("orderStatus", ""))
+            except Exception:
+                pass
+        severity, code, detail = classify(s, channel, wms_tracking, wms_status, wms_error)
+        results.append({
+            "sn": s["sn"], "severity": severity, "code": code, "detail": detail,
+            "channel": (channel or {}).get("name") or s["channel_name"],
+            "sf_tracking": s["tracking"], "wms_tracking": (wms_tracking or {}).get("trackingNumber"),
+            "wms_express": (wms_tracking or {}).get("express"),
+        })
+    summary = {}
+    for r in results:
+        summary[r["code"]] = summary.get(r["code"], 0) + 1
+    return results, summary
+
+
+def _probe(sf, cfg):
+    """只抓少量已发货单，打印字段结构，供首次确认真实字段名。"""
+    for i, pkg in enumerate(_iter_shipped_packages(sf, cfg, cfg["run"].get("purchase_date_days", 7), limit=3)):
+        print(f"\n===== 已发货包裹样本 #{i + 1} 顶层字段 =====")
+        print("keys:", sorted(pkg.keys()))
+        for k in ("logistics", "address", "orders"):
+            v = pkg.get(k)
+            if isinstance(v, dict):
+                print(f"{k}.keys:", sorted(v.keys()))
+            elif isinstance(v, list) and v and isinstance(v[0], dict):
+                print(f"{k}[0].keys:", sorted(v[0].keys()))
+        print("提取结果:", extract_sellfox_fields(pkg))
+    print("\n若上面提取结果里 tracking/submit_time/channel 为 None，请据真实 keys 调整 recon.py 顶部的 *_PATHS。")
+
+
+# ---------------- 离线自测（不连网）----------------
+
+def _selftest():
+    ch_sx = {"name": "昇新海外仓-DPD", "expected_carrier": "DPD"}
+    ch_bc = {"name": "BLACKCAT-EH", "expected_carrier": "EH"}
+    cases = [
+        # (说明, sf, channel, wms_tracking, wms_status, wms_error, 期望code, 期望severity)
+        ("一致", {"sn": "P1", "channel_name": "昇新海外仓-DPD", "tracking": "T1", "submit_time": "2026-07-15"},
+         ch_sx, {"trackingNumber": "T1", "express": "DPD"}, None, None, "OK", "ok"),
+        ("承运商不一致(跨渠道误发)", {"sn": "P2", "channel_name": "昇新海外仓-DPD", "tracking": "T2", "submit_time": "x"},
+         ch_sx, {"trackingNumber": "T2", "express": "RM"}, None, None, "CARRIER_MISMATCH", "high"),
+        ("双边运单号不一致", {"sn": "P3", "channel_name": "昇新海外仓-DPD", "tracking": "AAA", "submit_time": "x"},
+         ch_sx, {"trackingNumber": "BBB", "express": "DPD"}, None, None, "TRACKING_MISMATCH", "high"),
+        ("昇新渠道 WMS 查无此单", {"sn": "P4", "channel_name": "昇新海外仓-DPD", "tracking": None, "submit_time": "x"},
+         ch_sx, None, None, "未查询到订单", "WMS_MISSING", "high"),
+        ("BLACKCAT WMS 查无此单(正常)", {"sn": "P5", "channel_name": "昇新海外仓-BLACKCAT-EH", "tracking": None, "submit_time": "x"},
+         ch_bc, None, None, "未查询到订单", "BLACKCAT_NOT_IN_WMS", "info"),
+        ("WMS 有单无运单号", {"sn": "P6", "channel_name": "昇新海外仓-DPD", "tracking": None, "submit_time": "x"},
+         ch_sx, {"trackingNumber": "", "express": ""}, "2", None, "WMS_NO_TRACKING", "medium"),
+        ("WMS 未出库", {"sn": "P7", "channel_name": "昇新海外仓-DPD", "tracking": None, "submit_time": "x"},
+         ch_sx, {"trackingNumber": ""}, "1", None, "WMS_NOT_SHIPPED", "medium"),
+        ("漏提交", {"sn": "P8", "channel_name": "昇新海外仓-DPD", "tracking": "T8", "submit_time": None},
+         ch_sx, {"trackingNumber": "T8", "express": "DPD"}, None, None, "SELLFOX_NOT_SUBMITTED", "medium"),
+    ]
+    ok = 0
+    for desc, sf, ch, wt, ws, we, exp_code, exp_sev in cases:
+        sev, code, detail = classify(sf, ch, wt, ws, we)
+        good = (code == exp_code and sev == exp_sev)
+        ok += good
+        print(f"[{'OK' if good else 'X '}] {desc}: got {sev}/{code}  期望 {exp_sev}/{exp_code}")
+        if not good:
+            print(f"      detail={detail}")
+    print(f"\n自测 {ok}/{len(cases)} 通过")
+    return ok == len(cases)
+
+
+# ---------------- 入口 ----------------
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="config/config.yaml")
+    ap.add_argument("--days", type=int, default=None, help="回看窗口天数，默认取 config.run.purchase_date_days")
+    ap.add_argument("--limit", type=int, default=0, help="最多核对多少单（0=不限）")
+    ap.add_argument("--probe", action="store_true", help="只打印已发货单字段结构（首次确认字段名）")
+    ap.add_argument("--json", default="", help="把结果写到该 JSON 文件")
+    ap.add_argument("--selftest", action="store_true", help="离线自测分类逻辑，不连网")
+    args = ap.parse_args()
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        handlers=[logging.StreamHandler(sys.stdout),
+                  logging.FileHandler("recon.log", encoding="utf-8")],
+    )
+
+    if args.selftest:
+        sys.exit(0 if _selftest() else 1)
+
+    with open(args.config, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    if args.days is not None:
+        cfg["run"]["purchase_date_days"] = args.days
+
+    sf = SellfoxClient(cfg["sellfox"]["base_url"], cfg["sellfox"]["client_id"],
+                       cfg["sellfox"]["client_secret"])
+    wms = WmsClient(cfg["wms"]["base_url"], cfg["wms"]["key"], cfg["wms"]["api_secret"])
+    notifier = Notifier(cfg["notify"].get("feishu_webhook", ""), cfg["customer"]["name"])
+
+    try:
+        if args.probe:
+            _probe(sf, cfg)
+            return
+        log.info("对账开始：近 %s 天已发货单，白名单店铺=%s",
+                 cfg["run"]["purchase_date_days"], cfg["run"].get("shop_whitelist") or "全部")
+        results, summary = recon_once(cfg, sf, wms, limit=args.limit)
+    except SellfoxError as e:
+        # 首次最常见：40005=出口 IP 不在赛狐白名单 / 凭证未填。见 项目说明.md §9。
+        log.error("赛狐接口失败：%s", e)
+        if getattr(e, "code", None) == 40005 or "40005" in str(e):
+            log.error("→ 出口 IP 不在赛狐白名单。请在能连赛狐的环境(WMS 服务器 193.112.93.60)跑，"
+                      "或把当前直连出口 IP 加白；并确认 client 走的是直连(trust_env=False)。")
+        sys.exit(2)
+
+    total = len(results)
+    anomalies = [r for r in results if r["severity"] in ("high", "medium")]
+    highs = [r for r in results if r["severity"] == "high"]
+    log.info("对账完成：共 %d 单。分类统计：%s", total, summary)
+    for r in anomalies:
+        lvl = log.error if r["severity"] == "high" else log.warning
+        lvl("[%s] %s", r["code"], r["detail"])
+
+    if args.json:
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump({"summary": summary, "results": results}, f, ensure_ascii=False, indent=2)
+        log.info("结果已写入 %s", args.json)
+
+    # 告警：有 high（误发/漏账/运单不符）必发；仅 medium 也发一条汇总，便于每日盯盘
+    if highs:
+        lines = "\n".join(f"· {r['detail']}" for r in highs[:20])
+        more = f"\n…另有 {len(highs) - 20} 条 high" if len(highs) > 20 else ""
+        notifier.warn(f"⚠️ 对账发现 {len(highs)} 条严重异常（近 {cfg['run']['purchase_date_days']} 天 {total} 单）：\n{lines}{more}")
+    elif anomalies:
+        notifier.warn(f"对账：{total} 单中 {len(anomalies)} 条需关注（无严重项）。统计：{summary}")
+    else:
+        log.info("对账：全部一致，无异常。")
+
+
+if __name__ == "__main__":
+    main()

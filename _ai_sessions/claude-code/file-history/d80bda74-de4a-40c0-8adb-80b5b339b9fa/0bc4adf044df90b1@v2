@@ -1,0 +1,90 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+from app.rules.engine import evaluate_row
+from app.rules.tasks import apply_anomalies_to_tasks
+from app.store.db import Database
+
+
+def load_rules():
+    path = Path(__file__).resolve().parents[1] / "config" / "rules.default.yaml"
+    with path.open(encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def test_sales_drop_orange():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米",
+        "asin": "B0TESTORANGE",
+        "title": "demo",
+        "product_grade": "B",
+        "sale_price": 7000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.30,
+        "order_num": 50,
+    }
+    anomalies = evaluate_row(row, rules)
+    sales = [a for a in anomalies if a.anomaly_type == "sales_drop"]
+    assert sales, anomalies
+    assert sales[0].level == "orange"
+
+
+def test_sales_drop_red_for_sa():
+    rules = load_rules()
+    row = {
+        "shop_name": "特米",
+        "asin": "B0TESTRED",
+        "title": "core",
+        "product_grade": "S",
+        "sale_price": 5000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.45,
+    }
+    anomalies = evaluate_row(row, rules)
+    sales = [a for a in anomalies if a.anomaly_type == "sales_drop"]
+    assert sales and sales[0].level == "red"
+
+
+def test_inventory_low_red_stockout():
+    rules = load_rules()
+    row = {
+        "shop_name": "NOTTAC",
+        "asin": "B0STOCKOUT",
+        "available": 0,
+        "available_days": 0,
+    }
+    anomalies = evaluate_row(row, rules)
+    inv = [a for a in anomalies if a.anomaly_type == "inventory_low"]
+    assert inv and inv[0].level == "red"
+
+
+def test_task_dedup(tmp_path):
+    rules = load_rules()
+    db = Database(tmp_path / "t.db")
+    row = {
+        "shop_name": "特米",
+        "asin": "B0DEDUP",
+        "title": "x",
+        "product_grade": "B",
+        "sale_price": 7000,
+        "sale_price_baseline": 10000,
+        "sale_price_change_pct": -0.30,
+        "owner": "潘启豪",
+    }
+    a1 = evaluate_row(row, rules)
+    s1 = apply_anomalies_to_tasks(a1, biz_date="2026-07-20", db=db, rules_cfg=rules)
+    s2 = apply_anomalies_to_tasks(a1, biz_date="2026-07-21", db=db, rules_cfg=rules)
+    tasks = db.list_tasks()
+    open_sales = [
+        t
+        for t in tasks
+        if t["asin"] == "B0DEDUP" and t["anomaly_type"] == "sales_drop"
+    ]
+    assert len(open_sales) == 1
+    assert open_sales[0]["streak"] >= 2
+    assert s1["orange_new"] + s1["red_new"] >= 1
+    assert s2["orange_updated"] + s2["red_updated"] >= 1

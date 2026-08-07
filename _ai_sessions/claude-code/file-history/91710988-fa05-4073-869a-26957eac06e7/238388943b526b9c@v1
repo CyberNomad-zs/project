@@ -1,0 +1,58 @@
+# TK · P2 进度纪要（任务台内容 TAB）
+
+> 日期：2026-08-05  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · P2.5  
+> 关联： [P2.0 POC](./TK-P2-内容分析POC结论.md) · [飞书 AI 搭盘提示词](./TK-飞书仪表盘-AI搭建提示词.md)
+
+---
+
+## 1. 本轮交付
+
+| # | 项 | 说明 |
+|---|----|------|
+| 1 | `GET/POST /api/v1/tk/content/anomaly-eval` | 包装 `evaluate_content_anomalies`；GET 默认 dry_run |
+| 2 | 任务台导航 **内容分析** `tk-content` | 视频列表 + 商品卡流量两子页 |
+| 3 | 视频子页 | 锚点日/店/渠道/排序；KPI 卡；`fact_tiktok_content_daily`；lookback=1 防跨窗混加 |
+| 4 | 商品卡子页 | 明细 + **按商品聚合的多渠道 CTR/CVR 对比表**（有 ≥2 渠道才有横向意义） |
+| 5 | 异常操作 | 内容页与异常任务页均可预览/写入视频异常 |
+| 6 | 单测 | `tests/test_tk_content_anomaly_api.py`；与 content/traffic/rules 共 **11 passed** |
+| 7 | `main.py` | 去掉不存在的 `amazon_sync`/`procurement` 导入，保留 `tk_ops`/`tk_anomaly_tasks`（否则 app 无法加载） |
+
+---
+
+## 2. 自检
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/test_tk_content_anomaly_api.py tests/test_tk_content_api.py tests/test_tk_product_traffic_api.py tests/test_tk_content_rules.py -q
+
+# 登录后
+# GET  /api/v1/tk/content?lookback_days=1
+# GET  /api/v1/tk/product-traffic?channel=&lookback_days=1
+# POST /api/v1/tk/content/anomaly-eval  {"dry_run":true}
+```
+
+任务台：TikTok → **内容分析** → 视频 / 商品卡；异常任务 → 分析域「视频内容」+ 扫描按钮。
+
+---
+
+## 3. 仍后置（不阻塞本轮）
+
+| 项 | 说明 |
+|----|------|
+| D4 飞书仪表盘 UI | 人工 / AI 提示词 |
+| `video_list` 日更 | 待业务批 |
+| 连续 7 锚点窗 | 靠采集+同步攒，不是前端假造 |
+| 真·多渠道 traffic | 现网多为 `product_card`；第二渠有数后对比表自动变宽 |
+| 广告创意细粒度 | P1.7 门禁未过，不建表 |
+| 生产 dist / api 发布 | ✅ 2026-08-05 热修：015 迁移 + api/worker rebuild + web dist（含内容 TAB / content anomaly-eval） |
+| 商品卡 imp/cvr 空值 | ✅ 2026-08-05：英文表头 + raw_cells 回填；生产 null_imp/null_cvr=0 |
+| 异常人维 / 新鲜度 | ✅ 2026-08-05：总览 `freshness` + 异常表等级/老板决策/当前值；飞书 anomaly 再同步 |
+
+---
+
+## 4. 口径提醒
+
+- 内容/流量「日期」= **窗口锚点**，禁止 /7  
+- 混币勿加总 GMV  
+- ROI/CTR/CVR 率类：列表展示行级；汇总勿对率列直接平均  

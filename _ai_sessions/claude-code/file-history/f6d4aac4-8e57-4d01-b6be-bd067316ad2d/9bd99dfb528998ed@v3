@@ -1,0 +1,27 @@
+# build / package
+dist/
+*.zip
+*.crx
+*.pem
+
+# local extracts & browser artifacts
+_extract/
+.playwright-mcp/
+
+# secrets & local env
+.env
+.env.*
+**/secrets*
+**/*secret*
+*.local.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.log
+
+# node (if added later)
+node_modules/

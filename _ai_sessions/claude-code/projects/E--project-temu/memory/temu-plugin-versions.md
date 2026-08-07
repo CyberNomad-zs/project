@@ -1,0 +1,41 @@
+---
+name: temu-plugin-versions
+description: Temu Chrome 插件各版本修复的 bug 与版本号对照
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: ad6ff4ce-4a19-4911-88e9-23af5c453e9e
+  modified: 2026-08-06T11:58:29.376Z
+---
+
+Temu 监测 Chrome 插件版本历史：
+
+- **v5-修下架误报** (2026-07-17)：待关注筛选与在售扫描的并发竞态导致**误报**下架。修复：content.js 加 `withLock` 互斥锁串行化所有页面操作；scanOnSaleList 扫描前先复位干净再读 onSaleTabCount；diffOnSale 护栏改用干净读数。[[temu-monitor-project]]
+- **v6-下架漏报修复** (2026-07-17)：两个根因导致真实下架**漏报**——①`_diffAndAlert` 在 v3 中移除了 inSale 下降检测（"改由 diffOnSale 报"），但 diffOnSale 只在空闲轮巡触发，用户手动刷新/日常浏览时下架完全漏报；②`diffOnSale` 用初始读到的旧对象写 storage，异步的 `_diffAndAlert` 在中间改过 snapshot 的话会被覆盖→基准腐败→"后来不准"。修复：①在 `_diffAndAlert` 恢复 inSale 下降数字告警（`latest.onSale < snap.onSale` 时发飞书）；②`diffOnSale` 在写 storage 前重读 stores（同 `_diffAndAlert` 做法）避免覆盖并发写入。测试：22/22 通过（8 个 diffOnSale 场景 + 5 个被动 onSale 检测场景）。用户需：chrome://extensions 关开插件开关 → popup 显示 `v6-下架漏报修复`。
+- **v7-定时必提醒** (2026-07-20)：新增每天固定时刻**强制飞书状态汇报**（无异常也发，证明插件存活）。默认 **09:30、16:30** 本地时区；`config.mustRemindEnabled`/`mustRemindTimes` 可配；`chrome.alarms` 用一次性 `when`（发完重排下一天）；蓝色卡片列各店在售/待关注/下降/总数+数据是否超 2h 未更新。options 页可改时间；popup 显示「必提醒：09:30/16:30」与上次发送。消息 `mustRemindNow` 可手动触发。用户需 chrome://extensions **关开插件开关** → popup 显示 `v7-定时必提醒`。
+- **v8-下架扫描防污染** (2026-07-22)：修 scanOnSaleList 视图生效验证——点在售 tab 后等 gridTotal===tabCount 才扫，避免视图未生效就扫混入非在售商品污染基准；加扫到行数>tabCount 的保护（视图污染时放弃本轮）；tab 点击失败重试一次。
+- **v9-修复SKU规格解析** (2026-07-22)：parseSkuSpecList 增加多重数据路径尝试（list/skuSpecList/skuSpecs/data 等）+ 失败时保存原始响应到 lastSkuSpecRaw/lastSkuSpecRawFail + 新增 parentSkuId/spec/thumbUrl 等备用字段。页面 flow 从"成功才存 raw"改为"始终存 raw"。
+- **v10-前台变体监测 (MVP)** (2026-07-22)：新增 Temu 前台商品页 (`www.temu.com`) variant 监测——content-front.js 解析产品变体（颜色/尺码），background 存快照+diff（对比可用变体的新增/消失）+飞书告警，popup 展示已配置链接的最新变体数据，options 可配置每个店铺的前台商品链接。
+- **v11-前台定时轮巡** (2026-07-22)：前台变体监测加定时 `frontPoll` alarm（默认每 3h），`cycleFrontProducts` 逐个打开配置 URL（后台 tab）抓变体；options 可配开关/间隔；popup 有「前台变体全查」按钮 + 上次轮巡状态。
+- **v12-清假店名** (2026-07-22)：`readStoreName` 把商品颜色（Black/Beige/Charcoal/Rustic Brown…）误当成店名写进 storage，定时汇报刷一堆假店。修复：content/background 双重 `isFakeStoreName` 黑名单拦截；`resolveStore` 拒绝假名；`cleanupFakeStores` 启动时自动清掉历史污染；`addStore`/`cycleStores`/`frontCapture` 同步过滤。
+- **v13-后台SKU规格** (2026-07-23)：修通后台具体 SKU 抓取。根因不是 `sku/spec/parent/list` 解析（编辑页接口结构漂移且只在打开编辑时触发），而是 **`pageQuery` 每个商品已带 `productSkuSummaries[]`**（`productSkuId` + `productSkuSpecList[].specName`，如肩背包 Khaki/Beige/…）。`parsePageQuery` 抽出本页全部 SKU；`diffProductSkus` 对「本页再次出现的 productId」做 SKU 集合 diff，同商品内规格消失飞书橙卡告警（首轮只建 `snapshot.productSkuMap`，不跨页误判）；popup 展示「多规格商品」；`parseSkuSpecList` 仍保留并加深搜兜底。本地单测 `_test_sku_parse.js` 用 hit-068 验证 20 商品/37 SKU/6 多规格 + Beige 消失场景。用户需 chrome://extensions **关开插件开关** → popup 显示 `v13-后台SKU规格` → 开 goods/list 刷一次。
+
+- **v14-仅流量** (2026-07-31)：日常主路径改回插件。`DELIST_IN_PLUGIN=false`：关闭在售下降告警与 cycleStores 内 scanOnSale/diffOnSale（下架点名只留服务器赛狐，防双报）。保留流量待关注/近期下降 + 多店空闲轮巡 + 必提醒。manifest 0.2.0。本机 Playwright 流量包停发同事日常。popup 显示 `v14-仅流量`。见 [[traffic-plugin-primary]]。
+
+- **v15-在售流量去重** (2026-08-03)：① Temu「商品流量待关注」chip 含已下架商品 → `scanWatchList` 先切「在售中」再点 chip；被动扫识别行内「在售/已下架」徽标，`onlyOnSale` 严格只要 `saleStatus==='onSale'`。② 告警改按 productId 去重+6h 冷却（`snapshot.alertedWatchIds` / `alertedDeclineIds`），不再用 decline 本页可见数 0→1 触发 → 切店不再刷屏。③ 首次只 seed 已知 ID 不发飞书。popup 显示 `v15-在售流量去重`。用户需 chrome://extensions **关开插件开关**。
+
+- **v16-限流分级** (2026-08-03)：在售∩限流池分级——严重=SKU货号`VIP*`或(`JM*`∧热销款)；一般=其余限流。DOM 抓 skuCodes/hotSale；pageQuery 保留 extCode 补全。即时红/橙卡；09:30/16:30 对 `slotTrafficMap` 做差异汇总。可选飞书企业应用写多维表+严重建任务（`feishuApp.js`）。manifest 0.2.2。popup `v16-限流分级`。需关开插件开关；多维表凭证填 options。
+
+- **v17-切店去重** (2026-08-04)：修「一切换 Temu 店铺，飞书又把该店已有限流全推一遍」。根因：`updateStoreLatest` / `_diffAndAlert` / mustRemind 等对 `stores` 并发 read-modify-write，后写覆盖先写 → `snapshot.alertedTrafficIds` 丢失；且空 `{}` / 仅 chip 计数被当成 baselineReady。修复：全局 `withStores` 串行队列；基线改为非空 alerted 或 `trafficBaselineAt`；空 pool 不 seed；chipStats 空明细不覆盖已有清单。manifest `0.2.3`。popup `v17-切店去重`。需 chrome://extensions **关开开关**。单测 `test_traffic_dedupe.js`。
+
+- **v18-切店静默吸收** (2026-08-05)：v17 后仍切店推橙卡。根因2：切店 loading 时 chip 瞬时读 0 写进 `snap.trafficWatch`，恢复后 0→N 被当成「新增」；且本页第一次扫到的 productId 不在 alerted 时即令 chip 未升高也 `pickFresh` 告警。修复：① `trafficWatchHigh` 高水位只升不降，`chipReallyUp = cur > high` 才允许即时飞书；② chip 未升高时 fresh ID **静默吸收**进 alerted，不发飞书；③ snap.trafficWatch 忽略瞬时 0；④ 全局 `trafficAlertedGlobal` productId 冷却兜底。manifest `0.2.4`。popup `v18-切店静默吸收`。需关开开关。
+
+- **v19-上下架A+B** (2026-08-06)：赛狐对平台下架同步滞后（实锤 Twilight SKC `7636599333` 后台已下架、赛狐仍 `selectStatus=12`）→ 插件加后台兜底。**A** `countStatus` 在售数升降即时数量卡；**B** `scanOnSale` 清单 diff：下架立即点名，上架 `pendingOnshelf` 连续两轮确认后点名；`tabCount===0` 允许真清零；productId 6h 冷却减赛狐双报；数量变化后若仍在该店 6s 防抖再扫。卡片标注「插件·后台」。manifest `0.2.5`。popup `v19-上下架A+B`。需 chrome://extensions **关开开关**。服务器赛狐保留。见 [[traffic-plugin-primary]]。
+
+- **v19.1-定点列链接** (2026-08-06)：16:30 必提醒只报数量不列「哪条限流」。`sendMustRemind` 始终列出当前限流池 + 编辑链接；解除项也带链接。manifest `0.2.6`。popup `v19.1-定点列链接`。
+
+- **v19.2-数量防抖** (2026-08-06)：A 路径误报——HomeCove `countStatus` 切店/loading 瞬时 15→4→15（1 秒内）连发下降+上升数量卡。修复：`diffOnSaleCount` 挂 `pendingQty`，同一候选值连续命中 ≥2 次且间隔 ≥3s 才确认发卡并落基准；回弹到原基准直接取消 pending；pending TTL 60s。B 扫描仍可在首次变化后 6s 防抖触发。manifest `0.2.7`。popup `v19.2-数量防抖`。需 chrome://extensions **关开开关**。单测 `test_onsale_ab.js` 含 15→4→15 / 真实下降 / retarget / TTL。
+
+- **v19.3-mallId绑店** (2026-08-06)：Agnis `12→0→12`（跨约 20s）+ HomeCove 同类毛刺。根因：`inject.js` 已抓请求 `mallId`，但 `content.js` 转发 capture 时丢掉，只靠 DOM 顶栏店名；切店时 DOM 滞后 → A 店 countStatus 写进 B 店 snapshot。修复：① content 转发 `mallId`；② `resolveStore(store, mallId)` 优先 mallMap；③ 轮巡 `cycling` 期间数量卡静默只同步基准；④ 归零永不走 A 发卡（真清零靠 B）；⑤ 大幅下降（≥50%或≥3）需 3 次+12s。manifest `0.2.8`。popup `v19.3-mallId绑店`。需关开开关。
+
+- **v19.4-防假清零+限流基线** (2026-08-06)：日志两处误报。① Agnis `tabCount=0` 单次 scan 把 loading 当整店下架点名 12 个。修复：`pendingTrueZero` 连续 ≥2 次才确认；近 2min 内 `onSaleCount>0` 拒绝 trueZero。② HomeCove 新店：全局 `trafficAlertedGlobal` 被 `Object.assign` 写进本店 `alerted*` → `hasTrafficBaseline` 误判已就绪 → 首轮 15 条全推。修复：全局只参与 pickFresh 冷却不写回本店；`hasTrafficBaseline` 必须 `trafficBaselineAt`+本店非空 alerted；pool 空不打戳。manifest `0.2.9`。popup `v19.4-防假清零+限流基线`。单测 `test_onsale_ab` / `test_traffic_dedupe` 含回归。需 chrome://extensions **关开开关**。

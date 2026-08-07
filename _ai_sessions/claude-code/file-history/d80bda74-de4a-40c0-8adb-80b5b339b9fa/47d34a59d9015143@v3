@@ -1,0 +1,141 @@
+# 一期默认异常阈值（来自需求说明第六节）
+# 运行时优先此文件；后续可改为飞书配置表覆盖
+
+levels:
+  yellow: 观察
+  orange: 必须处理
+  red: 立即升级
+
+# 工作日：true=仅周一至五计入处理时限
+workdays_only: true
+
+rules:
+  sales_drop:
+    name: 销售下降
+    enabled: true
+    # 变化幅度为负表示下降；比较「近7天 vs 前7天」类字段（由同步映射提供）
+    yellow:
+      drop_pct_min: 0.10
+      drop_pct_max: 0.20
+      baseline_sales_min: 3000
+    orange:
+      drop_pct_min: 0.20
+      baseline_sales_min: 3000
+    red:
+      # S/A 级下降 >=40%，或核心连续3天无订单（无订单在 engine 另判）
+      sa_drop_pct_min: 0.40
+      zero_order_days: 3
+
+  order_drop:
+    name: 订单下降
+    enabled: true
+    yellow:
+      drop_pct_min: 0.10
+      drop_pct_max: 0.25
+      baseline_orders_min: 20
+    orange:
+      drop_pct_min: 0.25
+      baseline_orders_min: 20
+    red:
+      core_drop_pct_min: 0.50
+      zero_order_days: 3
+
+  traffic_drop:
+    name: 流量下降
+    enabled: true
+    yellow:
+      drop_pct_min: 0.10
+      drop_pct_max: 0.20
+      baseline_sessions_min: 300
+    orange:
+      drop_pct_min: 0.20
+      baseline_sessions_min: 300
+    red:
+      core_drop_pct_min: 0.40
+
+  conversion_drop:
+    name: 转化下降
+    enabled: true
+    # 百分点（绝对差），非相对比例
+    yellow:
+      drop_pp_min: 1.0
+      drop_pp_max: 2.0
+    orange:
+      drop_pp_min: 2.0
+      sessions_min: 200
+    red:
+      drop_pp_min: 4.0
+
+  acos_abnormal:
+    name: ACOS异常
+    enabled: true
+    # 高于目标 ACOS 的百分点；目标来自行字段 target_acos 或默认
+    default_target_acos: 0.30
+    yellow:
+      over_pp_min: 0.0
+      over_pp_max: 5.0
+    orange:
+      over_pp_min: 5.0
+    red:
+      over_pp_min: 15.0
+
+  ad_spend_abnormal:
+    name: 广告花费异常
+    enabled: true
+    # 当日花费低于该值不告警（本币，如 GBP）
+    min_ad_cost: 20
+    yellow:
+      spend_up_pct_min: 0.10
+      spend_up_pct_max: 0.20
+    orange:
+      spend_up_pct_min: 0.20
+    red:
+      spend_up_pct_min: 0.50
+
+  inventory_low:
+    name: 库存不足
+    enabled: true
+    # 无订单/销量的断货不报（多为清仓或未动销）
+    require_activity: true
+    yellow:
+      days_min: 30
+      days_max: 45
+    orange:
+      days_min: 15
+      days_max: 30
+    red:
+      days_max: 7
+      stockout: true
+
+  inventory_high:
+    name: 库存过高
+    enabled: true
+    min_units: 1
+    yellow:
+      days_min: 120
+      days_max: 180
+    orange:
+      days_min: 180
+    red:
+      age_days_min: 365
+
+  review_abnormal:
+    name: 评价异常
+    enabled: true
+    yellow:
+      rating_drop_min: 0.1
+      low_star_count_min: 1
+    orange:
+      rating_drop_min: 0.2
+      low_star_7d_min: 3
+    red:
+      # 集中差评/星级跌破阈值：用 rating 绝对下限
+      rating_floor: 3.5
+
+# 产品等级：S/A 触发更严红色规则
+core_grades:
+  - S
+  - A
+
+# 黄：不建任务；连续出现次数达此值可升级观察（引擎标记）
+yellow_upgrade_streak: 2

@@ -1,0 +1,51 @@
+# 插件能力对齐（无需 Chrome 扩展）
+
+`npm run once` / `npm start` 默认 **全量监测**，覆盖原 `temu-plugin` 能力：
+
+| 插件能力 | temu-monitor 实现 |
+|----------|-------------------|
+| 在售数量下降 | 浏览器 countStatus + 数字 diff（有赛狐时默认不单独刷「仅数字」） |
+| 下架商品点名 + 编辑链接 | **赛狐** `selectStatus` 离开 12 → 飞书带链接 |
+| 流量待关注增加 + 点名 | 浏览器读 chip + 主动筛选扫 productId |
+| 流量近期下降增加 + 点名 | 浏览器数行内徽标 + 商品名 |
+| 多店 | 会话级切店（头像→切换店铺）按 `storeList` 轮巡 |
+| 飞书 | `config.json` feishuWebhooks |
+| 幂等基准 | `data/state.json` + `data/sellfox-state.json` |
+
+## 命令
+
+```bash
+cd temu-monitor
+npm run login          # 首次 / 登录过期
+npm run once           # 一轮全量
+npm run start          # 常驻（间隔 intervalMinutes）
+```
+
+仅浏览器（不要赛狐）：
+
+```bash
+set FULL_RUN=0
+npm run once
+```
+
+仅赛狐下架：
+
+```bash
+npm run sellfox:start
+```
+
+## 配置
+
+- `config.json`：`storeList` 三店名、飞书、`fullRun`、`alerts`
+- `sellfox.config.json`：赛狐 client（gitignore）
+
+## 与插件关系
+
+生产可 **只跑 temu-monitor**，不必装 Chrome 扩展。  
+插件可卸掉，避免双通道重复告警。
+
+## 局限
+
+- 待关注/下降明细：筛选后默认一页约 20 条（与插件相同）；chip 数为全量
+- 会话切店依赖 DOM，偶发失败会记日志并尽量扫当前页
+- 需本机 Chrome + `.userdata` 登录；赛狐需 IP 白名单

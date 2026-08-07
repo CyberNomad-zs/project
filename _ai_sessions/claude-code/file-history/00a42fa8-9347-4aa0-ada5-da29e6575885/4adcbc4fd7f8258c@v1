@@ -1,0 +1,216 @@
+from __future__ import annotations
+
+import json as _json
+import logging
+from collections import defaultdict
+from typing import Any
+
+from app.config import Settings, get_app_config, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def build_digest(db: Database, biz_date: str) -> str:
+    """构建纯文本摘要（保留为 fallback）。"""
+    tasks = db.list_tasks(biz_date=biz_date)
+    open_tasks = [t for t in tasks if t.get("status") not in ("closed", "resolved")]
+    by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in open_tasks:
+        by_owner[str(t.get("owner") or "未分配")].append(t)
+
+    red = sum(1 for t in open_tasks if t.get("level") == "red")
+    orange = sum(1 for t in open_tasks if t.get("level") == "orange")
+    lines = [
+        f"【ASIN健康度】{biz_date} 异常摘要",
+        f"红色: {red} | 橙色: {orange} | 未关闭合计: {len(open_tasks)}",
+        "",
+    ]
+    cfg = get_app_config()
+    view_url = (cfg.get("notify") or {}).get("view_base_url") or ""
+    if view_url:
+        lines.append(f"视图: {view_url}")
+        lines.append("")
+
+    for owner, items in sorted(by_owner.items()):
+        r = sum(1 for t in items if t.get("level") == "red")
+        o = sum(1 for t in items if t.get("level") == "orange")
+        lines.append(f"- {owner}: 红{r} 橙{o}")
+        for t in items[:5]:
+            lines.append(
+                f"  · [{t.get('level')}] {t.get('shop_name')} {t.get('asin')} {t.get('anomaly_type')}"
+            )
+        if len(items) > 5:
+            lines.append(f"  · …另有 {len(items) - 5} 条")
+
+    if not open_tasks:
+        lines.append("今日无新增未关闭橙/红任务。")
+    return "\n".join(lines)
+
+
+def build_digest_card(
+    db: Database, biz_date: str, *, settings: Settings | None = None
+) -> dict[str, Any]:
+    """构建每日摘要交互式卡片。"""
+    from app.clients.feishu import (
+        card_action,
+        card_button,
+        card_header,
+        card_hr,
+        card_md,
+    )
+
+    settings = settings or get_settings()
+    cfg = get_app_config()
+    notify = cfg.get("notify") or {}
+    base_url = (notify.get("view_base_url") or "").rstrip("?&")
+    if not base_url and settings.feishu_bitable_app_token:
+        base_url = f"https://dcnkj1up67d5.feishu.cn/base/{settings.feishu_bitable_app_token}"
+
+    tasks_url = base_url
+    if settings.feishu_table_tasks:
+        sep = "&" if "?" in base_url else "?"
+        tasks_url = f"{base_url}{sep}table={settings.feishu_table_tasks}"
+
+    tasks = db.list_tasks(biz_date=biz_date)
+    open_tasks = [t for t in tasks if t.get("status") not in ("closed", "resolved")]
+    yellow_tasks = [t for t in open_tasks if t.get("level") == "yellow"]
+    by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in open_tasks:
+        by_owner[str(t.get("owner") or "未分配")].append(t)
+
+    red = sum(1 for t in open_tasks if t.get("level") == "red")
+    orange = sum(1 for t in open_tasks if t.get("level") == "orange")
+    yellow = len(yellow_tasks)
+
+    # 卡片颜色：有红色→红，有橙色→橙，否则蓝
+    card_color = "blue"
+    if red:
+        card_color = "red"
+    elif orange:
+        card_color = "orange"
+
+    # 逾期统计
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    overdue_n = sum(1 for t in open_tasks if (due := t.get("due_at")) and due < now)
+
+    # KPI 行
+    kpi_parts = [
+        f"🔴 **红色**: {red}",
+        f"🟠 **橙色**: {orange}",
+        f"🟡 **观察**: {yellow}",
+    ]
+    if overdue_n:
+        kpi_parts.append(f"⏰ **逾期**: {overdue_n}")
+
+    md_lines = [f"📊 **{biz_date}** 异常摘要", "", " | ".join(kpi_parts), ""]
+
+    if not open_tasks:
+        md_lines.append("✅ 今日无新增未关闭橙/红任务。")
+    else:
+        md_lines.append("---")
+        md_lines.append("")
+        for owner, items in sorted(by_owner.items()):
+            r = sum(1 for t in items if t.get("level") == "red")
+            o = sum(1 for t in items if t.get("level") == "orange")
+            md_lines.append(f"👤 **{owner}**: 🔴{r} 🟠{o}")
+            for t in items[:5]:
+                icon = "🔴" if t.get("level") == "red" else "🟠"
+                cn = t.get("product_title_cn") or t.get("product_title") or ""
+                cn_s = f" {cn}" if cn else ""
+                md_lines.append(
+                    f"  {icon} `{t.get('task_id')}` {t.get('shop_name')} "
+                    f"{t.get('asin')}{cn_s} | {t.get('anomaly_type')}"
+                )
+            if len(items) > 5:
+                md_lines.append(f"  …另有 {len(items) - 5} 条")
+            md_lines.append("")
+
+    elements = [
+        card_md("\n".join(md_lines)),
+        card_hr(),
+        card_action(
+            card_button("📋 查看任务表", tasks_url),
+        ),
+    ]
+
+    return {
+        **card_header(
+            f"ASIN健康度 · {biz_date} 异常摘要", color=card_color
+        ),
+        "elements": elements,
+    }
+
+
+def _send_msg(
+    text: str | None,
+    card: dict[str, Any] | None,
+    webhook: str,
+    *,
+    use_card: bool = True,
+) -> bool:
+    """发送消息：优先卡片，fallback 文本。返回是否发送成功。"""
+    if use_card and card:
+        try:
+            from app.clients.feishu import FeishuClient
+
+            if get_settings().has_feishu:
+                with FeishuClient() as client:
+                    client.send_webhook_card(card, webhook=webhook)
+            else:
+                import httpx
+                resp = httpx.post(webhook, json={"msg_type": "interactive", "card": card}, timeout=30)
+                resp.raise_for_status()
+            return True
+        except Exception:
+            logger.exception("卡片发送失败，回退文本")
+
+    if text:
+        try:
+            import httpx
+            resp = httpx.post(
+                webhook,
+                json={"msg_type": "text", "content": {"text": text}},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json() if resp.content else {}
+            if data.get("code") not in (None, 0) and data.get("StatusCode") not in (None, 0):
+                logger.error("飞书 webhook 返回异常: %s", data)
+            return True
+        except Exception:
+            logger.exception("文本消息发送也失败")
+    return False
+
+
+def send_digest(
+    db: Database,
+    biz_date: str,
+    *,
+    settings: Settings | None = None,
+    dry_run: bool = False,
+) -> str:
+    settings = settings or get_settings()
+    text = build_digest(db, biz_date)
+    card = build_digest_card(db, biz_date, settings=settings)
+
+    payload = {"biz_date": biz_date, "text": text, "card": card}
+    db.log_notify("daily_digest", payload)
+
+    if dry_run:
+        logger.info("Digest dry-run:\n%s\nCard:\n%s", text, _json.dumps(card, ensure_ascii=False, indent=2))
+        return text
+
+    webhook = (settings.feishu_bot_webhook or "").strip()
+    if not webhook:
+        logger.warning(
+            "未配置 FEISHU_BOT_WEBHOOK，摘要仅写入 notify_log。"
+            "请在飞书群添加自定义机器人，把 Webhook 写入 .env"
+        )
+        return text
+
+    _send_msg(text, card, webhook)
+    logger.info("飞书摘要已发送")
+    return text

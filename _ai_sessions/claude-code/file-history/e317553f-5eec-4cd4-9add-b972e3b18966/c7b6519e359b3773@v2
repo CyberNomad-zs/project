@@ -1,0 +1,19 @@
+// 隔离世界：① 把 inject.js 注入页面 MAIN world（越早越好，抢在页面 bundle 前 hook）；
+// ② 接收 MAIN world 发来的接口响应，转发给后台 service worker。
+(function () {
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) { /* ignore */ }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body });
+    } catch (err) { /* service worker 可能休眠，忽略 */ }
+  });
+})();

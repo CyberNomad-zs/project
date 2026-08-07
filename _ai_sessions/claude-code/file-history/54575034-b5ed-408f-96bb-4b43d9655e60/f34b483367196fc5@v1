@@ -1,0 +1,317 @@
+# -*- coding: utf-8 -*-
+"""
+WMS（海外仓）操作：一件代发 > 平台订单
+流程：筛选未发货 -> 全选 -> 批量修改快递方(= 该渠道对应的那一个快递方) -> 批量发货。
+      快递方由 ERP 下单渠道末段决定(一一对应，用户规则 2026-07-09)，只发一次；
+      失败的留在"未发货"即留存提醒，不换别的快递方。
+DRY_RUN=True 时不真正点击"确认/批量发货"，只记录将要执行的动作。
+"""
+import time
+import config, core
+from core import log, ORDERINFO_WMS
+from rules import ALL_COURIERS
+
+
+def open_platform_orders(page):
+    core.safe_goto(page, ORDERINFO_WMS)
+    time.sleep(4)
+
+
+def count_rows(page):
+    """未发货订单数。优先读分页 '共 N 条'（el-table 固定列会使 .el-table__row 翻倍，不能直接数行）。"""
+    import re
+    el = page.query_selector(".el-pagination__total")
+    if el:
+        m = re.findall(r"\d+", el.inner_text() or "")
+        if m:
+            return int(m[0])
+    rows = page.query_selector_all(".el-table__row")
+    return len(rows) // 2 if rows else 0
+
+
+def close_tips(page, rounds=4):
+    """关闭所有可见 el-message-box / Tip（点 ok/确定/关闭），返回文本列表。"""
+    texts = []
+    for _ in range(rounds):
+        box = page.query_selector(".el-message-box__wrapper:visible .el-message-box")
+        if not box:
+            break
+        try:
+            texts.append((box.inner_text() or "").strip()[:120])
+        except Exception:
+            pass
+        done = False
+        for t in ["ok", "OK", "确定", "确认", "关闭", "知道了"]:
+            b = page.query_selector(f".el-message-box__wrapper:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try: b.click(); done = True
+                except Exception: pass
+                break
+        if not done:
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+        time.sleep(1)
+    return texts
+
+
+def wait_loading_gone(page, timeout=15):
+    """等待加载遮罩 .loading-indicator-overlay 消失后再交互。
+    实测坑(2026-07-10 真跑)：改快递方成功后列表刷新，此遮罩仍在(id=loading-indicator-*-overlay)，
+    会抢走 pointer events —— 后续点偏远筛选框虽解析到元素(visible/enabled/stable)，但点击被遮罩
+    拦截，Playwright 重试 5s 超时。故点击前先轮询等遮罩全部隐藏/移除。"""
+    import time as _t
+    deadline = _t.time() + timeout
+    while _t.time() < deadline:
+        try:
+            visible = page.evaluate(
+                "() => [...document.querySelectorAll('.loading-indicator-overlay')]"
+                ".some(el => el.offsetParent !== null "
+                "&& getComputedStyle(el).display !== 'none' "
+                "&& getComputedStyle(el).visibility !== 'hidden')"
+            )
+        except Exception:
+            return  # 页面/上下文异常，不阻塞主流程
+        if not visible:
+            return
+        time.sleep(0.3)
+    log("[WMS] ⚠️ 等待加载遮罩消失超时，继续尝试（可能仍被拦截）")
+
+
+def ensure_unshipped_filter(page):
+    """确保状态筛选为'未发货'并查询。页面默认即为未发货，这里点一次查询刷新。"""
+    try:
+        page.click("button:has-text('查询')", timeout=5000)
+        time.sleep(3)
+    except Exception as e:
+        log(f"[WMS] 点击查询失败: {e}")
+
+
+def select_all(page):
+    """勾选表头全选框。无数据时该框禁用，返回 False。"""
+    header_cb = page.query_selector(".el-table__header-wrapper .el-checkbox, .el-table__header .el-checkbox")
+    if not header_cb:
+        return False
+    cls = header_cb.get_attribute("class") or ""
+    if "is-disabled" in cls:
+        return False
+    try:
+        header_cb.click()
+        time.sleep(1)
+        return True
+    except Exception as e:
+        log(f"[WMS] 全选失败: {e}")
+        return False
+
+
+def set_courier(page, courier):
+    """打开'批量修改快递方'弹窗，选择 courier，确认。DRY_RUN 下不点确认。"""
+    try:
+        page.click("button:has-text('批量修改快递方')", timeout=6000)
+    except Exception as e:
+        log(f"[WMS] 打开'批量修改快递方'失败: {e}")
+        return False
+    time.sleep(1.5)
+    # 可见弹窗(:visible)内的 快递方 下拉（页面存在多个隐藏 el-dialog，必须限定可见）
+    try:
+        page.click(".el-dialog:visible .el-select", timeout=4000)
+        time.sleep(1)
+        opt = None
+        for el in page.query_selector_all(".el-select-dropdown__item"):
+            if el.is_visible() and (el.inner_text() or "").strip() == courier:
+                opt = el; break
+        if not opt:
+            log(f"[WMS] 未找到快递方选项 {courier}")
+            _close_dialog(page)
+            return False
+        opt.click()
+        time.sleep(0.5)
+    except Exception as e:
+        log(f"[WMS] 选择快递方 {courier} 失败: {e}")
+        _close_dialog(page)
+        return False
+
+    if config.DRY_RUN:
+        log(f"[WMS][DRY] 将设置快递方 = {courier}（跳过'确认'）")
+        _close_dialog(page)
+        return True
+    try:
+        # 确认按钮：可见弹窗内的 primary 按钮（文本'确认'，与'取消'区分）
+        ok = page.query_selector(".el-dialog:visible button.el-button--primary")
+        if not ok:
+            for b in page.query_selector_all(".el-dialog:visible button"):
+                if (b.inner_text() or "").replace(" ", "") in ("确认", "确定"):
+                    ok = b; break
+        if not ok:
+            log("[WMS] 未找到可见确认按钮"); return False
+        ok.click()
+        time.sleep(2)
+        tips = close_tips(page)   # 关掉"成功"Tip，否则挡住后续批量发货
+        log(f"[WMS] 已设置快递方 = {courier}  Tip={tips}")
+        return True
+    except Exception as e:
+        log(f"[WMS] 确认快递方失败: {e}")
+        return False
+
+
+def set_remote_filter(page, value="否"):
+    """需求2（用户 2026-07-10）：批量改快递方【后】设置「是否偏远地区」筛选 = value（默认'否'，
+    只发非偏远单）并点查询。偏远(Y)单不进筛选结果 -> 不会被全选/发货 -> 留在未发货即留存提醒。
+    实测(wms_probe_remote 2026-07-10)：控件 input[placeholder*='偏远']（placeholder=是否偏远地区），
+    选项仅 是/否；金猫选'否'后未发货 19->18（排除 1 个偏远 Y 单 P2AE6TCD61861），余单偏远列全 N。"""
+    try:
+        wait_loading_gone(page)   # 改快递方后列表刷新的遮罩会拦截点击，先等它消失
+        page.click("input[placeholder*='偏远']", timeout=8000)
+        time.sleep(1)
+        picked = False
+        for o in page.query_selector_all(".el-select-dropdown__item"):
+            # 只有当前展开的下拉其选项可见；其它 el-select 下拉是隐藏的，is_visible 可区分。
+            if o.is_visible() and (o.inner_text() or "").strip() == value:
+                o.click(); picked = True; break
+        if not picked:
+            log(f"[WMS] 未找到「是否偏远地区」选项「{value}」")
+            return False
+        time.sleep(0.5)
+    except Exception as e:
+        log(f"[WMS] 设置偏远地区筛选失败: {e}")
+        return False
+    # 点查询刷新列表（只保留 偏远={value} 的单）
+    try:
+        wait_loading_gone(page)
+        page.click("button:has-text('查询')", timeout=8000)
+        time.sleep(3)
+    except Exception as e:
+        log(f"[WMS] 偏远筛选后点查询失败: {e}")
+        return False
+    log(f"[WMS] 已设置 是否偏远地区 = {value} 并查询（偏远单排除、留存）")
+    return True
+
+
+def _close_dialog(page):
+    """关闭当前可见的 el-dialog（点 取消 / 右上角 X），兜底 Escape。
+    必须限定 :visible —— 页面存在多个隐藏 el-dialog，不限定会点到隐藏弹窗、可见弹窗关不掉，
+    残留弹窗会拦截后续点击（2026-07-10 DRY 演练实测：全选被 el-dialog__wrapper 拦截超时）。"""
+    for sel in (".el-dialog:visible button:has-text('取 消')",
+                ".el-dialog:visible button:has-text('取消')",
+                ".el-dialog:visible .el-dialog__headerbtn"):
+        try:
+            b = page.query_selector(sel)
+            if b and b.is_visible():
+                b.click(); time.sleep(0.6); return
+        except Exception:
+            pass
+    try:
+        page.keyboard.press("Escape")
+    except Exception:
+        pass
+    time.sleep(0.6)
+
+
+def batch_ship(page):
+    """点击'批量发货'，处理'预发货成功'提示。DRY_RUN 下不执行。"""
+    if config.DRY_RUN:
+        log("[WMS][DRY] 将点击'批量发货'（已跳过）")
+        return True
+    try:
+        page.click("button:has-text('批量发货')", timeout=6000)
+        time.sleep(2)
+        # 可能的二次确认（限可见弹窗）
+        for t in ["确定", "确认", "ok", "OK"]:
+            b = page.query_selector(f".el-message-box__wrapper:visible button:has-text('{t}'), .el-dialog:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try: b.click(); time.sleep(1.5)
+                except Exception: pass
+                break
+        time.sleep(2)
+        tips = close_tips(page)   # 捕获并关闭 'Tip: 预发货成功'
+        ok = any("预发货成功" in t or "成功" in t for t in tips)
+        log(f"[WMS] 已执行批量发货  结果Tip={tips}")
+        return ok if tips else True
+    except Exception as e:
+        log(f"[WMS] 批量发货失败: {e}")
+        return False
+
+
+def read_order_numbers(page):
+    """读当前未发货列表的平台订单号（去重）。订单号形如 P2AC6TCD61443。"""
+    try:
+        nums = page.evaluate(r"""() => {
+            const s=new Set();
+            document.querySelectorAll('.el-table__row').forEach(r=>{
+                const m=(r.innerText||'').match(/P[0-9A-Z]{9,15}/g); if(m) m.forEach(x=>s.add(x));
+            });
+            return [...s];
+        }""")
+        return nums or []
+    except Exception:
+        return []
+
+
+def ship_shop(wms_browser, account, courier):
+    """给单个店铺发货：用【独立干净 WMS context】登录 + process_shop，用完即关。
+    独立 context 是根治「多账号共用一个 context 时，第二个账号登录读到前一个账号会话」
+    的关键（实测 2026-07-10：黑猫先登→金猫后登，金猫会读到黑猫的空列表=漏发）。
+    wms_browser: 独立于 ERP 持久 context 的 browser（run_shipping/shipping_loop 里 launch）。
+    返回 process_shop 的结果 dict。"""
+    wctx = wms_browser.new_context(ignore_https_errors=True)
+    wpage = wctx.new_page()
+    try:
+        return process_shop(wpage, account, courier)
+    finally:
+        try:
+            wctx.close()
+        except Exception:
+            pass
+
+
+def process_shop(page, account, courier, already_logged_in=False):
+    """处理单个店铺：用【该渠道对应的单一快递方 courier】改快递方 + 批量发货一次。
+    失败的单留在'未发货'即留存（不换别的快递方、不轮转，用户规则 2026-07-09）。
+    返回 {shop, courier, before, left, left_orders}。"""
+    log(f"[WMS] === 处理店铺 {account['shop']}（{account['login']}），本渠道快递方 = {courier} ===")
+    if not courier:
+        log(f"[WMS] ⚠️ {account['shop']} 未解析出快递方，跳过发货（留存交上层处理）")
+        return {"shop": account["shop"], "courier": "", "error": "无快递方", "left_orders": []}
+    if not already_logged_in and not core.wms_login(page, account):
+        log(f"[WMS] {account['shop']} 登录失败，跳过")
+        return {"shop": account["shop"], "courier": courier, "error": "登录失败", "left_orders": []}
+    open_platform_orders(page)
+    ensure_unshipped_filter(page)
+
+    total_before = count_rows(page)
+    log(f"[WMS] {account['shop']} 未发货订单 ≈ {total_before} 条")
+    if total_before == 0:
+        log(f"[WMS] {account['shop']} 无未发货订单")
+        return {"shop": account["shop"], "courier": courier, "before": 0, "left": 0, "left_orders": []}
+
+    limit = config.MAX_ORDERS_PER_RUN
+    if limit and total_before > limit:
+        log(f"[WMS][安全] 未发货 {total_before} > 单次上限 {limit}，建议调大 MAX_ORDERS_PER_RUN 或分批。")
+
+    # 单一快递方：全选 -> 改成 courier -> 重新全选（改后列表刷新丢勾选） -> 批量发货。只一次，不轮转。
+    log(f"[WMS] 用快递方 [{courier}] 处理 {total_before} 条")
+    if not select_all(page):
+        log("[WMS] 无法全选（可能无数据/禁用），本渠道未发货")
+    elif not set_courier(page, courier):
+        log(f"[WMS] 改快递方 {courier} 未成功，本渠道未发货")
+    elif not set_remote_filter(page, "否"):
+        # 需求2：偏远筛选失败则不发货（宁可留存，也不误发偏远/全量单）
+        log("[WMS] 设置偏远地区=否 未成功，为避免误发偏远单，本渠道未发货")
+    elif not select_all(page):
+        log("[WMS] 改快递方后重新全选失败，本渠道未发货")
+    else:
+        batch_ship(page)
+        time.sleep(2)
+
+    open_platform_orders(page)
+    ensure_unshipped_filter(page)
+    left = count_rows(page)
+    left_orders = read_order_numbers(page) if left else []
+    dry = "（DRY_RUN 未真正发货）" if config.DRY_RUN else ""
+    log(f"[WMS] {account['shop']} 处理完成，仍未发货 ≈ {left} 条{dry}")
+    if left and not config.DRY_RUN:
+        log(f"[WMS] ⚠️ {account['shop']} 用 {courier} 发货后仍未发货（留存，不换快递方）：{left_orders}")
+    core.log.event("WMS发货汇总", shop=account["shop"], account=account["login"], courier=courier,
+                   before=total_before, shipped=max(0, total_before - left),
+                   left=left, left_orders=left_orders)
+    return {"shop": account["shop"], "courier": courier, "before": total_before,
+            "left": left, "left_orders": left_orders}

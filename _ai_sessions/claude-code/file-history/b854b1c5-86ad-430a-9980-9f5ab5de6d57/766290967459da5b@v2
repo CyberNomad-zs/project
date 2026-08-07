@@ -1,0 +1,28 @@
+import openpyxl, os, sys
+
+root = r"C:\Users\Administrator\Downloads\亚马逊部门"
+
+def dump_xlsx(path):
+    print("="*100)
+    print("FILE:", os.path.relpath(path, root))
+    print("="*100)
+    wb = openpyxl.load_workbook(path, data_only=True)
+    for ws in wb.worksheets:
+        print(f"\n--- SHEET: {ws.title}  (dims={ws.dimensions}, max_row={ws.max_row}, max_col={ws.max_column}) ---")
+        maxr = min(ws.max_row, 200)
+        maxc = min(ws.max_column, 40)
+        for r in range(1, maxr+1):
+            row = []
+            has = False
+            for c in range(1, maxc+1):
+                v = ws.cell(r,c).value
+                if v is not None and str(v).strip()!="":
+                    has = True
+                row.append("" if v is None else str(v))
+            if has:
+                print(f"R{r}: " + " | ".join(row).rstrip(" |"))
+
+for dirpath, dirs, files in os.walk(root):
+    for f in files:
+        if f.endswith(".xlsx") and not f.startswith("~$"):
+            dump_xlsx(os.path.join(dirpath, f))

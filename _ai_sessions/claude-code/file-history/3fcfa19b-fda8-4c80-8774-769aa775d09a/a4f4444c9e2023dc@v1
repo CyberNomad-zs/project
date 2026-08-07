@@ -1,0 +1,4 @@
+config/config.yaml
+bridge.db
+bridge.log
+__pycache__/

@@ -1,0 +1,31 @@
+# Register Windows scheduled task: daily 10:00 ASIN health batch
+$ErrorActionPreference = "Stop"
+$Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$Script = Join-Path $Root "scripts\run_daily.ps1"
+$TaskName = "ASIN-Health-Daily"
+$PsExe = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+
+if (-not (Test-Path -LiteralPath $Script)) { throw "script not found: $Script" }
+if (-not (Test-Path -LiteralPath $PsExe)) { throw "powershell not found: $PsExe" }
+
+$existing = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+if ($existing) {
+    Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false
+    Write-Host "removed old task: $TaskName"
+}
+
+$Arg = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`""
+$Action = New-ScheduledTaskAction -Execute $PsExe -Argument $Arg -WorkingDirectory $Root
+$At = Get-Date -Hour 10 -Minute 0 -Second 0
+$Trigger = New-ScheduledTaskTrigger -Daily -At $At
+$Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Hours 2)
+$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+
+Register-ScheduledTask -TaskName $TaskName -Action $Action -Trigger $Trigger -Settings $Settings -Principal $Principal -Description "Sellfox ASIN health daily once" | Out-Null
+
+Write-Host "OK registered: $TaskName"
+Write-Host "  trigger: daily 10:00"
+Write-Host "  script:  $Script"
+Write-Host "  workdir: $Root"
+Write-Host "  logs:    $(Join-Path $Root 'data\logs')"
+Write-Host "test now:  Start-ScheduledTask -TaskName '$TaskName'"

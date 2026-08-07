@@ -1,0 +1,69 @@
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ROOT } from './config.js';
+
+const STATE_FILE = resolve(ROOT, 'data', 'state.json');
+
+export function loadState() {
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+  } catch {
+    return { stores: {} };
+  }
+}
+
+export function saveState(state) {
+  mkdirSync(resolve(ROOT, 'data'), { recursive: true });
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+/**
+ * 对比本次扫描结果与上次快照，产出需要告警的事件。
+ * @param {object} prev  上次该店铺快照（可能为空）
+ * @param {object} curr  本次扫描结果
+ * @param {object} alertsCfg { onSaleDrop, trafficAnomaly }
+ * @returns {Array<{type:string, text:string}>}
+ */
+export function diffStore(prev, curr, alertsCfg) {
+  const events = [];
+
+  // 在售数量下降
+  if (
+    alertsCfg.onSaleDrop &&
+    prev && typeof prev.onSaleCount === 'number' &&
+    typeof curr.onSaleCount === 'number' &&
+    curr.onSaleCount < prev.onSaleCount
+  ) {
+    events.push({
+      type: 'onSaleDrop',
+      text: `在售商品数量下降：${prev.onSaleCount} → ${curr.onSaleCount}（减少 ${prev.onSaleCount - curr.onSaleCount} 件）`,
+    });
+  }
+
+  // 流量异常：待关注数量增加 或 首次出现「流量下降」时告警（避免每轮重复刷屏）
+  if (alertsCfg.trafficAnomaly) {
+    const prevWatch = prev?.trafficWatchCount;
+    const currWatch = curr.trafficWatchCount;
+    // ⚠️ 只有本轮与上一轮都读到确切数字时才比较。
+    // trafficWatchCount 为 null = 本轮「商品流量待关注」筛选没生效、读数未知，
+    // 绝不能把未知当成 0——否则「未知(0)→3」会被误判成「增加」，反复刷同一条假告警。
+    if (
+      typeof prevWatch === 'number' &&
+      typeof currWatch === 'number' &&
+      currWatch > prevWatch
+    ) {
+      events.push({
+        type: 'trafficAnomaly',
+        text: `「商品流量待关注」增加：${prevWatch} → ${currWatch}（+${currWatch - prevWatch}）`,
+      });
+    }
+    if (curr.trafficDeclineExists && !prev?.trafficDeclineExists) {
+      events.push({
+        type: 'trafficAnomaly',
+        text: '出现「商品流量近期有下降」商品，请及时处理。',
+      });
+    }
+  }
+
+  return events;
+}

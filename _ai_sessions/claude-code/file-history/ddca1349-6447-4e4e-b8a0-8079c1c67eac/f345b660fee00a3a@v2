@@ -1,0 +1,1049 @@
+"""赛狐 OpenAPI → 清泉 PG（TK 商品 / 利润 / 账单）。
+
+只读同步；不发货、不写 WMS。
+
+用法（容器内）:
+  PYTHONPATH=/app python -m app.jobs.tk_sellfox_sync
+  PYTHONPATH=/app python -m app.jobs.tk_sellfox_sync --start 2026-07-07 --end 2026-08-05
+  PYTHONPATH=/app python -m app.jobs.tk_sellfox_sync --only products,profit_sku,statement
+  PYTHONPATH=/app python -m app.jobs.tk_sellfox_sync --days 30
+
+环境变量:
+  SELLFOX_BASE_URL / SELLFOX_CLIENT_ID / SELLFOX_CLIENT_SECRET
+  DATABASE_URL
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import re
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any
+from uuid import uuid4
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.adapters.sellfox import SellfoxClient, SellfoxError, rows_of, total_size
+from app.config import get_settings
+from app.infra.db import SessionLocal
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("qingquan.tk_sellfox_sync")
+
+# 业务确认的三店映射：赛狐数字 shopId / Shop Code / 紫鸟 storeId / 展示名
+# statement/product 返回数字 shopId；Shop Code 用于文档与 probe
+DEFAULT_SHOP_MAP: list[dict[str, str]] = [
+    {
+        "name": "Deal to deal",
+        "ziniao_store_id": "27501502216807",
+        "sellfox_shop_id": "429674",
+        "sellfox_shop_code": "GBLCJGQ23Q",
+        "ziniao_name": "Tiktok_Shop2",
+    },
+    {
+        "name": "SHOP INOUT",
+        "ziniao_store_id": "27328767468273",
+        "sellfox_shop_id": "396800",
+        "sellfox_shop_code": "GBLCAW729L",
+        "ziniao_name": "Tiktok - KK Seagull",
+    },
+    {
+        "name": "Gardena",
+        "ziniao_store_id": "27758103898326",
+        "sellfox_shop_id": "610764",
+        "sellfox_shop_code": "HKGBCB8LQLRC",
+        "ziniao_name": "TikTok - Pop",
+    },
+]
+
+# 写入 raw_extra 时剔除已提升为列的键
+_PROFIT_PROMOTED = {
+    "salesQuantity",
+    "returnQuantity",
+    "grossSalesAmount",
+    "grossSalesRefundAmount",
+    "settlementAmount",
+    "grossProfit",
+    "grossRate",
+    "adsCost",
+    "currency",
+    "shopIds",
+    "shopId",
+    "shopName",
+    "shopNameList",
+    "skuList",
+    "mskuList",
+    "commodityNameList",
+}
+_STMT_PROMOTED = {
+    "statementId",
+    "orderId",
+    "statementTime",
+    "statementStatus",
+    "paymentStatus",
+    "orderStatus",
+    "orderType",
+    "orderCreateTime",
+    "shopId",
+    "shopName",
+    "marketplaceId",
+    "marketplaceName",
+    "currency",
+    "salesQuantity",
+    "returnQuantity",
+    "grossSalesAmount",
+    "grossSalesRefundAmount",
+    "settlementAmount",
+    "adsCost",
+}
+_PRODUCT_PROMOTED = {
+    "productId",
+    "productName",
+    "tkStatus",
+    "shopId",
+    "shopName",
+    "parentId",
+    "mainImage",
+    "matchStatus",
+    "publishSiteList",
+    "platformCreateTime",
+    "platformUpdateTime",
+    "productSyncTime",
+}
+
+
+def _dec(v: Any) -> Decimal | None:
+    if v is None or v == "":
+        return None
+    try:
+        return Decimal(str(v))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _as_list(v: Any) -> list[Any]:
+    if v is None:
+        return []
+    if isinstance(v, list):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if not s:
+            return []
+        # 可能是 JSON 数组字符串
+        if s.startswith("["):
+            try:
+                j = json.loads(s)
+                if isinstance(j, list):
+                    return j
+            except json.JSONDecodeError:
+                pass
+        return [s]
+    return [v]
+
+
+def _join_key(parts: list[Any], fallback: str = "_empty") -> str:
+    cleaned = [str(x).strip() for x in parts if x is not None and str(x).strip()]
+    if not cleaned:
+        return fallback
+    return " | ".join(cleaned)[:500]
+
+
+def _parse_dt(v: Any) -> datetime | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
+    s = str(v).strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d",
+    ):
+        try:
+            dt = datetime.strptime(s.replace("Z", "+0000"), fmt)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        except ValueError:
+            continue
+    return None
+
+
+def _parse_date(v: Any) -> date | None:
+    dt = _parse_dt(v)
+    if dt:
+        return dt.date()
+    if v is None or v == "":
+        return None
+    s = str(v)[:10]
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        return None
+
+
+class ShopIndex:
+    """赛狐 shopId/name → 紫鸟 storeId + PG shop uuid。"""
+
+    def __init__(self) -> None:
+        self.by_sellfox_id: dict[str, dict[str, Any]] = {}
+        self.by_name: dict[str, dict[str, Any]] = {}
+        self.by_code: dict[str, dict[str, Any]] = {}
+        self.rows: list[dict[str, Any]] = []
+
+    def add(self, row: dict[str, Any]) -> None:
+        self.rows.append(row)
+        sid = str(row.get("sellfox_shop_id") or "").strip()
+        if sid:
+            self.by_sellfox_id[sid] = row
+        code = str(row.get("sellfox_shop_code") or "").strip()
+        if code:
+            self.by_code[code] = row
+        for n in (
+            row.get("name"),
+            row.get("ziniao_name"),
+            *((row.get("alias_names") or []) if isinstance(row.get("alias_names"), list) else []),
+        ):
+            if n:
+                self.by_name[str(n).strip().lower()] = row
+
+    def resolve(
+        self,
+        *,
+        sellfox_shop_id: Any = None,
+        shop_name: Any = None,
+        shop_name_list: Any = None,
+        shop_ids_field: Any = None,
+    ) -> dict[str, Any] | None:
+        # shopIds 字段可能是 "610764" 或列表
+        candidates: list[str] = []
+        if sellfox_shop_id is not None and str(sellfox_shop_id).strip():
+            candidates.append(str(sellfox_shop_id).strip())
+        for x in _as_list(shop_ids_field):
+            if str(x).strip():
+                candidates.append(str(x).strip())
+        for c in candidates:
+            if c in self.by_sellfox_id:
+                return self.by_sellfox_id[c]
+            if c in self.by_code:
+                return self.by_code[c]
+        names = []
+        if shop_name:
+            names.append(str(shop_name))
+        names.extend(str(x) for x in _as_list(shop_name_list))
+        for n in names:
+            hit = self.by_name.get(n.strip().lower())
+            if hit:
+                return hit
+        return None
+
+
+async def ensure_shops(db: AsyncSession, index: ShopIndex) -> None:
+    """校正 public.shop 名称 + meta 中的赛狐 ID；构建 ShopIndex。"""
+    for m in DEFAULT_SHOP_MAP:
+        meta = {
+            "sellfox_shop_id": m["sellfox_shop_id"],
+            "sellfox_shop_code": m["sellfox_shop_code"],
+            "ziniao_store_id": m["ziniao_store_id"],
+            "ziniao_name": m["ziniao_name"],
+            "tiktok_ops_mode": "自运营",
+            "source": "sellfox_sync_map",
+        }
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text, name, meta, alias_names
+                    FROM shop
+                    WHERE platform = 'tiktok' AND external_shop_id = :eid
+                    LIMIT 1
+                    """
+                ),
+                {"eid": m["ziniao_store_id"]},
+            )
+        ).mappings().first()
+        if row:
+            old_meta = row["meta"] if isinstance(row["meta"], dict) else {}
+            new_meta = {**old_meta, **meta}
+            aliases = row["alias_names"] if isinstance(row["alias_names"], list) else []
+            for a in (m["ziniao_name"], m["name"], row["name"]):
+                if a and a not in aliases:
+                    aliases.append(a)
+            await db.execute(
+                text(
+                    """
+                    UPDATE shop
+                    SET name = :name,
+                        meta = CAST(:meta AS jsonb),
+                        alias_names = CAST(:aliases AS jsonb),
+                        updated_at = now()
+                    WHERE id = CAST(:id AS uuid)
+                    """
+                ),
+                {
+                    "id": row["id"],
+                    "name": m["name"],
+                    "meta": json.dumps(new_meta, ensure_ascii=False),
+                    "aliases": json.dumps(aliases, ensure_ascii=False),
+                },
+            )
+            shop_uuid = row["id"]
+            alias_names = aliases
+        else:
+            shop_uuid = str(uuid4())
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO shop (
+                        id, platform, external_shop_id, name, timezone, currency,
+                        status, meta, alias_names
+                    ) VALUES (
+                        CAST(:id AS uuid), 'tiktok', :eid, :name, 'Europe/London', 'GBP',
+                        'active', CAST(:meta AS jsonb), CAST(:aliases AS jsonb)
+                    )
+                    """
+                ),
+                {
+                    "id": shop_uuid,
+                    "eid": m["ziniao_store_id"],
+                    "name": m["name"],
+                    "meta": json.dumps(meta, ensure_ascii=False),
+                    "aliases": json.dumps([m["ziniao_name"], m["name"]], ensure_ascii=False),
+                },
+            )
+            alias_names = [m["ziniao_name"], m["name"]]
+            logger.info("created shop %s %s", m["name"], m["ziniao_store_id"])
+
+        index.add(
+            {
+                **m,
+                "shop_uuid": shop_uuid,
+                "alias_names": alias_names,
+            }
+        )
+    await db.commit()
+    logger.info("shop map ready: %s", [r["name"] for r in index.rows])
+
+
+async def _paginate(
+    fetch_page,
+    *,
+    page_size: int = 50,
+    max_pages: int = 200,
+    page_arg: str = "page_num",
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    page = 1
+    while page <= max_pages:
+        kwargs = {page_arg: page, "page_size": page_size}
+        data = await fetch_page(**kwargs)
+        batch = rows_of(data)
+        out.extend(batch)
+        total = total_size(data)
+        logger.info(
+            "page %s rows=%s total=%s accumulated=%s",
+            page,
+            len(batch),
+            total,
+            len(out),
+        )
+        if not batch:
+            break
+        if total is not None and len(out) >= total:
+            break
+        if len(batch) < page_size:
+            break
+        page += 1
+    return out
+
+
+async def sync_products(
+    db: AsyncSession,
+    client: SellfoxClient,
+    index: ShopIndex,
+    *,
+    start: date,
+    end: date,
+) -> dict[str, int]:
+    stats = {"fetched": 0, "upserted": 0, "unmapped": 0}
+
+    async def fetch_page(page_num: int = 1, page_size: int = 50, **_k: Any) -> Any:
+        return await client.tiktok_shop_parent_page(
+            page_no=page_num,
+            page_size=page_size,
+            date_type="updateDate",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+        )
+
+    # 商品日期窗 ≤30 天：按 29 天切片
+    all_rows: list[dict[str, Any]] = []
+    cursor = start
+    while cursor <= end:
+        win_end = min(cursor + timedelta(days=29), end)
+        logger.info("products window %s..%s", cursor, win_end)
+        win_start_s = cursor.isoformat()
+        win_end_s = win_end.isoformat()
+
+        async def _fp(
+            page_num: int = 1,
+            page_size: int = 50,
+            *,
+            _start: str = win_start_s,
+            _end: str = win_end_s,
+            **_k: Any,
+        ) -> Any:
+            return await client.tiktok_shop_parent_page(
+                page_no=page_num,
+                page_size=page_size,
+                date_type="updateDate",
+                start_date=_start,
+                end_date=_end,
+            )
+
+        chunk = await _paginate(_fp, page_size=50, page_arg="page_num")
+        all_rows.extend(chunk)
+        cursor = win_end + timedelta(days=1)
+
+    # 去重 productId+shopId
+    seen: set[str] = set()
+    now = datetime.now(timezone.utc)
+    for r in all_rows:
+        stats["fetched"] += 1
+        shop = index.resolve(
+            sellfox_shop_id=r.get("shopId"),
+            shop_name=r.get("shopName"),
+        )
+        if not shop:
+            stats["unmapped"] += 1
+            logger.warning("product unmapped shopId=%s name=%s", r.get("shopId"), r.get("shopName"))
+            continue
+        product_id = str(r.get("productId") or "").strip()
+        if not product_id:
+            continue
+        dedupe = f"{shop['ziniao_store_id']}:{product_id}"
+        if dedupe in seen:
+            continue
+        seen.add(dedupe)
+
+        extra = {k: v for k, v in r.items() if k not in _PRODUCT_PROMOTED}
+        extra["source"] = "sellfox"
+        extra["sellfox_shop_id"] = str(r.get("shopId") or "")
+        extra["sellfox_parent_id"] = r.get("parentId")
+        extra["match_status"] = r.get("matchStatus")
+        extra["publish_site_list"] = r.get("publishSiteList")
+        if r.get("mainImage"):
+            extra["main_image"] = r.get("mainImage")
+
+        await db.execute(
+            text(
+                """
+                INSERT INTO tk.fact_tiktok_product (
+                    id, shop_id, shop_external_id, shop_name, product_id, product_name,
+                    seller_sku, status, stock_qty, price, currency, sales_qty,
+                    source_url, raw_extra, collected_at, created_at, updated_at
+                ) VALUES (
+                    CAST(:id AS uuid), CAST(:shop_id AS uuid), :shop_external_id, :shop_name,
+                    :product_id, :product_name,
+                    NULL, :status, NULL, NULL, 'GBP', NULL,
+                    NULL, CAST(:raw_extra AS jsonb), :collected_at, now(), now()
+                )
+                ON CONFLICT (shop_external_id, product_id) DO UPDATE SET
+                    shop_id = COALESCE(EXCLUDED.shop_id, tk.fact_tiktok_product.shop_id),
+                    shop_name = COALESCE(EXCLUDED.shop_name, tk.fact_tiktok_product.shop_name),
+                    product_name = COALESCE(EXCLUDED.product_name, tk.fact_tiktok_product.product_name),
+                    status = COALESCE(EXCLUDED.status, tk.fact_tiktok_product.status),
+                    raw_extra = tk.fact_tiktok_product.raw_extra || EXCLUDED.raw_extra,
+                    collected_at = EXCLUDED.collected_at,
+                    updated_at = now()
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "shop_id": shop["shop_uuid"],
+                "shop_external_id": shop["ziniao_store_id"],
+                "shop_name": shop["name"],
+                "product_id": product_id,
+                "product_name": r.get("productName"),
+                "status": r.get("tkStatus"),
+                "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+                "collected_at": now,
+            },
+        )
+        stats["upserted"] += 1
+    await db.commit()
+    return stats
+
+
+def _profit_core(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "sales_qty": _dec(r.get("salesQuantity")),
+        "return_qty": _dec(r.get("returnQuantity")),
+        "gross_sales_amount": _dec(r.get("grossSalesAmount")),
+        "gross_sales_refund": _dec(r.get("grossSalesRefundAmount")),
+        "settlement_amount": _dec(r.get("settlementAmount")),
+        "gross_profit": _dec(r.get("grossProfit")),
+        "gross_rate": _dec(r.get("grossRate")),
+        "ads_cost": _dec(r.get("adsCost")),
+        "currency": (str(r.get("currency") or "GBP").strip() or "GBP"),
+    }
+
+
+async def sync_profit_shop(
+    db: AsyncSession,
+    client: SellfoxClient,
+    index: ShopIndex,
+    *,
+    start: date,
+    end: date,
+) -> dict[str, int]:
+    stats = {"fetched": 0, "upserted": 0, "unmapped": 0}
+    data = await client.tiktok_report_shop(
+        start_date=start.isoformat(),
+        end_date=end.isoformat(),
+        page_num=1,
+        page_size=50,
+        currency="",
+    )
+    rows = rows_of(data)
+    now = datetime.now(timezone.utc)
+    # 店级接口可能不带 shopId：若只有 1 行且无法映射，按 SKU/statement 已映射的店拆不开，整行 raw 挂 unknown 跳过
+    for r in rows:
+        stats["fetched"] += 1
+        shop = index.resolve(
+            sellfox_shop_id=r.get("shopId") or r.get("shopIds"),
+            shop_name=r.get("shopName"),
+            shop_name_list=r.get("shopNameList"),
+            shop_ids_field=r.get("shopIds"),
+        )
+        # 仅 1 店账号且无 id 时：若 index 只有 1 个映射店则挂上去；多店则跳过
+        if not shop and len(index.rows) == 1 and not r.get("shopId") and not r.get("shopName"):
+            shop = index.rows[0]
+        if not shop:
+            # 尝试 marketplace 无法区分；落一条 sellfox_shop_id=unknown 不用
+            stats["unmapped"] += 1
+            logger.warning("profit_shop unmapped row keys=%s", list(r.keys())[:15])
+            continue
+        core = _profit_core(r)
+        extra = {k: v for k, v in r.items() if k not in _PROFIT_PROMOTED}
+        extra["source"] = "sellfox"
+        extra["period"] = f"{start}..{end}"
+        await db.execute(
+            text(
+                """
+                INSERT INTO tk.fact_sellfox_tk_profit_shop (
+                    id, shop_id, shop_external_id, shop_name, sellfox_shop_id,
+                    period_start, period_end, currency,
+                    sales_qty, return_qty, gross_sales_amount, gross_sales_refund,
+                    settlement_amount, gross_profit, gross_rate, ads_cost,
+                    raw_extra, collected_at, created_at, updated_at
+                ) VALUES (
+                    CAST(:id AS uuid), CAST(:shop_id AS uuid), :shop_external_id, :shop_name, :sellfox_shop_id,
+                    :period_start, :period_end, :currency,
+                    :sales_qty, :return_qty, :gross_sales_amount, :gross_sales_refund,
+                    :settlement_amount, :gross_profit, :gross_rate, :ads_cost,
+                    CAST(:raw_extra AS jsonb), :collected_at, now(), now()
+                )
+                ON CONFLICT (shop_external_id, period_start, period_end, currency) DO UPDATE SET
+                    shop_id = COALESCE(EXCLUDED.shop_id, tk.fact_sellfox_tk_profit_shop.shop_id),
+                    shop_name = COALESCE(EXCLUDED.shop_name, tk.fact_sellfox_tk_profit_shop.shop_name),
+                    sellfox_shop_id = COALESCE(EXCLUDED.sellfox_shop_id, tk.fact_sellfox_tk_profit_shop.sellfox_shop_id),
+                    sales_qty = EXCLUDED.sales_qty,
+                    return_qty = EXCLUDED.return_qty,
+                    gross_sales_amount = EXCLUDED.gross_sales_amount,
+                    gross_sales_refund = EXCLUDED.gross_sales_refund,
+                    settlement_amount = EXCLUDED.settlement_amount,
+                    gross_profit = EXCLUDED.gross_profit,
+                    gross_rate = EXCLUDED.gross_rate,
+                    ads_cost = EXCLUDED.ads_cost,
+                    raw_extra = EXCLUDED.raw_extra,
+                    collected_at = EXCLUDED.collected_at,
+                    updated_at = now()
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "shop_id": shop["shop_uuid"],
+                "shop_external_id": shop["ziniao_store_id"],
+                "shop_name": shop["name"],
+                "sellfox_shop_id": str(
+                    r.get("shopId") or r.get("shopIds") or shop.get("sellfox_shop_id") or ""
+                ),
+                "period_start": start,
+                "period_end": end,
+                "currency": core["currency"],
+                "sales_qty": core["sales_qty"],
+                "return_qty": core["return_qty"],
+                "gross_sales_amount": core["gross_sales_amount"],
+                "gross_sales_refund": core["gross_sales_refund"],
+                "settlement_amount": core["settlement_amount"],
+                "gross_profit": core["gross_profit"],
+                "gross_rate": core["gross_rate"],
+                "ads_cost": core["ads_cost"],
+                "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+                "collected_at": now,
+            },
+        )
+        stats["upserted"] += 1
+    await db.commit()
+    return stats
+
+
+async def sync_profit_sku(
+    db: AsyncSession,
+    client: SellfoxClient,
+    index: ShopIndex,
+    *,
+    start: date,
+    end: date,
+    grain: str = "sku",
+) -> dict[str, int]:
+    stats = {"fetched": 0, "upserted": 0, "unmapped": 0}
+    assert grain in ("sku", "msku")
+
+    async def fetch_page(page_num: int = 1, page_size: int = 50, **_k: Any) -> Any:
+        fn = client.tiktok_report_sku if grain == "sku" else client.tiktok_report_msku
+        return await fn(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            page_num=page_num,
+            page_size=page_size,
+            currency="",
+        )
+
+    rows = await _paginate(fetch_page, page_size=50, max_pages=100)
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        stats["fetched"] += 1
+        shop = index.resolve(
+            sellfox_shop_id=r.get("shopId") or r.get("shopIds"),
+            shop_name=r.get("shopName"),
+            shop_name_list=r.get("shopNameList"),
+            shop_ids_field=r.get("shopIds"),
+        )
+        if not shop:
+            stats["unmapped"] += 1
+            # 仍尽量用 sellfox id 占位 external = sf:{id}
+            sfid = str(r.get("shopIds") or r.get("shopId") or "unknown").strip()
+            shop = {
+                "shop_uuid": None,
+                "ziniao_store_id": f"sf:{sfid}",
+                "name": (
+                    (_as_list(r.get("shopNameList")) or [None])[0]
+                    or r.get("shopName")
+                    or f"sellfox:{sfid}"
+                ),
+                "sellfox_shop_id": sfid,
+            }
+        sku_list = _as_list(r.get("skuList"))
+        msku_list = _as_list(r.get("mskuList"))
+        commodity = _as_list(r.get("commodityNameList"))
+        if grain == "sku":
+            sku_key = _join_key(sku_list or msku_list or commodity)
+        else:
+            sku_key = _join_key(msku_list or sku_list or commodity)
+        core = _profit_core(r)
+        extra = {k: v for k, v in r.items() if k not in _PROFIT_PROMOTED}
+        extra["source"] = "sellfox"
+        extra["period"] = f"{start}..{end}"
+        shop_uuid = shop.get("shop_uuid")
+        await db.execute(
+            text(
+                """
+                INSERT INTO tk.fact_sellfox_tk_profit_sku (
+                    id, shop_id, shop_external_id, shop_name, sellfox_shop_id,
+                    period_start, period_end, grain, sku_key,
+                    sku_list, msku_list, commodity_name_list, currency,
+                    sales_qty, return_qty, gross_sales_amount, gross_sales_refund,
+                    settlement_amount, gross_profit, gross_rate, ads_cost,
+                    raw_extra, collected_at, created_at, updated_at
+                ) VALUES (
+                    CAST(:id AS uuid),
+                    CAST(:shop_id AS uuid),
+                    :shop_external_id, :shop_name, :sellfox_shop_id,
+                    :period_start, :period_end, :grain, :sku_key,
+                    CAST(:sku_list AS jsonb), CAST(:msku_list AS jsonb),
+                    CAST(:commodity_name_list AS jsonb), :currency,
+                    :sales_qty, :return_qty, :gross_sales_amount, :gross_sales_refund,
+                    :settlement_amount, :gross_profit, :gross_rate, :ads_cost,
+                    CAST(:raw_extra AS jsonb), :collected_at, now(), now()
+                )
+                ON CONFLICT (shop_external_id, period_start, period_end, grain, sku_key, currency)
+                DO UPDATE SET
+                    shop_id = COALESCE(EXCLUDED.shop_id, tk.fact_sellfox_tk_profit_sku.shop_id),
+                    shop_name = COALESCE(EXCLUDED.shop_name, tk.fact_sellfox_tk_profit_sku.shop_name),
+                    sellfox_shop_id = COALESCE(EXCLUDED.sellfox_shop_id, tk.fact_sellfox_tk_profit_sku.sellfox_shop_id),
+                    sku_list = EXCLUDED.sku_list,
+                    msku_list = EXCLUDED.msku_list,
+                    commodity_name_list = EXCLUDED.commodity_name_list,
+                    sales_qty = EXCLUDED.sales_qty,
+                    return_qty = EXCLUDED.return_qty,
+                    gross_sales_amount = EXCLUDED.gross_sales_amount,
+                    gross_sales_refund = EXCLUDED.gross_sales_refund,
+                    settlement_amount = EXCLUDED.settlement_amount,
+                    gross_profit = EXCLUDED.gross_profit,
+                    gross_rate = EXCLUDED.gross_rate,
+                    ads_cost = EXCLUDED.ads_cost,
+                    raw_extra = EXCLUDED.raw_extra,
+                    collected_at = EXCLUDED.collected_at,
+                    updated_at = now()
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "shop_id": shop_uuid,
+                "shop_external_id": shop["ziniao_store_id"],
+                "shop_name": shop.get("name"),
+                "sellfox_shop_id": str(
+                    r.get("shopIds") or r.get("shopId") or shop.get("sellfox_shop_id") or ""
+                ),
+                "period_start": start,
+                "period_end": end,
+                "grain": grain,
+                "sku_key": sku_key,
+                "sku_list": json.dumps(sku_list, ensure_ascii=False),
+                "msku_list": json.dumps(msku_list, ensure_ascii=False),
+                "commodity_name_list": json.dumps(commodity, ensure_ascii=False),
+                "currency": core["currency"],
+                "sales_qty": core["sales_qty"],
+                "return_qty": core["return_qty"],
+                "gross_sales_amount": core["gross_sales_amount"],
+                "gross_sales_refund": core["gross_sales_refund"],
+                "settlement_amount": core["settlement_amount"],
+                "gross_profit": core["gross_profit"],
+                "gross_rate": core["gross_rate"],
+                "ads_cost": core["ads_cost"],
+                "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+                "collected_at": now,
+            },
+        )
+        stats["upserted"] += 1
+        if stats["upserted"] % 100 == 0:
+            await db.commit()
+    await db.commit()
+    return stats
+
+
+async def sync_statements(
+    db: AsyncSession,
+    client: SellfoxClient,
+    index: ShopIndex,
+    *,
+    start: date,
+    end: date,
+) -> dict[str, int]:
+    stats = {"fetched": 0, "upserted": 0, "unmapped": 0}
+
+    async def fetch_page(page_num: int = 1, page_size: int = 50, **_k: Any) -> Any:
+        return await client.tiktok_report_statement_detail(
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            page_no=page_num,
+            page_size=page_size,
+            currency="",
+            time_search_field="statementTime",
+        )
+
+    rows = await _paginate(fetch_page, page_size=50, max_pages=500, page_arg="page_num")
+    now = datetime.now(timezone.utc)
+    for r in rows:
+        stats["fetched"] += 1
+        shop = index.resolve(
+            sellfox_shop_id=r.get("shopId"),
+            shop_name=r.get("shopName"),
+            shop_name_list=r.get("shopNameList"),
+        )
+        if not shop:
+            stats["unmapped"] += 1
+            sfid = str(r.get("shopId") or "unknown")
+            shop = {
+                "shop_uuid": None,
+                "ziniao_store_id": f"sf:{sfid}",
+                "name": r.get("shopName") or f"sellfox:{sfid}",
+                "sellfox_shop_id": sfid,
+            }
+        statement_id = str(r.get("statementId") or "").strip()
+        order_id = str(r.get("orderId") or "").strip()
+        if not statement_id:
+            # 无 statementId 用 order+time 兜底
+            statement_id = f"auto:{order_id}:{r.get('statementTime')}"
+        st = _parse_dt(r.get("statementTime"))
+        extra = {k: v for k, v in r.items() if k not in _STMT_PROMOTED}
+        extra["source"] = "sellfox"
+        shop_uuid = shop.get("shop_uuid")
+        await db.execute(
+            text(
+                """
+                INSERT INTO tk.fact_sellfox_tk_statement (
+                    id, shop_id, shop_external_id, shop_name, sellfox_shop_id,
+                    statement_id, order_id, statement_time, statement_date,
+                    statement_status, payment_status, order_status, order_type,
+                    order_create_time, marketplace_id, marketplace_name, currency,
+                    sales_qty, return_qty, gross_sales_amount, gross_sales_refund,
+                    settlement_amount, ads_cost,
+                    raw_extra, collected_at, created_at, updated_at
+                ) VALUES (
+                    CAST(:id AS uuid), CAST(:shop_id AS uuid), :shop_external_id, :shop_name, :sellfox_shop_id,
+                    :statement_id, :order_id, :statement_time, :statement_date,
+                    :statement_status, :payment_status, :order_status, :order_type,
+                    :order_create_time, :marketplace_id, :marketplace_name, :currency,
+                    :sales_qty, :return_qty, :gross_sales_amount, :gross_sales_refund,
+                    :settlement_amount, :ads_cost,
+                    CAST(:raw_extra AS jsonb), :collected_at, now(), now()
+                )
+                ON CONFLICT (shop_external_id, statement_id, order_id) DO UPDATE SET
+                    shop_id = COALESCE(EXCLUDED.shop_id, tk.fact_sellfox_tk_statement.shop_id),
+                    shop_name = COALESCE(EXCLUDED.shop_name, tk.fact_sellfox_tk_statement.shop_name),
+                    statement_time = COALESCE(EXCLUDED.statement_time, tk.fact_sellfox_tk_statement.statement_time),
+                    statement_date = COALESCE(EXCLUDED.statement_date, tk.fact_sellfox_tk_statement.statement_date),
+                    statement_status = COALESCE(EXCLUDED.statement_status, tk.fact_sellfox_tk_statement.statement_status),
+                    payment_status = COALESCE(EXCLUDED.payment_status, tk.fact_sellfox_tk_statement.payment_status),
+                    settlement_amount = EXCLUDED.settlement_amount,
+                    gross_sales_amount = EXCLUDED.gross_sales_amount,
+                    gross_sales_refund = EXCLUDED.gross_sales_refund,
+                    sales_qty = EXCLUDED.sales_qty,
+                    return_qty = EXCLUDED.return_qty,
+                    ads_cost = EXCLUDED.ads_cost,
+                    raw_extra = EXCLUDED.raw_extra,
+                    collected_at = EXCLUDED.collected_at,
+                    updated_at = now()
+                """
+            ),
+            {
+                "id": str(uuid4()),
+                "shop_id": shop_uuid,
+                "shop_external_id": shop["ziniao_store_id"],
+                "shop_name": shop.get("name"),
+                "sellfox_shop_id": str(r.get("shopId") or shop.get("sellfox_shop_id") or ""),
+                "statement_id": statement_id,
+                "order_id": order_id,
+                "statement_time": st,
+                "statement_date": st.date() if st else _parse_date(r.get("statementTime")),
+                "statement_status": r.get("statementStatus"),
+                "payment_status": r.get("paymentStatus"),
+                "order_status": r.get("orderStatus"),
+                "order_type": r.get("orderType"),
+                "order_create_time": _parse_dt(r.get("orderCreateTime")),
+                "marketplace_id": r.get("marketplaceId"),
+                "marketplace_name": r.get("marketplaceName"),
+                "currency": str(r.get("currency") or "GBP") or "GBP",
+                "sales_qty": _dec(r.get("salesQuantity")),
+                "return_qty": _dec(r.get("returnQuantity")),
+                "gross_sales_amount": _dec(r.get("grossSalesAmount")),
+                "gross_sales_refund": _dec(r.get("grossSalesRefundAmount")),
+                "settlement_amount": _dec(r.get("settlementAmount")),
+                "ads_cost": _dec(r.get("adsCost")),
+                "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+                "collected_at": now,
+            },
+        )
+        stats["upserted"] += 1
+        if stats["upserted"] % 200 == 0:
+            await db.commit()
+    await db.commit()
+    return stats
+
+
+async def rollup_finance_daily(db: AsyncSession, *, start: date, end: date) -> dict[str, int]:
+    """账单明细按 statement_date 汇总 → tk.fact_tiktok_finance_daily（标记 source=sellfox）。"""
+    result = await db.execute(
+        text(
+            """
+            WITH agg AS (
+                SELECT
+                    shop_external_id,
+                    shop_name,
+                    shop_id,
+                    statement_date AS biz_date,
+                    currency,
+                    SUM(settlement_amount) AS settlement_amount,
+                    SUM(COALESCE(gross_sales_refund, 0)) AS refund_amount
+                FROM tk.fact_sellfox_tk_statement
+                WHERE statement_date IS NOT NULL
+                  AND statement_date BETWEEN :start AND :end
+                  AND shop_external_id NOT LIKE 'sf:%'
+                GROUP BY shop_external_id, shop_name, shop_id, statement_date, currency
+            )
+            INSERT INTO tk.fact_tiktok_finance_daily (
+                id, shop_id, shop_external_id, shop_name, biz_date,
+                settlement_amount, pending_amount, refund_amount, currency,
+                source_url, raw_extra, collected_at, created_at, updated_at
+            )
+            SELECT
+                gen_random_uuid(),
+                a.shop_id,
+                a.shop_external_id,
+                a.shop_name,
+                a.biz_date,
+                a.settlement_amount,
+                NULL,
+                a.refund_amount,
+                a.currency,
+                'sellfox:tkReport/queryStatementDetail',
+                jsonb_build_object('source', 'sellfox', 'rollup', 'statement_daily'),
+                now(),
+                now(),
+                now()
+            FROM agg a
+            ON CONFLICT (shop_external_id, biz_date) DO UPDATE SET
+                shop_id = COALESCE(EXCLUDED.shop_id, tk.fact_tiktok_finance_daily.shop_id),
+                shop_name = COALESCE(EXCLUDED.shop_name, tk.fact_tiktok_finance_daily.shop_name),
+                settlement_amount = EXCLUDED.settlement_amount,
+                refund_amount = EXCLUDED.refund_amount,
+                currency = COALESCE(EXCLUDED.currency, tk.fact_tiktok_finance_daily.currency),
+                raw_extra = COALESCE(tk.fact_tiktok_finance_daily.raw_extra, '{}'::jsonb)
+                            || EXCLUDED.raw_extra,
+                collected_at = EXCLUDED.collected_at,
+                updated_at = now()
+            """
+        ),
+        {"start": start, "end": end},
+    )
+    await db.commit()
+    # rowcount 在部分驱动上可用
+    return {"upserted": result.rowcount if result.rowcount is not None and result.rowcount >= 0 else -1}
+
+
+async def run_sync(
+    *,
+    start: date,
+    end: date,
+    modules: list[str],
+) -> dict[str, Any]:
+    settings = get_settings()
+    if not settings.sellfox_client_id or not settings.sellfox_client_secret:
+        raise RuntimeError("SELLFOX_CLIENT_ID / SELLFOX_CLIENT_SECRET 未配置")
+
+    run_id = str(uuid4())
+    stats_all: dict[str, Any] = {}
+    status = "success"
+    err_msg = None
+
+    async with SessionLocal() as db:
+        await db.execute(
+            text(
+                """
+                INSERT INTO tk.sellfox_sync_run (
+                    id, started_at, status, period_start, period_end, modules
+                ) VALUES (
+                    CAST(:id AS uuid), now(), 'running', :ps, :pe, CAST(:mods AS jsonb)
+                )
+                """
+            ),
+            {
+                "id": run_id,
+                "ps": start,
+                "pe": end,
+                "mods": json.dumps(modules, ensure_ascii=False),
+            },
+        )
+        await db.commit()
+
+        index = ShopIndex()
+        await ensure_shops(db, index)
+
+        async with SellfoxClient(
+            settings.sellfox_base_url,
+            settings.sellfox_client_id,
+            settings.sellfox_client_secret,
+            min_interval_sec=1.2,
+        ) as client:
+            try:
+                if "products" in modules:
+                    logger.info("=== sync products ===")
+                    stats_all["products"] = await sync_products(
+                        db, client, index, start=start, end=end
+                    )
+                if "profit_shop" in modules:
+                    logger.info("=== sync profit_shop ===")
+                    stats_all["profit_shop"] = await sync_profit_shop(
+                        db, client, index, start=start, end=end
+                    )
+                if "profit_sku" in modules:
+                    logger.info("=== sync profit_sku ===")
+                    stats_all["profit_sku"] = await sync_profit_sku(
+                        db, client, index, start=start, end=end, grain="sku"
+                    )
+                if "profit_msku" in modules:
+                    logger.info("=== sync profit_msku ===")
+                    stats_all["profit_msku"] = await sync_profit_sku(
+                        db, client, index, start=start, end=end, grain="msku"
+                    )
+                if "statement" in modules:
+                    logger.info("=== sync statement ===")
+                    stats_all["statement"] = await sync_statements(
+                        db, client, index, start=start, end=end
+                    )
+                if "finance_daily" in modules:
+                    logger.info("=== rollup finance_daily ===")
+                    stats_all["finance_daily"] = await rollup_finance_daily(
+                        db, start=start, end=end
+                    )
+            except Exception as e:
+                status = "failed"
+                err_msg = f"{type(e).__name__}: {e}"
+                logger.exception("sync failed")
+            else:
+                # 部分 unmapped 标 partial
+                if any(
+                    isinstance(v, dict) and v.get("unmapped", 0) > 0
+                    for v in stats_all.values()
+                ):
+                    status = "partial"
+
+        await db.execute(
+            text(
+                """
+                UPDATE tk.sellfox_sync_run
+                SET finished_at = now(),
+                    status = :st,
+                    stats = CAST(:stats AS jsonb),
+                    error_message = :err
+                WHERE id = CAST(:id AS uuid)
+                """
+            ),
+            {
+                "id": run_id,
+                "st": status,
+                "stats": json.dumps(stats_all, ensure_ascii=False, default=str),
+                "err": err_msg,
+            },
+        )
+        await db.commit()
+
+    return {"run_id": run_id, "status": status, "stats": stats_all, "error": err_msg}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="赛狐 TK → PG 同步")
+    ap.add_argument("--start", default=None, help="yyyy-mm-dd")
+    ap.add_argument("--end", default=None, help="yyyy-mm-dd 默认今天")
+    ap.add_argument("--days", type=int, default=30, help="未指定 start 时回看天数（默认 30）")
+    ap.add_argument(
+        "--only",
+        default="products,profit_shop,profit_sku,profit_msku,statement,finance_daily",
+        help="逗号分隔模块",
+    )
+    args = ap.parse_args()
+    end = date.fromisoformat(args.end) if args.end else date.today()
+    start = (
+        date.fromisoformat(args.start)
+        if args.start
+        else end - timedelta(days=max(1, args.days) - 1)
+    )
+    modules = [x.strip() for x in args.only.split(",") if x.strip()]
+    logger.info("run sellfox sync %s..%s modules=%s", start, end, modules)
+    result = asyncio.run(run_sync(start=start, end=end, modules=modules))
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    if result.get("status") == "failed":
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,52 @@
+// 运行在页面 MAIN world：hook window.fetch 与 XMLHttpRequest，
+// 截获 Temu 后台商品接口的响应 JSON，通过 postMessage 传给 content.js（隔离世界）。
+// 只读、不改请求；请求本身仍由页面自己发出（自带 cookie + anti-content 签名），故不触发风控。
+(function () {
+  if (window.__temuMonHooked) return;
+  window.__temuMonHooked = true;
+
+  // 关注两个接口：countStatus（各状态计数，含在售中）、pageQuery（商品列表 + 流量字段）
+  const MATCH = /visage-agent-seller\/product\/skc\/(countStatus|pageQuery)\b/;
+  function kindOf(url) {
+    if (/countStatus/.test(url)) return 'countStatus';
+    if (/pageQuery/.test(url)) return 'pageQuery';
+    return null;
+  }
+  function post(url, body) {
+    const kind = kindOf(url);
+    if (!kind || !body) return;
+    try {
+      window.postMessage({ __temuMon: true, kind, url: String(url), body: String(body) }, '*');
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- fetch ----
+  const origFetch = window.fetch;
+  window.fetch = function (...args) {
+    return origFetch.apply(this, args).then((resp) => {
+      try {
+        let url = (resp && resp.url) || '';
+        if (!url) url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
+        if (MATCH.test(url)) resp.clone().text().then((t) => post(url, t)).catch(() => {});
+      } catch (e) { /* ignore */ }
+      return resp;
+    });
+  };
+
+  // ---- XMLHttpRequest ----
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+    this.__temuUrl = url;
+    return origOpen.call(this, method, url, ...rest);
+  };
+  XMLHttpRequest.prototype.send = function (...a) {
+    this.addEventListener('load', () => {
+      try {
+        const url = this.__temuUrl || '';
+        if (MATCH.test(url)) post(url, this.responseText);
+      } catch (e) { /* ignore */ }
+    });
+    return origSend.apply(this, a);
+  };
+})();

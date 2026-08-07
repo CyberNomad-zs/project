@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from typing import Any
+
+from app.config import Settings, get_app_config, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def build_digest(db: Database, biz_date: str) -> str:
+    tasks = db.list_tasks(biz_date=biz_date)
+    open_tasks = [t for t in tasks if t.get("status") not in ("closed", "resolved")]
+    by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in open_tasks:
+        by_owner[str(t.get("owner") or "未分配")].append(t)
+
+    red = sum(1 for t in open_tasks if t.get("level") == "red")
+    orange = sum(1 for t in open_tasks if t.get("level") == "orange")
+    lines = [
+        f"【ASIN健康度】{biz_date} 异常摘要",
+        f"红色: {red} | 橙色: {orange} | 未关闭合计: {len(open_tasks)}",
+        "",
+    ]
+    cfg = get_app_config()
+    view_url = (cfg.get("notify") or {}).get("view_base_url") or ""
+    if view_url:
+        lines.append(f"视图: {view_url}")
+        lines.append("")
+
+    for owner, items in sorted(by_owner.items()):
+        r = sum(1 for t in items if t.get("level") == "red")
+        o = sum(1 for t in items if t.get("level") == "orange")
+        lines.append(f"- {owner}: 红{r} 橙{o}")
+        for t in items[:5]:
+            lines.append(
+                f"  · [{t.get('level')}] {t.get('shop_name')} {t.get('asin')} {t.get('anomaly_type')}"
+            )
+        if len(items) > 5:
+            lines.append(f"  · …另有 {len(items) - 5} 条")
+
+    if not open_tasks:
+        lines.append("今日无新增未关闭橙/红任务。")
+    return "\n".join(lines)
+
+
+def send_digest(
+    db: Database,
+    biz_date: str,
+    *,
+    settings: Settings | None = None,
+    dry_run: bool = False,
+) -> str:
+    text = build_digest(db, biz_date)
+    db.log_notify("daily_digest", {"biz_date": biz_date, "text": text})
+    if dry_run:
+        logger.info("Digest dry-run:\n%s", text)
+        return text
+
+    settings = settings or get_settings()
+    if settings.feishu_bot_webhook or settings.has_feishu:
+        try:
+            from app.clients.feishu import FeishuClient
+
+            if settings.feishu_bot_webhook:
+                # webhook-only path without app credentials
+                import httpx
+
+                httpx.post(
+                    settings.feishu_bot_webhook,
+                    json={"msg_type": "text", "content": {"text": text}},
+                    timeout=30,
+                )
+            elif settings.has_feishu:
+                with FeishuClient(settings) as client:
+                    client.send_webhook_text(text)
+        except Exception:
+            logger.exception("发送飞书摘要失败，已写入 notify_log")
+    else:
+        logger.warning("未配置飞书机器人，摘要仅写入 notify_log")
+    return text

@@ -1,0 +1,86 @@
+{
+  "params": {
+    "grok_build.Grep": {
+      "max_output_bytes": null,
+      "max_chars_per_line": null
+    },
+    "grok_build.UseTool": {
+      "native_tool_correction": true
+    },
+    "grok_build.ReadFile": {
+      "cursor_rules_on_read": false
+    },
+    "grok_build.SearchReplace": {
+      "skip_read_before_edit": false,
+      "empty_old_string_does_not_override": false,
+      "unicode_normalized_fallback": false,
+      "include_user_edit_hint": true
+    },
+    "grok_build.ListDir": {
+      "max_output_chars": null
+    },
+    "grok_build.Bash": {
+      "timeout_secs": null,
+      "max_timeout_secs": 36000.0,
+      "output_byte_limit": null,
+      "cmd_prefix": null,
+      "enabled_background": true,
+      "auto_background_on_timeout": true,
+      "foreground_block_budget_ms": null,
+      "max_block_until_ms": null,
+      "allow_background_operator": true,
+      "surface_bg_completion_reminders": true
+    },
+    "grok_build.AskUserQuestion": {
+      "timeout_enabled": true,
+      "timeout_secs": 1800
+    },
+    "grok_build.WebFetch": {
+      "cache_ttl_secs": null,
+      "max_cache_entries": null,
+      "timeout_secs": null,
+      "max_content_length": null,
+      "max_markdown_length": null,
+      "context_window_tokens": 500000,
+      "allowed_domains": null,
+      "proxy_endpoint": null,
+      "allow_local": null
+    }
+  },
+  "state": {
+    "grok_build.ReportedTaskCompletions": {
+      "reported": [
+        "call-dc520220-f3c3-413b-aaae-4e49dd15f5be-228",
+        "call-0bc6c5b5-593a-4d4b-a134-54e98778ec1b-185",
+        "call-0686b4e7-55bc-4659-a450-1496050d0270-103",
+        "call-ac9ae963-aea7-4ff1-81b2-020250c3d315-111",
+        "call-8eac2c11-7be5-4215-b8b2-f88d43089831-164",
+        "call-cb2adbd4-d819-440e-b4e5-2533ce47eef2-226",
+        "call-7445440a-1d54-42ae-adc0-b37bce970f58-105",
+        "call-c0e9aba8-4610-42b8-8b46-5e70d5ce9134-170",
+        "call-e91e8f80-d8bf-42f7-ac98-7b8f64b96106-157",
+        "call-dd7f9bf0-e746-4163-b6eb-68a33a7f7b5d-183",
+        "call-fe906f35-acf9-4d66-b083-8e553aeaa8a6-190"
+      ]
+    },
+    "grok_build.Todo": {
+      "todos": {
+        "1": {
+          "content": "修复 dailyBudget 表头/解析（避开创意加热预算）",
+          "priority": "medium",
+          "status": "completed"
+        },
+        "2": {
+          "content": "API 常驻启动/停止脚本 + 拉起服务",
+          "priority": "medium",
+          "status": "completed"
+        },
+        "3": {
+          "content": "dual 跑批+修复上报+SHOP INOUT 入库验证",
+          "priority": "medium",
+          "status": "completed"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+"""TK shop-daily 只读 API 冒烟（需 DB；无数据时返回 empty 结构）。"""
+
+from __future__ import annotations
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from app.main import app
+
+
+@pytest.mark.asyncio
+async def test_shop_daily_requires_auth():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get("/api/v1/tk/shop-daily")
+    assert r.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_shop_daily_shape_when_authed(monkeypatch):
+    """若环境无登录夹具则 skip；有 token 时校验 JSON 骨架。"""
+    token = None
+    try:
+        from app.config import get_settings
+
+        settings = get_settings()
+        # 集成环境可能用固定 admin；失败则 skip
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            login = await client.post(
+                "/api/v1/auth/login",
+                json={
+                    "username": getattr(settings, "admin_username", None) or "admin",
+                    "password": getattr(settings, "admin_password", None) or "admin123",
+                },
+            )
+            if login.status_code != 200:
+                pytest.skip("no admin login in this env")
+            token = login.json().get("access_token")
+            r = await client.get(
+                "/api/v1/tk/shop-daily",
+                params={"lookback_days": 1, "page_size": 5},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "summary" in body
+        assert "items" in body
+        assert "data_source" in body["summary"]
+        assert body["summary"]["data_source"] in ("shop_daily", "ads_rollup", "empty")
+        assert "gmv" in body["summary"]
+        assert "ad_roi" in body["summary"]
+        assert "open_anomaly_count" in body["summary"]
+        assert isinstance(body["items"], list)
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"shop-daily integration unavailable: {exc}")

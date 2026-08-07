@@ -1,0 +1,119 @@
+# Agnis 单店灰度 G2 专用配置
+# 用法：python main.py --config config/config.g2-agnis.yaml
+# 或双击 run_g2_agnis.bat（需输入 YES）
+#
+# ★ G2 = 真·物流下单（applyTrackNo），会推 WMS，不可当空跑
+#
+# 范围：
+#   - 只处理 Agnis (396706)
+#   - dry_run 关闭
+#   - auto_apply_track_no: true  → 对本地 CHANNEL_ASSIGNED 单调赛狐物流下单
+#   - 无渠道：仍人工指派（不自动选）
+#   - step4 称重回传：有 ORDERED 且 WMS 已出库才会尝试（G2 可先观察下单，回传视情况）
+#
+# 启动前必看：
+#   本地凡 state=CHANNEL_ASSIGNED 且 shop=Agnis 的单，首轮就会下单！
+#   当前已知：P2AS6TCD63996 (BLACKCAT-RM) 会在第一轮被下单。
+# 回退：停进程；已下单的单不会自动撤销，需在赛狐/WMS 按业务处理
+
+customer:
+  name: 金猫商贸-G2-Agnis
+
+sellfox:
+  base_url: https://openapi.sellfox.com
+  client_id: "368233"
+  client_secret: "8d2a49e8-82cf-40b1-a1ff-5484b57fbc9e"
+
+wms:
+  base_url: http://193.112.93.60:9999
+  profiles:
+    jinmao:
+      key: 100000073
+      api_secret: "2a7dbba0807e4746ab96399369ae7466"
+    blackcat:
+      key: 100000081
+      api_secret: "78a4d04bdb0f4214928d19abc95d1e44"
+  default_profile: jinmao
+
+run:
+  poll_interval_sec: 300
+  purchase_date_days: 7
+  shop_whitelist: ["396706"]          # 仅 Agnis
+  hold_on_channel_mismatch: true
+  # ★ G2：打开自动物流下单
+  auto_apply_track_no: true
+  keep_existing_channel: true
+  # 可选收紧：只对下列 config 渠道名自动下单；空列表 = 全部 CHANNEL_ASSIGNED 都下
+  # 首轮建议先只放 BLACKCAT-RM / 或 昇新 之一做小流量；需要全开则保持 []
+  order_channel_names: []
+  # 若只想先下 BLACKCAT，可改为：
+  # order_channel_names: ["BLACKCAT-RM", "BLACKCAT-DPD", "BLACKCAT-EH"]
+  # 若只想先下昇新：
+  # order_channel_names: ["昇新海外仓-RM", "昇新海外仓-DPD"]
+  # auto=有重量称重，无重量快速出库；weighing/quick 可强制
+  ship_confirm_mode: auto
+  weighing_fallback_quick: true   # weighing 模式下无重量时是否降级 quick
+  stale_new_days: 3               # NEW 连续不在 to_process 超过 N 天 → STALE
+  step4_fail_alert_after: 5       # step4 连续失败 N 次升级告警
+  default_weight_unit: g
+  default_country: GB
+
+channels:
+  - name: BLACKCAT-RM
+    sellfox_provider_auth_detail_id: 591
+    expected_carrier: RM
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-DPD
+    sellfox_provider_auth_detail_id: 590
+    expected_carrier: DPD
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-EH
+    sellfox_provider_auth_detail_id: 1303
+    expected_carrier: EH
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-RM
+    sellfox_provider_auth_detail_id: 480
+    expected_carrier: RM
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-DPD
+    sellfox_provider_auth_detail_id: 481
+    expected_carrier: DPD
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+
+warehouse:
+  is_oversea: "1"
+
+sku_weights: {}
+
+notify:
+  feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/35f1fdd3-cfc6-4f25-84c2-484d43d2ef3b"

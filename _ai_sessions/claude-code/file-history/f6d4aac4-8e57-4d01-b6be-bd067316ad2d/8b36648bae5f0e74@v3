@@ -1,0 +1,530 @@
+/**
+ * Content Script（isolated world）
+ * - 注入 fetch hook
+ * - 响应 SCRAPE_PAGE：DOM + 缓存 API 数据
+ *
+ * 注意：不使用 ES module import，保证紫鸟/各 Chromium 版本兼容
+ */
+
+(() => {
+  const HEADER_ALIASES = {
+    campaign: [
+      '广告系列',
+      '广告系列名称',
+      '系列名称',
+      'campaign',
+      'campaign name',
+      'ad group',
+      'product',
+      '品名',
+      '名称',
+      'name'
+    ],
+    spend: [
+      '广告花费',
+      '广告成本',
+      '花费',
+      '成本',
+      '消耗',
+      'cost',
+      'spend',
+      'ad spend',
+      'ad cost',
+      'amount spent',
+      'budget spent',
+      'stat cost'
+    ],
+    orders: [
+      '销量',
+      '订单',
+      '订单数',
+      'sku 订单',
+      'sku订单',
+      'sku orders',
+      'orders',
+      'units',
+      'units sold',
+      'sold',
+      'conversions',
+      'purchases'
+    ],
+    roi: [
+      'roi',
+      'roas',
+      '投资回报率',
+      '投资回报',
+      '回报率',
+      'return on ad spend',
+      'return on investment'
+    ],
+    revenue: [
+      '总收入',
+      '销售额',
+      '收入',
+      'gmv',
+      'revenue',
+      'gross revenue',
+      'ads gross revenue',
+      'gross merchandise',
+      'sales'
+    ]
+  };
+
+  const KEY_MAP = {
+    campaign: [
+      'campaign_name',
+      'campaignName',
+      'ad_name',
+      'adName',
+      'name',
+      'title',
+      'product_name',
+      'productName'
+    ],
+    spend: [
+      'spend',
+      'cost',
+      'ad_spend',
+      'adSpend',
+      'ad_cost',
+      'stat_cost',
+      'statCost',
+      'amount_spent',
+      'consume'
+    ],
+    orders: [
+      'orders',
+      'order_count',
+      'orderCount',
+      'sku_order_count',
+      'skuOrderCount',
+      'units',
+      'units_sold',
+      'unitsSold',
+      'paid_order_count',
+      'conversions'
+    ],
+    roi: ['roi', 'roas', 'ROI', 'ROAS', 'complete_payment_roas', 'net_roi'],
+    revenue: [
+      'revenue',
+      'gmv',
+      'gross_revenue',
+      'grossRevenue',
+      'total_revenue',
+      'onsite_shopping_value',
+      'sales',
+      'income'
+    ]
+  };
+
+  /** @type {{url:string, body:any, at:number}[]} */
+  const apiCache = [];
+  const API_CACHE_MAX = 30;
+
+  // —— utils ——
+  function cleanText(text) {
+    return String(text ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    let s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s
+      .replace(/[,\s]/g, '')
+      .replace(/[¥$€£￥USD|GBP|EUR]/gi, '')
+      .replace(/%/g, '');
+    const paren = s.match(/^\((.+)\)$/);
+    if (paren) s = `-${paren[1]}`;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function matchHeaderField(headerText) {
+    const t = cleanText(headerText).toLowerCase();
+    if (!t) return null;
+    // 排除「平均下单成本」等非广告花费列
+    if (/平均下单|cost per|per order|\bcpc\b|\bcpa\b|\bcpm\b|出价|budget(?!.*spent)/i.test(t)) {
+      if (!/^(成本|花费|消耗|cost|spend|广告花费|广告成本)$/i.test(t)) {
+        // 仍允许纯「成本/花费」通过；带「平均」的直接跳过 spend 匹配
+      }
+    }
+    const order = ['roi', 'spend', 'orders', 'revenue', 'campaign'];
+    for (const field of order) {
+      for (const a of HEADER_ALIASES[field]) {
+        const al = a.toLowerCase();
+        if (!(t === al || t.includes(al) || (al.length >= 2 && al.includes(t)))) {
+          continue;
+        }
+        if (field === 'spend') {
+          if (/平均下单|cost per|per order|\bcpc\b|\bcpa\b|\bcpm\b/.test(t)) continue;
+          if (
+            t.includes('budget') &&
+            !t.includes('spent') &&
+            !t.includes('spend') &&
+            !t.includes('cost') &&
+            !t.includes('成本')
+          ) {
+            continue;
+          }
+        }
+        // 「名称」太宽，要求更像广告系列
+        if (field === 'campaign' && (al === '名称' || al === 'name')) {
+          if (!/系列|campaign|广告|活动|product|品名/.test(t) && t !== '名称' && t !== 'name') {
+            continue;
+          }
+        }
+        // 「sales」勿抢销量列以外的无关列
+        if (field === 'revenue' && al === 'sales' && /order|unit|sku|销量|订单/.test(t)) {
+          continue;
+        }
+        return field;
+      }
+    }
+    return null;
+  }
+
+  function extractTableHeaders(table) {
+    let headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!headerRow) return { fields: [] };
+    const cells = [...headerRow.querySelectorAll('th, td')];
+    return {
+      fields: cells.map((c) => matchHeaderField(c.innerText || c.textContent || ''))
+    };
+  }
+
+  function parseHtmlTable(table) {
+    const { fields } = extractTableHeaders(table);
+    if (!fields.some(Boolean)) return [];
+    const bodyRows = table.querySelectorAll('tbody tr');
+    const rows = bodyRows.length
+      ? [...bodyRows]
+      : [...table.querySelectorAll('tr')].slice(1);
+    const results = [];
+    for (const tr of rows) {
+      const cells = [...tr.querySelectorAll('td, th')];
+      if (!cells.length) continue;
+      const row = {};
+      fields.forEach((field, i) => {
+        if (!field || !cells[i]) return;
+        row[field] = cleanText(cells[i].innerText || cells[i].textContent || '');
+      });
+      if (Object.keys(row).length) results.push(row);
+    }
+    return results;
+  }
+
+  function parseRoleTable(root) {
+    const headerCells = [
+      ...root.querySelectorAll(
+        '[role="columnheader"], .ant-table-thead th, [class*="table-header"] th'
+      )
+    ];
+    if (!headerCells.length) return [];
+    const fields = headerCells.map((c) =>
+      matchHeaderField(c.innerText || c.textContent || '')
+    );
+    if (!fields.some(Boolean)) return [];
+    const dataRows = [
+      ...root.querySelectorAll(
+        '[role="row"], .ant-table-tbody tr, tbody tr'
+      )
+    ].filter((r) => r.querySelectorAll('[role="cell"], td').length && !r.querySelector('[role="columnheader"]'));
+
+    const results = [];
+    for (const tr of dataRows) {
+      const cells = [...tr.querySelectorAll('[role="cell"], td')];
+      if (!cells.length) continue;
+      const row = {};
+      fields.forEach((field, i) => {
+        if (!field || !cells[i]) return;
+        row[field] = cleanText(cells[i].innerText || cells[i].textContent || '');
+      });
+      if (Object.keys(row).length) results.push(row);
+    }
+    return results;
+  }
+
+  function scoreRows(rows) {
+    if (!rows?.length) return 0;
+    let score = rows.length;
+    for (const r of rows.slice(0, 5)) {
+      if (r.campaign) score += 2;
+      if (r.spend != null && r.spend !== '') score += 2;
+      if (r.roi != null && r.roi !== '') score += 2;
+      if (r.revenue != null && r.revenue !== '') score += 2;
+      if (r.orders != null && r.orders !== '') score += 1;
+    }
+    return score;
+  }
+
+  function scrapeTablesFromDocument(doc) {
+    const candidates = [];
+    for (const table of doc.querySelectorAll('table')) {
+      const rows = parseHtmlTable(table);
+      const score = scoreRows(rows);
+      if (score > 0) candidates.push({ rows, score, source: 'html-table' });
+    }
+    for (const el of doc.querySelectorAll(
+      '.ant-table, [class*="Table"], [role="table"], [class*="campaign"]'
+    )) {
+      const rows = parseRoleTable(el);
+      const score = scoreRows(rows);
+      if (score > 0) candidates.push({ rows, score, source: 'role-table' });
+    }
+    candidates.sort((a, b) => b.score - a.score);
+    if (!candidates.length) return { rows: [], source: 'none' };
+    return { rows: candidates[0].rows, source: candidates[0].source };
+  }
+
+  function detectStoreName(doc) {
+    // 1) 广告面板「xxx 主要账号」
+    const allTextEls = [...doc.querySelectorAll('div, span, h1, h2, h3, a, p')].slice(0, 400);
+    for (const el of allTextEls) {
+      const t = cleanText(el.innerText || '');
+      if (!t || t.length > 120) continue;
+      if (/主要账号|主账号|main account/i.test(t)) {
+        const name = t
+          .replace(/主要账号|主账号|main account/gi, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (name.length >= 2 && name.length < 80) return name;
+        const parent = cleanText(el.parentElement?.innerText || '');
+        const m = parent.match(/([^\n]{2,80}?)\s*(主要账号|主账号)/);
+        if (m) return cleanText(m[1]);
+      }
+    }
+
+    // 2) 常见店铺名节点
+    for (const el of doc.querySelectorAll(
+      '[class*="shop-name"], [class*="store-name"], [class*="seller-name"], [class*="account-name"], [data-e2e*="shop"]'
+    )) {
+      const t = cleanText(el.innerText || '');
+      if (t && t.length >= 2 && t.length < 80 && !/tiktok|seller center/i.test(t)) return t;
+    }
+
+    // 3) title 拆分
+    const title = cleanText(doc.title || '');
+    const parts = title.split(/[-|–—]/).map(cleanText).filter(Boolean);
+    const skip = /tiktok|seller|ads|shop ads|campaign|dashboard|homepage|商家中心|广告/i;
+    for (const p of parts) {
+      if (!skip.test(p) && p.length > 1 && p.length < 80) return p;
+    }
+
+    // 4) 标签页 / 顶栏残留（紫鸟窗口名有时带店名）
+    try {
+      const bar = cleanText(doc.querySelector('title')?.textContent || '');
+      if (bar && !skip.test(bar) && bar.length < 80) return bar;
+    } catch (_) {
+      /* ignore */
+    }
+    return '';
+  }
+
+  // —— API parse ——
+  function flattenObject(obj, prefix = '', out = {}, depth = 0) {
+    if (!obj || typeof obj !== 'object' || depth > 4) return out;
+    for (const [k, v] of Object.entries(obj)) {
+      const key = prefix ? `${prefix}.${k}` : k;
+      if (v && typeof v === 'object' && !Array.isArray(v)) {
+        if (v.value != null) out[k] = v.value;
+        flattenObject(v, key, out, depth + 1);
+      } else if (!Array.isArray(v)) {
+        out[k] = v;
+        out[key] = v;
+      }
+    }
+    return out;
+  }
+
+  function extractRow(obj) {
+    const flat = flattenObject(obj);
+    const row = {};
+    for (const [field, keys] of Object.entries(KEY_MAP)) {
+      for (const k of keys) {
+        if (flat[k] != null && flat[k] !== '') {
+          row[field] =
+            field === 'campaign' ? cleanText(flat[k]) : parseNumber(flat[k]) ?? flat[k];
+          break;
+        }
+      }
+      if (row[field] == null) {
+        const lowerKeys = Object.keys(flat);
+        for (const k of keys) {
+          const hit = lowerKeys.find((x) => x.toLowerCase() === k.toLowerCase());
+          if (hit && flat[hit] != null && flat[hit] !== '') {
+            row[field] =
+              field === 'campaign'
+                ? cleanText(flat[hit])
+                : parseNumber(flat[hit]) ?? flat[hit];
+            break;
+          }
+        }
+      }
+    }
+    return row;
+  }
+
+  function looksLikeReportRows(objs) {
+    let hits = 0;
+    for (const o of objs.slice(0, 5)) {
+      const keys = Object.keys(o).join(' ').toLowerCase();
+      if (/campaign|spend|cost|roi|roas|gmv|revenue|order|name/.test(keys)) hits += 1;
+      if (o.metrics || o.stats || o.stat) hits += 1;
+    }
+    return hits >= 1;
+  }
+
+  function findArrayOfObjects(data, depth = 0) {
+    if (depth > 8 || data == null) return [];
+    if (Array.isArray(data)) {
+      const objs = data.filter((x) => x && typeof x === 'object' && !Array.isArray(x));
+      if (objs.length >= 1 && looksLikeReportRows(objs)) return objs;
+      for (const item of data.slice(0, 20)) {
+        const found = findArrayOfObjects(item, depth + 1);
+        if (found.length) return found;
+      }
+      return objs.length >= 1 ? objs : [];
+    }
+    if (typeof data === 'object') {
+      const prefer = ['list', 'rows', 'data', 'items', 'records', 'campaigns', 'result', 'table'];
+      for (const k of prefer) {
+        if (data[k] != null) {
+          const found = findArrayOfObjects(data[k], depth + 1);
+          if (found.length) return found;
+        }
+      }
+      for (const v of Object.values(data)) {
+        const found = findArrayOfObjects(v, depth + 1);
+        if (found.length) return found;
+      }
+    }
+    return [];
+  }
+
+  function parseApiPayload(payload) {
+    let data = payload;
+    if (typeof payload === 'string') {
+      try {
+        data = JSON.parse(payload);
+      } catch {
+        return [];
+      }
+    }
+    const list = findArrayOfObjects(data);
+    const rows = [];
+    for (const item of list) {
+      const row = extractRow(item);
+      if (row.campaign || row.spend != null || row.revenue != null) rows.push(row);
+    }
+    return rows;
+  }
+
+  function injectHook() {
+    try {
+      const s = document.createElement('script');
+      s.src = chrome.runtime.getURL('content/inject-fetch-hook.js');
+      s.onload = () => s.remove();
+      (document.documentElement || document.head).appendChild(s);
+    } catch (e) {
+      console.warn('[TK-Ad] inject hook failed', e);
+    }
+  }
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window) return;
+    const data = event.data;
+    if (!data || data.source !== 'tk-ad-scraper-hook' || data.type !== 'API_PAYLOAD') return;
+    apiCache.unshift({ url: data.url, body: data.body, at: Date.now() });
+    if (apiCache.length > API_CACHE_MAX) apiCache.length = API_CACHE_MAX;
+  });
+
+  function waitForTable(timeoutMs = 8000) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const tick = () => {
+        const { rows, source } = scrapeTablesFromDocument(document);
+        if (rows.length || Date.now() - start > timeoutMs) {
+          resolve({ rows, source });
+          return;
+        }
+        setTimeout(tick, 400);
+      };
+      tick();
+    });
+  }
+
+  async function scrapePage(options = {}) {
+    const waitMs = options.waitMs ?? 8000;
+    let { rows, source } = await waitForTable(waitMs);
+
+    // API 兜底 / 补充
+    let apiRows = [];
+    for (const item of apiCache) {
+      const parsed = parseApiPayload(item.body);
+      if (parsed.length > apiRows.length) {
+        apiRows = parsed;
+        source = source === 'none' ? 'api' : `${source}+api`;
+      }
+    }
+
+    // 若 DOM 很弱而 API 更强，用 API
+    if (scoreRows(apiRows) > scoreRows(rows)) {
+      rows = apiRows;
+      source = 'api';
+    } else if (!rows.length && apiRows.length) {
+      rows = apiRows;
+      source = 'api';
+    }
+
+    const storeName = detectStoreName(document);
+    const loginHint =
+      /login|sign in|登录/i.test(document.body?.innerText?.slice(0, 500) || '') &&
+      !rows.length;
+
+    return {
+      ok: rows.length > 0,
+      error: rows.length
+        ? null
+        : loginHint
+          ? '页面可能未登录或未打开广告数据列表'
+          : '未识别到广告数据表格，请打开广告系列/报表列表页后重试',
+      rawRows: rows,
+      source,
+      storeName,
+      pageTitle: document.title,
+      url: location.href,
+      apiCacheSize: apiCache.length,
+      scrapedAt: new Date().toISOString()
+    };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+    if (!msg || !msg.type) return;
+
+    if (msg.type === 'PING') {
+      sendResponse({ ok: true, url: location.href });
+      return;
+    }
+
+    if (msg.type === 'SCRAPE_PAGE') {
+      scrapePage(msg.options || {})
+        .then((result) => sendResponse(result))
+        .catch((e) =>
+          sendResponse({
+            ok: false,
+            error: String(e.message || e),
+            rawRows: [],
+            url: location.href
+          })
+        );
+      return true; // async
+    }
+  });
+
+  injectHook();
+  console.log('[TK-Ad] content script ready', location.href);
+})();

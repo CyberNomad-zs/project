@@ -1,0 +1,127 @@
+/**
+ * 字段归一化：统一为业务 5 字段 + 元数据
+ */
+
+/**
+ * 从字符串解析数字（去掉货币符号、千分位、百分号）
+ * @param {unknown} value
+ * @returns {number|null}
+ */
+export function parseNumber(value) {
+  if (value == null || value === '') return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  let s = String(value).trim();
+  if (!s || s === '-' || s === '—') return null;
+  s = s
+    .replace(/[,\s]/g, '')
+    .replace(/[¥$€£￥USD|GBP|EUR]/gi, '')
+    .replace(/%/g, '');
+  // 括号负数 (1.2) → -1.2
+  const paren = s.match(/^\((.+)\)$/);
+  if (paren) s = `-${paren[1]}`;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * @param {string} text
+ * @returns {string}
+ */
+export function cleanText(text) {
+  return String(text ?? '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 解析业务日期 YYYY-MM-DD
+ * @param {'yesterday'|'today'|'custom'} mode
+ * @param {string} [customDate]
+ */
+export function resolveBizDate(mode, customDate) {
+  if (mode === 'custom' && customDate) {
+    return customDate.slice(0, 10);
+  }
+  const d = new Date();
+  if (mode === 'yesterday') {
+    d.setDate(d.getDate() - 1);
+  }
+  return formatDateLocal(d);
+}
+
+export function formatDateLocal(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+/**
+ * 应用店铺名映射
+ * @param {string} detected
+ * @param {{alias:string,name:string}[]} mappings
+ * @param {string} [fallback]
+ */
+export function mapStoreName(detected, mappings = [], fallback = '') {
+  const raw = cleanText(detected || '');
+  if (!raw && fallback) return fallback;
+  for (const m of mappings) {
+    if (!m?.alias) continue;
+    if (raw.toLowerCase().includes(String(m.alias).toLowerCase()) ||
+        String(m.alias).toLowerCase().includes(raw.toLowerCase())) {
+      return m.name || m.alias;
+    }
+  }
+  return raw || fallback || '未知店铺';
+}
+
+/**
+ * 将原始行归一化为标准记录
+ * @param {object} row
+ * @param {object} ctx
+ */
+export function normalizeRow(row, ctx = {}) {
+  const campaign = cleanText(row.campaign ?? row.name ?? '');
+  const spend = parseNumber(row.spend ?? row.cost);
+  const orders = parseNumber(row.orders ?? row.units ?? row.sales_count);
+  const roi = parseNumber(row.roi ?? row.roas);
+  const revenue = parseNumber(row.revenue ?? row.gmv ?? row.income);
+
+  const filled = [campaign, spend, orders, roi, revenue].filter(
+    (v) => v !== null && v !== ''
+  ).length;
+
+  let status = 'success';
+  if (!campaign && filled === 0) status = 'error';
+  else if (filled < 4) status = 'partial';
+
+  return {
+    date: ctx.date || resolveBizDate('yesterday'),
+    store: ctx.storeName || '未知店铺',
+    storeId: ctx.storeId || '',
+    campaign,
+    spend: spend ?? 0,
+    orders: orders ?? 0,
+    roi: roi ?? 0,
+    revenue: revenue ?? 0,
+    scrapedAt: ctx.scrapedAt || new Date().toISOString(),
+    sourceUrl: ctx.sourceUrl || '',
+    status
+  };
+}
+
+/**
+ * 过滤空行 / 汇总行
+ * @param {ReturnType<typeof normalizeRow>[]} rows
+ */
+export function filterValidRows(rows) {
+  return rows.filter((r) => {
+    if (!r) return false;
+    if (!r.campaign) return false;
+    const lower = r.campaign.toLowerCase();
+    if (['total', '合计', '总计', '汇总', 'summary', 'all'].includes(lower)) {
+      return false;
+    }
+    return true;
+  });
+}

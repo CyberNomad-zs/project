@@ -1,0 +1,71 @@
+# -*- coding: utf-8 -*-
+"""WMS 自动登录并抓取 首页 + 一件代发>平台订单 的真实 DOM。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ACC = secrets.WMS_ACCOUNTS[1]  # JMCAT=黑猫（视频里用的账号）
+
+
+def dump(page, name):
+    try:
+        html = page.content()
+        with open(os.path.join(config.DUMP_DIR, f"{name}.html"), "w", encoding="utf-8") as f:
+            f.write(html)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, f"{name}.png"), full_page=True)
+        print(f"  [OK] {name}: {len(html)} bytes, url={page.url}")
+    except Exception as e:
+        print(f"  [ERR] dump {name}: {e}")
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+
+        print(">>> 打开 WMS 登录页")
+        for _ in range(5):
+            try:
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception as e:
+                print("  goto retry:", e); time.sleep(2)
+        time.sleep(2)
+        print(f">>> 登录 {ACC['shop']} ({ACC['login']})")
+        page.fill("#loginName", ACC["login"])
+        page.fill("#loginPwd", ACC["password"])
+        page.click("#loginSubmit")
+        time.sleep(6)
+        dump(page, "wms_home")
+
+        # 尝试进入 一件代发 > 平台订单
+        try:
+            page.click("text=一件代发", timeout=8000)
+            time.sleep(2)
+        except Exception as e:
+            print("  点击'一件代发'失败:", e)
+        try:
+            page.click("text=平台订单", timeout=8000)
+            time.sleep=4
+            time.sleep(4)
+        except Exception as e:
+            print("  点击'平台订单'失败:", e)
+        dump(page, "wms_platform_order")
+
+        # 输出可见的菜单文本，便于确认导航结构
+        try:
+            texts = page.eval_on_selector_all(
+                "a,span,li,div",
+                "els=>els.filter(e=>e.children.length===0 && e.innerText && e.innerText.trim().length<12).map(e=>e.innerText.trim())")
+            uniq = sorted(set([t for t in texts if t]))
+            print("---- 可见短文本(菜单候选) ----")
+            print(" | ".join(uniq[:120]))
+        except Exception as e:
+            print("  菜单文本提取失败:", e)
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

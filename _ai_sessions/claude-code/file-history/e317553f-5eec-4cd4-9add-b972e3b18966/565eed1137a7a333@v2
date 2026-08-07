@@ -1,0 +1,166 @@
+import { log } from './logger.js';
+import { closePopups } from './popups.js';
+
+/**
+ * 抓取当前店铺（聚合「全球」视图）的监测指标：
+ *   - onSaleCount          「在售中 N」数量（顶部状态 tab，beast-core-tab-itemLabel）
+ *   - trafficWatchCount    「商品流量待关注」数量（点快速筛选 chip → 读「共有 N 条」）
+ *   - trafficDeclineExists 是否存在「商品流量近期有下降」商品（用「批量处理流量下降商品」按钮存在性判断）
+ *   - trafficAnomalyTotal  流量异常合计（当前 = 待关注数；下降无精确计数入口，单独用布尔信号告警）
+ *
+ * 说明：真实后台是 Temu 自研 beast-core UI 库，选择器优先用稳定的 data-testid。
+ */
+export async function scanStore(page, storeName, cfg) {
+  // 先武装「拦截 countStatus 接口」的监听，再导航——导航会触发页面自身发出该请求，
+  // 直接读其 JSON 拿在售等状态计数，比解析渲染出来的 tab 文本稳得多（不受渲染时机/弹窗遮挡影响）。
+  const statusP = page
+    .waitForResponse(
+      (r) =>
+        /visage-agent-seller\/product\/skc\/countStatus/.test(r.url()) &&
+        r.request().method() === 'POST',
+      { timeout: 20000 }
+    )
+    .catch(() => null);
+  // 单次 commit 导航（重型 SPA 的既定策略，见 browser.js）；即便已在该页，重新导航也能拿到最新接口数据。
+  await page.goto(cfg.goodsListUrl, { waitUntil: 'commit' }).catch(() => {});
+  const statusResp = await statusP; // 等到 countStatus 返回（约等于首屏接口打完）
+  await closePopups(page);
+  await waitGrid(page); // 流量筛选仍需商品网格渲染出来
+
+  // 在售数量：优先读接口，失败回落解析 tab 文本
+  let onSaleCount = readOnSaleFromStatus(await readStatusJson(statusResp));
+  if (onSaleCount != null) {
+    log.info(`在售数量读自 countStatus 接口：${onSaleCount}`);
+  } else {
+    onSaleCount = await readOnSaleCount(page);
+    log.warn(`countStatus 接口未取到在售数量，回落解析 tab：${onSaleCount}`);
+  }
+
+  const { trafficWatchCount, trafficDeclineExists } = await readTraffic(page);
+  const trafficAnomalyTotal = trafficWatchCount ?? 0;
+
+  return {
+    store: storeName,
+    onSaleCount,
+    trafficWatchCount,
+    trafficDeclineExists,
+    trafficAnomalyTotal,
+  };
+}
+
+/** 安全解析 countStatus 响应体为 JSON（失败返回 null） */
+async function readStatusJson(resp) {
+  if (!resp) return null;
+  try {
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 从 countStatus 的 JSON 取「在售中」数量。
+ * result.skcTopStatusCountList 里 skcTopStatus:100 → skcTotal = 在售中
+ * （0=未发布 / 200=已下架 / 300=已删除）。
+ */
+function readOnSaleFromStatus(json) {
+  const list = json?.result?.skcTopStatusCountList;
+  if (!Array.isArray(list)) return null;
+  const onSale = list.find((s) => s && s.skcTopStatus === 100);
+  return onSale && typeof onSale.skcTotal === 'number' ? onSale.skcTotal : null;
+}
+
+/** 等商品表格真正渲染出行 */
+async function waitGrid(page) {
+  await page
+    .locator('[data-testid="beast-core-table-body-tr"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 20000 })
+    .catch(() => {});
+}
+
+/** 读「在售中 N」——tab 叶子文本形如「在售中 13」 */
+async function readOnSaleCount(page) {
+  const tabs = page.locator('[data-testid="beast-core-tab-itemLabel"]');
+  const n = await tabs.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const t = (await tabs.nth(i).innerText().catch(() => '')).trim();
+    const m = t.match(/在售中\s*([\d,]+)/);
+    if (m) return Number(m[1].replace(/,/g, ''));
+  }
+  // 兜底：纯文本匹配
+  const loc = page.getByText(/在售中\s*[\d,]+/).first();
+  const txt = await loc.innerText({ timeout: 2000 }).catch(() => '');
+  const m = txt.match(/在售中\s*([\d,]+)/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+/** 读流量异常：点「商品流量待关注」筛选读计数 + 判「流量下降」是否存在 */
+async function readTraffic(page) {
+  let trafficWatchCount = null;
+
+  const chip = page.getByText('商品流量待关注', { exact: false }).first();
+  if (await chip.isVisible({ timeout: 2000 }).catch(() => false)) {
+    // 筛选偶发点了不生效（before==after）→ 最多重试 3 次，每次重置后重点，
+    // 尽量拿到确切计数，减少「记为未知」的轮次（未知轮会拖累告警判断）。
+    const MAX_TRY = 3;
+    let after = null;
+    let before = null;
+    for (let attempt = 1; attempt <= MAX_TRY; attempt++) {
+      before = await readTotal(page); // 筛选前的总数（如 408）
+      await chip.click({ timeout: 3000 }).catch(() => {});
+      // 关键：等列表真正刷新——「共有 N 条」的数值发生变化才算筛选生效（避免读到旧的总数）
+      await page.waitForFunction((prev) => {
+        const e = [...document.querySelectorAll('*')].find(
+          (x) => x.children.length === 0 && /共有\s*[\d,]+\s*条/.test(x.textContent || '')
+        );
+        if (!e) return false;
+        const m = e.textContent.match(/共有\s*([\d,]+)\s*条/);
+        return m && Number(m[1].replace(/,/g, '')) !== prev;
+      }, before, { timeout: 8000 }).catch(() => {});
+      after = await readTotal(page);
+      // 仅当筛选确实生效（数值变化且小于总数）才采纳，绝不把"未筛选的总数"当作待关注数
+      if (after != null && before != null && after !== before && after < before) {
+        trafficWatchCount = after;
+        await clickReset(page);
+        await page.waitForTimeout(2000);
+        break;
+      }
+      // 本次未生效：重置后再试
+      log.warn(`「商品流量待关注」筛选第 ${attempt}/${MAX_TRY} 次未生效(before=${before}, after=${after})。`);
+      await clickReset(page);
+      await page.waitForTimeout(2000);
+    }
+    if (trafficWatchCount == null) {
+      log.warn('「商品流量待关注」多次重试仍未生效，本轮待关注计数记为未知。');
+    }
+  } else {
+    log.warn('未找到「商品流量待关注」快速筛选 chip。');
+  }
+
+  // 「商品流量近期有下降」没有独立筛选/计数入口，用批量处理按钮的存在性作为「有下降商品」信号
+  const declineBtn = page.getByText('批量处理流量下降商品', { exact: false }).first();
+  const trafficDeclineExists = await declineBtn.isVisible({ timeout: 1500 }).catch(() => false);
+
+  return { trafficWatchCount, trafficDeclineExists };
+}
+
+/** 读列表底部「共有 N 条」 */
+async function readTotal(page) {
+  const txt = await page.evaluate(() => {
+    const e = [...document.querySelectorAll('*')].find(
+      (x) => x.children.length === 0 && /共有\s*[\d,]+\s*条/.test(x.textContent || '')
+    );
+    return e ? e.textContent.trim() : '';
+  });
+  const m = txt.match(/共有\s*([\d,]+)\s*条/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+/** 点「重置」清空快速筛选 */
+async function clickReset(page) {
+  const reset = page.getByText(/^重置$/).first();
+  if (await reset.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await reset.click({ timeout: 2000 }).catch(() => {});
+  }
+}

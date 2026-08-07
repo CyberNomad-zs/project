@@ -1,0 +1,32 @@
+# 日批入口：赛狐同步 + FBA + 规则 + 飞书任务 + 通知
+# 由 Windows 任务计划每天 10:00 调用
+# 注册：powershell -ExecutionPolicy Bypass -File scripts\register_daily_task.ps1
+
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+Set-Location $Root
+
+$Python = Join-Path $Root ".venv\Scripts\python.exe"
+if (-not (Test-Path $Python)) {
+    $Python = "python"
+}
+
+$LogDir = Join-Path $Root "data\logs"
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+$Log = Join-Path $LogDir ("daily_{0:yyyyMMdd_HHmmss}.log" -f (Get-Date))
+
+$env:PYTHONPATH = $Root
+
+# 有 FEISHU_BOT_WEBHOOK 时真实推送；否则仍会写 notify_log
+# 首次验证可用：手动加 --dry-run-notify
+$Args = @("-m", "app.main", "once")
+if ($env:ASIN_DAILY_DRY_RUN -eq "1") {
+    $Args += "--dry-run-notify"
+}
+
+Write-Output "==== $(Get-Date -Format o) start ====" | Tee-Object -FilePath $Log -Append
+Write-Output "cwd=$Root python=$Python" | Tee-Object -FilePath $Log -Append
+& $Python @Args 2>&1 | Tee-Object -FilePath $Log -Append
+$Code = $LASTEXITCODE
+Write-Output "==== $(Get-Date -Format o) exit=$Code ====" | Tee-Object -FilePath $Log -Append
+exit $Code

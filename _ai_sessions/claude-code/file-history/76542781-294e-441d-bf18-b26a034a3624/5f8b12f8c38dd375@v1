@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.config import Settings, get_settings
+from app.store.db import Database
+from app.sync.feishu_schema import row_to_asin_fields, task_to_fields
+
+logger = logging.getLogger(__name__)
+
+# Columns that belong to system sync (never "human" fields in local schema)
+SYSTEM_COLUMNS = {
+    "biz_date",
+    "marketplace",
+    "shop_name",
+    "shop_id",
+    "asin",
+    "parent_asin",
+    "sku",
+    "msku",
+    "title",
+    "brand",
+    "open_date",
+    "product_grade",
+    "owner",
+    "sale_price",
+    "sale_num",
+    "order_num",
+    "avg_sale_price",
+    "sale_price_change_pct",
+    "order_num_change_pct",
+    "sessions",
+    "sessions_change_pct",
+    "page_view",
+    "conversion_rate",
+    "conversion_rate_change_pp",
+    "buy_box_percent",
+    "ad_impression",
+    "ad_clicks",
+    "ad_ctr",
+    "ad_cost",
+    "ad_cost_change_pct",
+    "cpc",
+    "acos",
+    "ad_sales",
+    "available",
+    "in_transit",
+    "available_days",
+    "inv_age_365_plus",
+    "rating",
+    "rating_change",
+    "rating_count",
+    "low_review_num",
+    "review_num",
+    "raw_json",
+}
+
+
+def write_rows(
+    rows: list[dict[str, Any]],
+    *,
+    db: Database,
+    sync_run_id: int,
+    sink: str = "sqlite",
+    settings: Settings | None = None,
+) -> int:
+    """Write mapped ASIN daily rows to configured sinks.
+
+    sink: sqlite | feishu | both
+    """
+    settings = settings or get_settings()
+    db_rows = []
+    for r in rows:
+        db_rows.append(
+            {k: v for k, v in r.items() if k in SYSTEM_COLUMNS or k == "raw_json"}
+        )
+
+    n = 0
+    if sink in ("sqlite", "both"):
+        n = db.upsert_asin_rows(db_rows, sync_run_id)
+        logger.info("SQLite upserted %s asin_daily rows", n)
+
+    if sink in ("feishu", "both"):
+        if not settings.has_feishu:
+            logger.warning("sink 需要飞书但凭证未配置，已跳过飞书写入")
+        elif not settings.feishu_bitable_app_token or not settings.feishu_table_asin_daily:
+            logger.warning(
+                "FEISHU_BITABLE_APP_TOKEN / FEISHU_TABLE_ASIN_DAILY 未配置，跳过"
+            )
+        else:
+            n_feishu = write_asin_to_feishu(
+                db_rows, settings=settings, sync_run_id=sync_run_id
+            )
+            logger.info("Feishu asin_daily upserted %s rows", n_feishu)
+            n = max(n, n_feishu)
+
+    return n
+
+
+def write_asin_to_feishu(
+    rows: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    sync_run_id: int | None = None,
+) -> int:
+    from app.clients.feishu import FeishuClient
+
+    settings = settings or get_settings()
+    app_token = settings.feishu_bitable_app_token
+    table_id = settings.feishu_table_asin_daily
+    if not app_token or not table_id:
+        return 0
+
+    payload = [
+        row_to_asin_fields(r, sync_run_id=sync_run_id)
+        for r in rows
+        if r.get("asin")
+    ]
+    if not payload:
+        return 0
+
+    with FeishuClient(settings) as client:
+        stats = client.upsert_by_text_key(
+            app_token, table_id, payload, key_field="主键"
+        )
+    return int(stats.get("total") or 0)
+
+
+def write_tasks_to_feishu(
+    tasks: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+) -> int:
+    from app.clients.feishu import FeishuClient
+
+    settings = settings or get_settings()
+    app_token = settings.feishu_bitable_app_token
+    table_id = settings.feishu_table_tasks
+    if not settings.has_feishu or not app_token or not table_id:
+        logger.warning("飞书任务表未配置，跳过任务同步")
+        return 0
+
+    payload = []
+    for t in tasks:
+        fields = task_to_fields(t)
+        # 去掉 None，避免飞书校验问题
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if fields.get("主键"):
+            payload.append(fields)
+    if not payload:
+        return 0
+
+    with FeishuClient(settings) as client:
+        stats = client.upsert_by_text_key(
+            app_token, table_id, payload, key_field="主键"
+        )
+    return int(stats.get("total") or 0)

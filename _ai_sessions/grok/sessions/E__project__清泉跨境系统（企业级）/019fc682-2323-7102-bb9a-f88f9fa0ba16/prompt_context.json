@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "prompt_mode": "extend",
+  "audience": "primary",
+  "agents_md_files": [
+    {
+      "file_name": "Agents.md",
+      "file_path": "E:\\project\\清泉跨境系统（企业级）\\Agents.md",
+      "content": "# AGENTS.md — 本仓库短地图\n\n> 保持简短。细节在 Skill `references/` 与 `skill-pack/`，不要把百科写进这里。\n\n## 路由\n\n| 用户意图 | 动作 |\n|----------|------|\n| 开发功能 / 从 0 搭 / 模糊需求 / 「按 SOP」 | **必须** `/ai-dev-sop`（`skills/ai-dev-sop/`） |\n| 纯问答、解释代码、与实现无关 | 普通对话即可 |\n| 明确单行热修且用户拒绝完整 SOP | 可直改；**仍须** diff 自检，禁止碰 G3 |\n\n开发类任务：**禁止跳过 L1 需求澄清**直接写业务代码（除非用户书面要求热修且范围单文件）。\n\n## Never\n\n- 无用户确认的 Spec 就开始写业务功能\n- 输出门禁哨兵句之前继续写码 / push\n- 自主生产部署、删数、提交密钥\n- 自主改资金结算、外部系统凭据、法定/合规字段、生产 PII 用途\n- 把「可能、大概、优化一下」写进验收标准\n- 全自动合 main\n\n## Always\n\n- 节点交付物进仓（见 `docs/节点交付物.md`）；对话批准不算完成\n- 制品：SPEC / MVP / ARCH / PLAN / ACCEPTANCE\n- G2 操作先预览再等人批；G3 升级授权审批人\n- 范围变更 → 打回 L1；切片/架构变更 → 打回 PHASE 2/3\n- 进入阶段时加载对应 `skill-pack/0x-*/SKILL.md`\n- Spec → MVP → **架构** → Plan → …；热修可跳前几道，不可跳 Diff\n\n## 关键路径\n\n- Skill：`skills/ai-dev-sop/SKILL.md`\n- 子技能：`skill-pack/01`…`06`（含 mvp-cut、arch-design）\n- 节点交付物总表：`docs/节点交付物.md`\n- 甲方收集：`templates/INTENT-raw.md`\n- 产品整理 Intent：`templates/INTENT.md`（再 `/ai-dev-sop`）\n- 模板：`SPEC` / `ACCEPTANCE` / `ARCHITECTURE` / 合规表\n- DoR 脚本：`skills/ai-dev-sop/scripts/check-dor.sh`\n- 人读总览：`docs/00-总览与流程图.md`\n\n## 安装与试跑\n\n```bash\n./install.sh                 # 默认：用户级多客户端 + 本仓项目链\n./install.sh --no-project    # 仅用户级（个人跨仓推荐）\n./install.sh --tool grok     # 只装某一客户端目录\n./install.sh --check\n./install.sh --into /path/to/product-repo\n```\n\n读包内文件用 **SOP_ROOT**（`skills/ai-dev-sop` 目录再上两级）；写 Spec 到工作区 `docs/specs/`。\n\n试跑：`docs/试跑剧本.md` → 记录 `docs/试跑记录.md` → 勾选 `docs/试点投产检查单.md`\n\n## DoR 机械检查\n\n```bash\n./skills/ai-dev-sop/scripts/check-dor.sh <SPEC.md> [ACCEPTANCE.md]\n```\n"
+    }
+  ],
+  "persona_summaries": [],
+  "build_timestamp_utc": "2026-08-03T07:24:06.584125300+00:00",
+  "memory_enabled": false,
+  "os_name": "windows",
+  "shell_path": "powershell",
+  "working_directory": "E:\\project\\清泉跨境系统（企业级）",
+  "current_date": "2026-08-03",
+  "is_non_interactive": false,
+  "system_prompt_label": "Grok 4.5"
+}

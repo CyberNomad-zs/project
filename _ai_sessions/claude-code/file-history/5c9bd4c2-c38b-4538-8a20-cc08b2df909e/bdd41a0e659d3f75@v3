@@ -1,0 +1,73 @@
+# -*- coding: utf-8 -*-
+"""打包 automation 项目发给同事：排除敏感/大体积/自动重建的内容。"""
+import os
+import zipfile
+
+SRC = r"E:\project\海外仓\automation"
+OUT = r"E:\project\海外仓\海外仓发货自动化_20260717.zip"
+TOP = "automation"   # zip 内顶层目录名
+
+# 排除：目录名（任意层级出现即整目录跳过）
+SKIP_DIRS = {".browser_profile", "logs", "__pycache__", "dumps", ".git", ".idea", ".vscode"}
+# 排除：文件名 / 后缀
+SKIP_FILES = {"erp_state.json"}
+SKIP_EXT = {".pyc", ".pyo", ".log", ".bak"}
+
+included = []
+skipped_dirs = set()
+
+with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as zf:
+    for root, dirs, files in os.walk(SRC):
+        rel_root = os.path.relpath(root, SRC)
+        parts = set() if rel_root == "." else set(rel_root.split(os.sep))
+        # 就地裁剪要跳过的子目录（记录一下）
+        for d in list(dirs):
+            if d in SKIP_DIRS:
+                skipped_dirs.add(os.path.join(rel_root, d) if rel_root != "." else d)
+                dirs.remove(d)
+        if parts & SKIP_DIRS:
+            continue
+        for fn in files:
+            if fn in SKIP_FILES:
+                continue
+            if os.path.splitext(fn)[1].lower() in SKIP_EXT:
+                continue
+            full = os.path.join(root, fn)
+            rel = os.path.relpath(full, SRC)
+            arc = TOP + "/" + rel.replace(os.sep, "/")
+            zf.write(full, arc)
+            included.append(rel.replace(os.sep, "/"))
+
+size = os.path.getsize(OUT)
+included.sort()
+root_files = [p for p in included if "/" not in p]
+capture_py = [p for p in included if p.startswith("capture/") and p.endswith(".py")]
+other = [p for p in included if "/" in p and not (p.startswith("capture/") and p.endswith(".py"))]
+
+print("输出:", OUT)
+print("zip 大小: %.2f MB" % (size / 1024 / 1024))
+print("文件总数:", len(included))
+print()
+print("=== 根目录文件(%d) ===" % len(root_files))
+for p in root_files:
+    print("  ", p)
+print()
+print("=== capture/*.py (%d 个) ===" % len(capture_py))
+print("   含 erp_manual_login.py:", "capture/erp_manual_login.py" in capture_py)
+print("   含 wms_rotation_selftest.py:", "capture/wms_rotation_selftest.py" in capture_py)
+print()
+if other:
+    print("=== 其它非根、非capture-py 文件(%d) ===" % len(other))
+    for p in other:
+        print("  ", p)
+print()
+print("=== 已跳过的目录 ===")
+for d in sorted(skipped_dirs):
+    print("  ", d)
+
+# 校验：敏感项一定不在包里；secrets.py 一定在
+names = set(included)
+bad = [p for p in names if p.startswith((".browser_profile", "logs/", "capture/dumps")) or p == "erp_state.json" or p.endswith(".bak")]
+print()
+print("[校验] 敏感项/备份是否误入:", bad if bad else "无(clean)")
+print("[校验] secrets.py 是否包含:", "yes" if "secrets.py" in names else "!! 缺失 !!")

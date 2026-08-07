@@ -1,0 +1,51 @@
+// 隔离世界：① 把 inject.js 注入页面 MAIN world（越早越好，抢在页面 bundle 前 hook）；
+// ② 接收 MAIN world 发来的接口响应，转发给后台 service worker。
+(function () {
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) { /* ignore */ }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body });
+    } catch (err) { /* service worker 可能休眠，忽略 */ }
+  });
+
+  // 读快速筛选「商品流量待关注 N」chip 上的数字 = 待关注商品数。
+  // 商品项字段区分不出待关注商品，但 chip 上现成渲染着这个数字，直接读它最稳（无需点筛选）。
+  function readTrafficWatch() {
+    const nodes = [];
+    for (const el of document.querySelectorAll('*')) {
+      const t = el.textContent || '';
+      if (/商品流量待关注/.test(t) && t.length < 30) nodes.push(el);
+    }
+    nodes.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of nodes) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(/商品流量待关注\s*([\d,]+)/);
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+    }
+    return null; // 没读到数字 → 未知（不猜 0，避免误报）
+  }
+
+  // 页面渲染出 chip 后读一次上报（每次页面加载/定时刷新都会重新执行）
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    const n = readTrafficWatch();
+    if (n != null) {
+      try { chrome.runtime.sendMessage({ type: 'chipStats', trafficWatch: n }); } catch (e) { /* ignore */ }
+      clearInterval(iv);
+    } else if (tries > 20) {
+      clearInterval(iv); // 最多等 ~40s
+    }
+  }, 2000);
+})();

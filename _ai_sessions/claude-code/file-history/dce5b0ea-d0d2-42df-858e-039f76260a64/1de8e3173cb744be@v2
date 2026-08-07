@@ -1,0 +1,60 @@
+# -*- coding: utf-8 -*-
+"""单次登录诊断：抓取登录接口返回体 + 页面提示，定位失败根因。只提交 1 次。"""
+import sys, os, time, re, base64, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+import ddddocr
+
+LOGIN = "https://www.sellfox.com/amzup-web-main/login.html"
+OCR = ddddocr.DdddOcr(show_ad=False)
+responses = []
+
+
+def on_response(resp):
+    u = resp.url
+    if any(k in u.lower() for k in ["login", "signin", "auth", "captcha", "user"]):
+        try:
+            body = resp.text()[:600]
+        except Exception:
+            body = "<no text>"
+        responses.append((resp.status, u, body))
+
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    page = browser.new_context(ignore_https_errors=True).new_page()
+    page.on("response", on_response)
+    page.goto(LOGIN, wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_selector("#password", timeout=20000)
+    time.sleep(2)
+
+    src = page.eval_on_selector_all("img", """els=>{for(const e of els){const b=e.getBoundingClientRect();
+        if(b.width>=60&&b.width<=200&&b.height>=20&&b.height<=50&&e.src.startsWith('data:image'))return e.src;}return null;}""")
+    raw = base64.b64decode(re.sub(r"^data:image/\w+;base64,", "", src))
+    code = re.sub(r"[^A-Za-z0-9]", "", OCR.classification(raw))
+    with open(os.path.join(config.DUMP_DIR, "debug_captcha.png"), "wb") as f:
+        f.write(raw)
+    print("OCR code =", repr(code), "(见 debug_captcha.png 核对真值)")
+
+    page.fill("#username", secrets.ERP["user"])
+    page.fill("#password", secrets.ERP["password"])
+    page.get_by_placeholder("请输入图形验证码").fill(code)
+    btn = page.query_selector("button:has-text('登 录')") or page.query_selector("button:has-text('登录')")
+    btn.click()
+    time.sleep(5)
+
+    print("final url:", page.url)
+    print("---- 相关接口响应 ----")
+    for st, u, body in responses:
+        print(f"[{st}] {u}")
+        print("   body:", body.replace("\n", " ")[:500])
+    # 页面提示
+    for sel in [".el-message", ".el-message--error", ".el-form-item__error"]:
+        for el in page.query_selector_all(sel):
+            t = (el.inner_text() or "").strip()
+            if t:
+                print("提示:", sel, "=>", t)
+    page.screenshot(path=os.path.join(config.DUMP_DIR, "debug_after_submit.png"), full_page=True)
+    browser.close()
+print("DONE")

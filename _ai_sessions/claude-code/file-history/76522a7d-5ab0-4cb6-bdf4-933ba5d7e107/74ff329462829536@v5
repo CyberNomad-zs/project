@@ -1,0 +1,451 @@
+# 字段映射字典
+
+> 版本：v1.0 · 2026-07-27  
+> 用途：采集 payload ↔ 中心表 ↔ 飞书多维表 三方对齐
+
+---
+
+## 1. 约定
+
+| 项 | 规则 |
+|----|------|
+| 时间 | 一律存 UTC；展示转 `Asia/Shanghai` |
+| 金额 | `NUMERIC(18,4)` + `currency`（默认店铺币种） |
+| 业务日 | `biz_date` = DATE，广告/销售类默认 **昨日** |
+| 平台枚举 | `amazon` / `tiktok` / `temu` / `other` |
+| 幂等键 | `{source}:{shop_id}:{biz_id}:{biz_date}[:extra]` |
+| 空值 | 采集不到传 `null`，不传字符串 `"N/A"` |
+
+---
+
+## 2. 店铺主数据 `shop`
+
+| 中心字段 | 类型 | 说明 | 来源示例 |
+|----------|------|------|----------|
+| id | UUID | 内部主键 | 系统生成 |
+| platform | TEXT | amazon/tiktok/temu | 配置 |
+| external_shop_id | TEXT | 赛狐 shopId / 紫鸟 storeId / mallId | `396706` / `27501502216807` |
+| name | TEXT | 展示名 | Agnis / Deal to deal |
+| alias_names | JSONB | 紫鸟名、赛狐名别名 | `["Tiktok_Shop2"]` |
+| primary_owner_user_id | UUID | 第一负责人 | 组织 |
+| timezone | TEXT | 默认 Asia/Shanghai | |
+| currency | TEXT | GBP/USD/CNY… | |
+| status | TEXT | active/disabled | |
+| meta | JSONB | 扩展 | region=GB 等 |
+
+**已知店铺映射（现网）：**
+
+| platform | external_shop_id | name | 备注 |
+|----------|------------------|------|------|
+| temu/amazon 赛狐 | 396706 | Agnis | 海外仓/Temu 白名单 |
+| | 398202 | HomeCove | |
+| | 398203 | Twilight Cove | |
+| tiktok 紫鸟 | 27501502216807 | Deal to deal | 原 Tiktok_Shop2 |
+| | 27328767468273 | Gardena | Tiktok - KK Seagull |
+| | 27758103898326 | TikTok - Pop | |
+| | — | Nookora Home / TT-L | 配置中有 exclude/requireIp |
+
+---
+
+## 3. 产品映射 `product_platform_ref`
+
+| 中心字段 | 说明 |
+|----------|------|
+| product_id | 内部产品 |
+| platform | |
+| shop_id | |
+| asin | 亚马逊 |
+| seller_sku / commodity_sku | 赛狐/仓 |
+| parent_id / spu_id / product_id_ext | Temu 父体/SPU |
+| skc_id | Temu SKC |
+| goods_id | Temu OpenAPI |
+| title | 最新标题快照 |
+
+---
+
+## 4. 亚马逊
+
+### 4.1 销售异常 → `fact_sales_daily` + `anomaly_event` / `task`
+
+| 逻辑名 | 中心字段 | 飞书列名 | 来源 |
+|--------|----------|----------|------|
+| 业务日 | biz_date | 日期 | 赛狐昨日 |
+| 店铺 | shop_id → name | 店铺 | |
+| ASIN | asin | ASIN | |
+| SKU | seller_sku | SKU | |
+| 销量 | units | 销量 | |
+| 销售额 | sales_amount | 销售额 | |
+| FBA 可售 | fba_fulfillable | FBA库存 | 赛狐 |
+| FBM/海外仓 | fbm_quantity | 海外仓库存 | WMS（待接） |
+| 异常类型 | anomaly_type | 异常类型 | 规则引擎 |
+| 负责人 | owner_name | 第一负责人 | shop/product |
+| 任务状态 | task.status | 状态 | 任务引擎 |
+| 截止 | task.due_at | 截止时间 | |
+| 进度 | task.progress_note | 进度 | |
+
+**anomaly_type 初值（待对接人补阈值）：**
+
+| code | 含义 | 判定（待确认） |
+|------|------|----------------|
+| sales_drop | 销量骤降 | 环比/同比阈值 TBD |
+| stockout_risk | 断货风险 | 可售天数 < N |
+| zero_sales | 零销 | 连续 N 天 |
+| price_anomaly | 价格异常 | 可选 |
+
+**去重键：** `amazon:{asin}:{anomaly_type}`（未闭环唯一）
+
+### 4.2 账号异常（前台巡检 12 项）→ `fact_listing_health`
+
+| # | 检查项 | payload 字段 | 类型 | anomaly_type code |
+|---|--------|--------------|------|-------------------|
+| 1 | 销售价 | price / price_ok | number/bool | listing_price |
+| 2 | PRIME 标 | prime_badge | bool | listing_prime |
+| 3 | 图片是否正常 | images_ok | bool | listing_image |
+| 4 | 是否跟卖商家 | is_hijack | bool | listing_hijack |
+| 5 | 加购界面 | add_to_cart_ok | bool | listing_atc |
+| 6 | 配送时间 | delivery_ok / delivery_text | bool/text | listing_delivery |
+| 7 | 产品标题 | title_ok / title | bool/text | listing_title |
+| 8 | 产品五点 | bullets_ok | bool | listing_bullets |
+| 9 | 规格选项图 | variation_images_ok | bool | listing_var_img |
+| 10 | 详情页 | detail_ok | bool | listing_detail |
+| 11 | 排名掉 | rank / rank_drop | number/bool | listing_rank |
+| 12 | 变体被拆 | variation_split | bool | listing_var_split |
+
+**公共字段：**
+
+| 字段 | 说明 |
+|------|------|
+| asin | |
+| shop_id | |
+| collected_at | 三日槽位之一 |
+| slot | `0530` / `1330` / `2130` |
+| page_url | 前台 URL |
+| evidence.screenshot_url | 异常时截图 |
+
+**赛狐绩效 → `fact_account_performance`：**
+
+| 字段 | 说明 |
+|------|------|
+| shop_id | |
+| biz_date | |
+| order_defect_rate | 等绩效指标（按赛狐返回展开 JSONB metrics） |
+| metrics | JSONB 原始绩效包 |
+
+**去重键：** `amazon:{asin}:{anomaly_type}`  
+**建单策略：** 仅 `*_ok = false` 或等价异常为 true 时建任务。
+
+### 4.3 店铺日经营 → `fact_amz_shop_daily` → 飞书 T1
+
+| 逻辑名 | 中心字段 | 飞书列名 | 说明 |
+|--------|----------|----------|------|
+| 业务日 | biz_date | 日期 | |
+| 店铺 | shop_name | 店铺 | 优先 shop 主数据 |
+| 店铺ID | shop_external_id | 店铺ID | |
+| 站点 | marketplace | 站点 | |
+| 币种 | currency | 币种 | 合计策略未定 |
+| 销售额 | sales_amount | 销售额 | |
+| 订单量 | orders_cnt | 订单量 | |
+| 销量 | units | 销量 | |
+| 访客/加购 | sessions / add_to_cart | 访客数 / 加购数 | 可空 |
+| 广告花费/销售额 | ad_spend / ad_sales | 广告花费 / 广告销售额 | |
+| ACoS | acos | ACoS | 预计算 |
+| 净利润/ROI | net_profit / roi | 净利润 / ROI | **口径未定，可空** |
+| 数据状态 | row_status | 数据状态 | success/partial/error |
+
+**Ingest source：** `amz_shop_daily`（别名 `sellfox_shop_daily`）  
+**幂等键：** `amz_shop_daily:{shop_external_id}:{biz_date}`  
+**唯一约束：** `(shop_external_id, biz_date)`
+
+### 4.4 链接日 → 飞书 T3（扩展列见 migration 009）
+
+在 §4.1 / `fact_amz_link_daily` 基础上同步：类目、广告花费、ACoS、可售天数、环比、问题标签、第一负责人等（可空）。  
+**飞书列名** 见 `bitable.amz_link_daily_to_fields` 与 `scripts/feishu-amz-create-fields.ps1`。
+
+### 4.5 风险告警 → `fact_amz_risk_alert` → 飞书 T6
+
+| 逻辑名 | 中心字段 | 飞书列名 |
+|--------|----------|----------|
+| 告警键 | alert_key | 告警ID |
+| 发现日 | detected_on | 发现日期 |
+| 店铺 | shop_name | 店铺 |
+| 对象 | object_ref | 对象 |
+| 类型 | risk_type | 风险类型 |
+| 优先级 | priority | 优先级 P0/P1/P2 |
+| 摘要 | summary | 摘要 |
+| 状态 | status | 未处理/处理中/已闭环/忽略 |
+
+**Ingest source：** `amz_risk_alert`  
+**唯一约束：** `alert_key`  
+**同步 table_key：** `amz_risk`（经 PG，禁止生产直写飞书）
+
+---
+
+## 5. TikTok
+
+### 5.1 广告系列日指标 → `fact_ads_campaign_daily` → 飞书 T2
+
+与现网 TK 项目 `normalizeRow` 对齐；驾驶舱同步见 [TK-飞书驾驶舱建表方案](./TK-飞书驾驶舱建表方案.md)。
+
+| 逻辑字段 | 中心字段 | 飞书列名（T2 / 现网） | 采集别名 |
+|----------|----------|----------------------|----------|
+| date | biz_date | 日期 | dateMode=yesterday |
+| store | shop_id / shop_name | 店铺 | storeNameMap |
+| storeId | external_shop_id | 店铺ID | 紫鸟 storeId |
+| campaign | campaign_name | 品名 / 广告系列名称 | campaign_name, 品名… |
+| spend | spend | 广告花费 | spend, cost, stat_cost… |
+| orders | orders | 销量 | orders, units… |
+| roi | roi | ROI | roi, roas… |
+| revenue | revenue | 销售额 / 总收入 | gmv, revenue… |
+| plan_status | plan_status | 计划状态 | on/off → 投放中/已关闭 |
+| daily_budget | daily_budget | 日预算 | |
+| target_roi | target_roi | 目标ROI | |
+| net_cost / cpa | net_cost / avg_order_cost | 净成本 / 平均下单成本 | |
+| （派生） | — | 预算消耗率 / 盈亏标签 | 同步前计算 |
+| scrapedAt | collected_at | 抓取时间 | |
+| sourceUrl | source_url | 数据源URL | |
+| status | row_status | 状态 | success/partial/error |
+
+**幂等键：** `tiktok_ads:{storeId}:{campaign}:{biz_date}`  
+**同步 table_key：** `tk_ads_campaign`  
+**聚合注意：** `campaign_name` 以 `【` 开头的汇总/分析行 **不同步、不计入店日广告 Σ**
+
+**汇总行（中心计算，可选，不同步 T2 明细）：**
+
+| campaign_name | 含义 |
+|---------------|------|
+| 【店铺汇总】 | 单店 rollup |
+| 【全店汇总】 | 全量 |
+| 【日报分析】… | 分析结论 |
+
+**日报分析衍生（可进 `fact_ads_daily_rollup`）：**
+
+| 字段 | 说明 |
+|------|------|
+| total_spend / orders / revenue | |
+| overall_roi | revenue/spend |
+| low_roi_count | roi < threshold（默认 3） |
+| zero_rev_spend | 花费>0 且销售额=0 |
+| top_campaign | |
+
+### 5.2 店铺日经营（驾驶舱 T1）→ 飞书「店铺日经营」
+
+| 逻辑名 | 中心来源 | 飞书列名 |
+|--------|----------|----------|
+| 业务日 | fact_tiktok_shop_daily.biz_date | 日期 |
+| 店铺 / ID | shop_name / shop_external_id | 店铺 / 店铺ID |
+| GMV / 订单 / 买家 | gmv / orders_cnt / buyers_cnt | 销售额 / 订单量 / 买家数 |
+| 退款 | refund_amount | 退款金额 |
+| 广告花费/销售/订单/ROI | Σ fact_ads_campaign_daily（非【汇总】） | 广告花费 / 广告销售额 / 广告订单 / 广告ROI |
+| 健康 | fact_tiktok_health_daily | 健康分 / 健康状态 / 延迟发货率 / 负面反馈率 |
+| 财务 | fact_tiktok_finance_daily | 结算金额 / 待结算 / 财务退款 |
+| 自然单/额(估) | 店−广告（同币才估销售额） | 自然订单(估) / 自然销售额(估) |
+
+**同步 table_key：** `tk_shop_daily`  
+**拼宽 SQL：** `tk_feishu_sync._SHOP_DAILY_SELECT`  
+**env：** `FEISHU_BITABLE_APP_TOKEN_TK` · `FEISHU_BITABLE_TABLE_TK_SHOP_DAILY` · `FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN`
+
+### 5.3 TK 异常任务 → `tk.fact_tk_anomaly_task` → 飞书「异常任务」
+
+对齐 AMZ 飞书 [ASIN健康度监控·异常任务](https://dcnkj1up67d5.feishu.cn/base/TkW0bXEAAa3Fo3sdKagcL9fTn2b?table=tblXnUm9VSmyQ2AC)。详见 [TK-异常任务-PG建表说明](./TK-异常任务-PG建表说明.md)。
+
+| 逻辑名 | 中心字段 | 飞书列名 |
+|--------|----------|----------|
+| 主键 | task_key | 主键 |
+| 业务日 | biz_date | 日期 |
+| 店铺 | shop_name | 店铺 |
+| 商品ID | product_id | ASIN / 商品ID（TK 无 ASIN，值=product_id） |
+| SKU | seller_sku | SKU |
+| 产品 | product_name | 产品 |
+| 中文名 | product_name_cn | 中文名称 |
+| 异常类型 | anomaly_type | 异常类型 |
+| 优先级 | priority | 优先级 |
+| 状态 | status | 未处理/处理中/已闭环/忽略 |
+| 负责人 | owner_name | 第一负责人 |
+| 进度 | progress_note | 进度 |
+| 指标快照 | metric_snapshot | 指标快照 |
+
+**Ingest source：** `tiktok_anomaly_task`（别名 `tk_anomaly_task`）  
+**幂等：** `task_key` UNIQUE；未闭环另有 `dedupe_key` 部分唯一  
+**同步 table_key：** `tk_anomaly_task`  
+**字典表：** `tk.dim_tk_anomaly_type`（**TK 针对化 011**：广告ROI过低/广告空耗/商品断货/店铺健康分低/延迟发货率高…；非 AMZ ACOS/ASIN 口径）
+
+### 5.4 TK 运营扩展（Phase 3）
+
+| 模块 | 表 | 关键字段（草案） |
+|------|-----|------------------|
+| 产品信息 | product + ref / fact_tiktok_product | spu/sku/标题/状态 |
+| 达人寄样 | fact_creator_sample | creator_id, sample_status, ship_at, tracking |
+| 短视频 | fact_short_video | video_id, product_ref, published_at, views |
+| 销售异常 | anomaly + task | 赛狐，规则同亚马逊骨架 |
+| 后台绩效 | fact_account_performance / health_daily | platform=tiktok |
+
+---
+
+## 6. Temu
+
+### 6.1 在售 / 下架 → `fact_traffic_signal` + anomaly
+
+| 逻辑 | 中心字段 | 来源 |
+|------|----------|------|
+| 在售数 | on_sale_count | countStatus skcTopStatus=100 / 赛狐 selectStatus=12 |
+| 下架商品 | signal_type=`delisted` | onSaleMap/onSaleIds diff |
+| product_ext_id | 插件 productId / 赛狐 parentId / OpenAPI goodsId | |
+| name | 商品名 | |
+| skc | skcId | |
+| edit_url | `https://agentseller.temu.com/goods/edit?from=productList&productId=` | |
+| shop_id | 赛狐 shopId | 396706… |
+
+**赛狐 selectStatus（实盘）：** `12` 在售，`13` 已下架，及其他生命周期码进 JSONB。
+
+### 6.2 流量信号
+
+| signal_type | 含义 | 来源 |
+|-------------|------|------|
+| traffic_watch | 商品流量待关注（限流） | DOM chip / OpenAPI restricted |
+| traffic_decline | 商品流量近期有下降 | 行徽标（仅浏览器） |
+| sku_missing | SKU 规格消失 | pageQuery productSkuSummaries diff |
+| front_variant | 前台变体不可用 | content-front |
+
+**明细结构 `items[]`：** `{ product_id, name, skc, sku_id?, extra? }`
+
+**去重键：** `temu:{product_ext_id}:{signal_type}`  
+**建单：** 下架/限流/物流/链接异常 → task；纯计数变化可只记事实。
+
+### 6.3 账号异常（会议）
+
+| anomaly_type | 说明 | 阶段 |
+|--------------|------|------|
+| logistics_abnormal | 物流异常 | Phase 3 |
+| link_abnormal | 链接异常 | Phase 3 |
+
+### 6.4 浏览器 countStatus 映射
+
+| skcTopStatus | 含义 |
+|--------------|------|
+| 0 | 未发布 |
+| 100 | 在售 |
+| 200 | 已下架 |
+| 300 | 已删除 |
+
+---
+
+## 7. 采购
+
+### 7.1 供应商 `supplier`
+
+| 字段 | 全量角色可见 | 普通角色 |
+|------|--------------|----------|
+| supplier_code | ✅ | ✅（唯一展示名） |
+| supplier_name | ✅ | ❌ 脱敏为 code |
+| contact / phone / address | ✅ | 按角色 |
+| status | ✅ | ✅ |
+
+### 7.2 销售天数 / 滞销断货
+
+| 字段 | 表 | 说明 |
+|------|-----|------|
+| sales_days | fact_product_sales_days | 赛狐，周一 07:00 更新 |
+| slow_moving | anomaly_type | 规则 → task |
+| stockout | anomaly_type | 规则 → task |
+
+---
+
+## 8. 任务与异常（跨平台）
+
+### 8.1 `anomaly_event`
+
+| 字段 | 说明 |
+|------|------|
+| id | |
+| platform | |
+| shop_id | |
+| anomaly_type | 字典 code |
+| biz_id | ASIN / productId / campaign… |
+| biz_id_type | asin/sku/product/campaign… |
+| dedupe_key | platform:biz_id:anomaly_type |
+| severity | info/warn/high/critical |
+| title / detail | |
+| payload | JSONB 原始 |
+| detected_at | |
+| resolved_at | 异常消失时间（可空） |
+| task_id | 关联任务 |
+
+### 8.2 `task`
+
+| 字段 | 说明 |
+|------|------|
+| id | |
+| dedupe_key | 与 anomaly 对齐 |
+| status | open / in_progress / resolved / cancelled |
+| platform / shop_id | |
+| anomaly_type / biz_id | |
+| title | |
+| owner_user_id | 第一负责人 |
+| due_at | 截止 |
+| progress_note | 最新进度 |
+| source_event_id | 最近 anomaly |
+| created_at / updated_at / resolved_at | |
+
+**进行中唯一约束（SQL）：**  
+`UNIQUE (dedupe_key) WHERE status IN ('open','in_progress')`
+
+### 8.3 飞书「运营_销售异常跟踪」列
+
+| 飞书列 | 中心 |
+|--------|------|
+| 日期 | detected_at / biz_date |
+| 平台 | platform |
+| 店铺 | shop.name |
+| 业务ID | biz_id |
+| 异常类型 | anomaly_type |
+| 标题 | title |
+| 负责人 | owner |
+| 状态 | status |
+| 截止时间 | due_at |
+| 进度 | progress_note |
+| 更新时间 | updated_at |
+
+---
+
+## 9. 飞书同步映射 `sync_feishu_map`
+
+| 字段 | 说明 |
+|------|------|
+| table_key | 逻辑表名如 `tk_ads_daily` |
+| local_table | PG 表名 |
+| local_id | UUID |
+| app_token | 飞书 app_token |
+| table_id | 飞书 table_id |
+| record_id | 飞书 record_id |
+| content_hash | 变更检测 |
+| synced_at | |
+
+写入策略：hash 变 → `batch_update`；无映射 → `batch_create`；禁止盲目 append。
+
+---
+
+## 10. Ingest source 枚举
+
+| source | platform | 主要目标表 |
+|--------|----------|------------|
+| sellfox_sales | * | fact_sales_daily |
+| sellfox_performance | * | fact_account_performance |
+| sellfox_product_temu | temu | fact_traffic_signal / product |
+| sellfox_sales_days | * | fact_product_sales_days |
+| amazon_front | amazon | fact_listing_health |
+| temu_browser | temu | fact_traffic_signal |
+| temu_openapi | temu | fact_traffic_signal |
+| tiktok_ads | tiktok | fact_ads_campaign_daily |
+| wms_inventory | * | fact_inventory_snapshot |
+| hwc_bridge_event | * | 发货异常事件（可选） |
+
+---
+
+## 11. 待业务确认清单
+
+1. 亚马逊销售异常各类型阈值  
+2. 排名下降、配送过长的数值标准  
+3. 滞销 / 断货销售天数阈值  
+4. 低 ROI 默认 3.0 是否沿用全平台  
+5. TK/Temu 任务是否完全复用亚马逊去重与提醒节奏  
+6. 飞书各表 app_token / table_id 正式环境清单  

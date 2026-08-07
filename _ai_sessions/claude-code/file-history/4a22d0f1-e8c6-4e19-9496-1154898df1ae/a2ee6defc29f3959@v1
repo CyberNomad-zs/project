@@ -1,0 +1,5 @@
+node_modules/
+.userdata/
+data/*.log
+data/state.json
+data/calibrate-*

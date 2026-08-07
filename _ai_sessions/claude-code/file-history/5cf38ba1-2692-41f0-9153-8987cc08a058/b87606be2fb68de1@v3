@@ -1,0 +1,48 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告/订单已通；商品 runner 已修（productId 去重 + 空 exec 重试）；KPI/健康/财务 **scrape+runner 已落**（待紫鸟实页校准 URL/标签）。
+
+**广告日更（定时 + 简报）**：已在**同事本机** Windows 计划任务跑，**中心/本仓库不重复建设、不列为待办**。中心只收 dual/ingest → `tk.fact_ads_campaign_daily`。
+
+## 2026-07-31 本轮（P2b + 订单质量 + P2c/P3）
+
+### 1 商品 P2b
+- 根因：`run-products.ps1` 从 orders 复制后仍按 **orderId** 去重 → 永远 0 行
+- 已修：按 `productId`/`sellerSku` 去重；空 `page exec` 落 raw 并重试；`products-click-next.js`；debug 样本
+- Ingest `tiktok_products` 仍写 `tk.fact_tiktok_product`；**shop_name 优先 public.shop.name**
+- **待实跑**：紫鸟 Bridge 上 `run-products.ps1 -DryRun false` 验证非 smoke
+
+### 2 订单质量
+- **根因**：scraper 从整行抽时间，误吃「送达截止日期：2026/8/x」→ 未来 `biz_date`
+- 采集：`scrape-orders-page.js` 只从**订单列**取相对/星期时间，禁止物流截止绝对日
+- 中心：`_parse_optional_dt` 支持「N分钟前/今天/昨天/星期一 HH:mm」；拒截止文案；`_safe_biz_date` 丢未来日
+- 店名：ingest 各 TK 事实表 `shop_name` → `public.shop.name`（scrape 名进 raw_extra.scrape_shop_name）
+- 单测：`backend/tests/test_tiktok_order_time.py` **5 passed**
+- **待**：生产/本机重跑 orders 回填；example 的 storeNameMap 已与主数据对齐说明
+
+### 3 P2c / P3 KPI·健康·财务
+- 新增 scrape：`scrape-shop-daily-page.js` / `scrape-health-daily-page.js` / `scrape-finance-daily-page.js`（DOM 标签启发式）
+- 新增 runner：`run-shop-modules.ps1`（可 `-Modules shop_daily,health_daily,finance_daily`）
+- qingquan-client：Shop/Health/Finance Daily ingest 转换
+- example config：`shopDailyUrl` / `healthUrl` / `financeUrl`
+- **待实跑校准**：真实后台 URL 与文案因站而异，首次跑用 DryRun + debug json
+
+## 日常
+
+```powershell
+cd collectors/tiktok-ads
+# 广告：同事本机定时；开发机可手动
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1 -DryRun true
+```
+
+## 下一批
+1. 紫鸟实跑 products（非 smoke）+ 必要时改表头别名
+2. 重跑 orders 清掉历史未来 biz_date
+3. shop-modules 按实页改 URL/标签后 DryRun→正式
+
+## 代码
+- 分支 `feature/tk-products-kpi`；本轮未单独 commit（待你确认后提交）

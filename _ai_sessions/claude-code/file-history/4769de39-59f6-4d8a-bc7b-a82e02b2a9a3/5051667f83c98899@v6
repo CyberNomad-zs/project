@@ -1,0 +1,53 @@
+========================================
+  Temu 监测 · 说明（2026-07-31 主路径变更）
+========================================
+
+【日常请用 Chrome 插件，不要用本目录常驻】
+
+  流量（待关注 / 近期下降）→ 装仓库里的 temu-plugin（v14 仅流量）
+  下架 / 上架             → 公司服务器赛狐（temu-sellfox）
+  本目录 Playwright       → 仅维护者应急 / 调试，默认不要 start
+
+  插件与本机 once/start 不要双开（飞书会双报，还可能抢登录档案）。
+
+
+==== 同事迁移（从本机包 → 插件）====
+
+  1) 关掉「流量常驻 / 守护」窗口
+  2) 若曾启用开机自启：启动菜单选「取消」或卸载 TemuMonitor 计划任务
+  3) 任务管理器确认无 node … cli.js
+  4) 按 temu-plugin\使用说明.txt 加载插件 v14
+  5) 设置里填飞书 Webhook（可与原 config.json 同群）
+  6) 打开并保留 agentseller 商品列表页
+  7) popup 应显示：后台：v14-仅流量；点「测试飞书」
+
+
+==== 本目录还留着干什么 ====
+
+  - 开发者改 DOM/接口时 npm run once 回归
+  - 插件挂了时的临时顶替（用完关掉）
+  - deploy\ 打服务器赛狐包、历史脚本
+
+  打包脚本 pack-traffic-local.ps1 = 应急包，标注勿作日常分发。
+
+
+==== 服务器上下架 ====
+
+  见 deploy\README-SERVER.md
+  本机不要 fullRun、不要 sellfox.config.json 外传
+
+
+==== 若仍用本目录应急跑流量 ====
+
+  1) Node LTS + Chrome
+  2) npm install ；config.json 里 fullRun:false
+  3) npm run login → npm run once
+  4) 不要与插件同时生产；日志见 logs\monitor-当天.log
+  5) 常驻时勿再点本工具「登录」（抢 .userdata）
+
+
+==== 出问题 ====
+
+  - 流量告警：看插件 popup / 是否 goods/list 开着 / 是否 v14
+  - 下架告警：问服务器 journalctl -u temu-sellfox
+  - 两套都在报同一流量：停掉本机 Node 常驻

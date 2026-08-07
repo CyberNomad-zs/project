@@ -1,0 +1,66 @@
+{
+  "manifest_version": 3,
+  "name": "TK Ad Data Scraper",
+  "version": "1.0.0",
+  "description": "Ziniao seller plugin: scrape TikTok UK shop ad metrics and write to Feishu Bitable",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "TK Ad Scraper",
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png"
+    }
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.tiktok.com/*",
+        "*://ads.tiktok.com/*",
+        "*://seller-uk.tiktok.com/*",
+        "*://seller.tiktok.com/*",
+        "*://*.tiktokglobalshop.com/*"
+      ],
+      "js": ["content/content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/inject-fetch-hook.js"],
+      "matches": [
+        "*://*.tiktok.com/*",
+        "*://ads.tiktok.com/*",
+        "*://*.tiktokglobalshop.com/*"
+      ]
+    }
+  ],
+  "permissions": [
+    "storage",
+    "alarms",
+    "tabs",
+    "scripting",
+    "notifications",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "*://*.tiktok.com/*",
+    "*://ads.tiktok.com/*",
+    "*://*.tiktokglobalshop.com/*",
+    "https://open.feishu.cn/*",
+    "https://*.feishu.cn/*"
+  ]
+}

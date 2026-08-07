@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb125-98ab-7852-9940-e02d31680cc3",
+    "cwd": "E:\\project\\海外仓"
+  },
+  "session_summary": "Retrieve Claude Code Project Conversation Memory",
+  "created_at": "2026-07-30T03:50:58.994814700Z",
+  "updated_at": "2026-07-30T07:28:30.924669200Z",
+  "num_messages": 460,
+  "num_chat_messages": 146,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 12,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外仓/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/haiwaicang.git"
+  ],
+  "head_commit": "d9274d094da2705da6e87d53eb8fe29eed1fe013",
+  "head_branch": "master",
+  "request_id": "d82fb9a1-a525-49fd-be51-014a62a34615",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T07:01:07.838299400Z",
+  "generated_title": "Retrieve Claude Code Project Conversation Memory",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

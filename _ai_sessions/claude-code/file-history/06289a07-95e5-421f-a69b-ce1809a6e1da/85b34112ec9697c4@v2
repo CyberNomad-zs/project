@@ -1,0 +1,1034 @@
+﻿# Qingquan center ingest client (Stage A dual-write)
+# Dot-sourced by run-multi-store.ps1; can also be used alone.
+#
+# config.qingquan example:
+# {
+#   "enabled": true,
+#   "baseUrl": "https://qingquan.jmzlai.com",
+#   "apiKey": "<must match server INGEST_DEFAULT_API_KEY>",
+#   "source": "tiktok_ads",
+#   "failOpen": true,
+#   "timeoutSec": 30
+# }
+#
+# PS 5.1 pitfalls:
+# - @($hashtable) enumerates KEYS, not a single-element array
+# - return ,$object[] may still unwrap a single element on assignment
+# - Generic type literals like List[object] break the parser
+# Keep items in ArrayList; serialize via JavaScriptSerializer.
+
+function Get-QingquanConfig($cfg) {
+  if (-not $cfg.qingquan) {
+    return [pscustomobject]@{
+      enabled    = $false
+      baseUrl    = 'http://127.0.0.1:8000'
+      apiKey     = ''
+      source     = 'tiktok_ads'
+      failOpen   = $true
+      timeoutSec = 30
+    }
+  }
+  $q = $cfg.qingquan
+  $enabled = $false
+  if ($null -ne $q.enabled) { $enabled = [bool]$q.enabled }
+  $failOpen = $true
+  if ($null -ne $q.failOpen) { $failOpen = [bool]$q.failOpen }
+  $timeout = 30
+  if ($null -ne $q.timeoutSec) { $timeout = [int]$q.timeoutSec }
+  $source = 'tiktok_ads'
+  if ($q.source) { $source = [string]$q.source }
+  $base = 'http://127.0.0.1:8000'
+  if ($q.baseUrl) { $base = [string]$q.baseUrl }
+  $key = ''
+  if ($q.apiKey) { $key = [string]$q.apiKey }
+  return [pscustomobject]@{
+    enabled    = $enabled
+    baseUrl    = $base.TrimEnd('/')
+    apiKey     = $key
+    source     = $source
+    failOpen   = $failOpen
+    timeoutSec = $timeout
+  }
+}
+
+function Get-FeishuWriteMode($cfg) {
+  # direct | dual | center
+  $mode = 'direct'
+  if ($cfg.feishu -and $cfg.feishu.writeMode) {
+    $mode = [string]$cfg.feishu.writeMode
+  } elseif ($cfg.qingquan -and $cfg.qingquan.enabled) {
+    $mode = 'dual'
+  }
+  $mode = $mode.ToLowerInvariant()
+  if ($mode -notin @('direct', 'dual', 'center')) { $mode = 'direct' }
+  return $mode
+}
+
+function Get-QingquanItemList {
+  param($Items)
+  $list = New-Object System.Collections.ArrayList
+  if ($null -eq $Items) { return $list }
+
+  function Test-IsIngestItem($x) {
+    if ($null -eq $x) { return $false }
+    if ($x -is [string] -or $x -is [int] -or $x -is [long] -or $x -is [double] -or $x -is [decimal] -or $x -is [bool]) { return $false }
+    # 属性访问：PSCustomObject / Hashtable 通用
+    try {
+      $key = $x.idempotency_key
+      $pay = $x.payload
+      $sid = $x.shop_id
+      if ($null -ne $key -and "$key" -ne '' -and ($null -ne $pay -or $null -ne $sid)) { return $true }
+      if ($null -ne $pay -and $null -ne $sid) { return $true }
+    } catch {}
+    if ($x -is [System.Collections.IDictionary]) {
+      return ($x.Contains('idempotency_key') -or ($x.Contains('payload') -and $x.Contains('shop_id')))
+    }
+    return $false
+  }
+
+  if (Test-IsIngestItem $Items) {
+    [void]$list.Add($Items)
+    return $list
+  }
+
+  # 注意：不要用 foreach 直接扫 PSCustomObject（会枚举属性）
+  if ($Items -is [System.Collections.ArrayList]) {
+    for ($i = 0; $i -lt $Items.Count; $i++) {
+      $x = $Items[$i]
+      if (Test-IsIngestItem $x) { [void]$list.Add($x) }
+    }
+    return $list
+  }
+
+  if ($Items -is [System.Array]) {
+    for ($i = 0; $i -lt $Items.Length; $i++) {
+      $x = $Items[$i]
+      if (Test-IsIngestItem $x) { [void]$list.Add($x) }
+    }
+    return $list
+  }
+
+  return $list
+}
+
+function ConvertTo-QingquanIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [string]$Currency = 'USD'
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = New-Object System.Collections.ArrayList
+  foreach ($r in @($Rows)) {
+    $campaign = [string]$r.campaign
+    if (-not $campaign) { continue }
+    $storeId = [string]$r.storeId
+    $bizDate = [string]$r.date
+    $spend = 0; if ($null -ne $r.spend) { $spend = [double]$r.spend }
+    $orders = 0; if ($null -ne $r.orders) { $orders = [double]$r.orders }
+    $roi = $null; if ($null -ne $r.roi) { $roi = [double]$r.roi }
+    $revenue = 0; if ($null -ne $r.revenue) { $revenue = [double]$r.revenue }
+    $dailyBudget = $null
+    if ($null -ne $r.dailyBudget -and "$($r.dailyBudget)" -ne '') { $dailyBudget = [double]$r.dailyBudget }
+    $targetRoi = $null
+    if ($null -ne $r.targetRoi -and "$($r.targetRoi)" -ne '') { $targetRoi = [double]$r.targetRoi }
+    $netCost = $null
+    if ($null -ne $r.netCost -and "$($r.netCost)" -ne '') { $netCost = [double]$r.netCost }
+    $avgOrderCost = $null
+    if ($null -ne $r.avgOrderCost -and "$($r.avgOrderCost)" -ne '') { $avgOrderCost = [double]$r.avgOrderCost }
+    $status = 'success'; if ($r.status) { $status = [string]$r.status }
+    $planStatus = ''; if ($r.planStatus) { $planStatus = [string]$r.planStatus }
+    $deliveryStatus = ''; if ($r.deliveryStatus) { $deliveryStatus = [string]$r.deliveryStatus }
+    $sourceUrl = ''; if ($r.sourceUrl) { $sourceUrl = [string]$r.sourceUrl }
+    $storeName = ''; if ($r.store) { $storeName = [string]$r.store }
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+
+    $payload = @{
+      campaign_name   = $campaign
+      spend           = $spend
+      orders          = $orders
+      roi             = $roi
+      revenue         = $revenue
+      daily_budget    = $dailyBudget
+      target_roi      = $targetRoi
+      net_cost        = $netCost
+      avg_order_cost  = $avgOrderCost
+      delivery_status = $deliveryStatus
+      row_status      = $status
+      plan_status     = $planStatus
+      currency        = $rowCurrency
+      source_url      = $sourceUrl
+    }
+
+    [void]$items.Add([pscustomobject]@{
+      platform        = 'tiktok'
+      shop_id         = $storeId
+      shop_name       = $storeName
+      biz_date        = $bizDate
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_ads:{0}:{1}:{2}" -f $storeId, $campaign, $bizDate)
+      payload         = $payload
+      evidence        = @{ source_url = $sourceUrl }
+    })
+  }
+  # PS 5.1 unwraps a 1-element ArrayList into the bare Hashtable on `return`.
+  # -NoEnumerate keeps the list intact so .Count == item count (not key count).
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function Resolve-TikTokOrderDateTime {
+  param(
+    [string]$Text,
+    [datetime]$Ref = $(Get-Date)
+  )
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  $s = $Text.Trim()
+  if ($s -match '截止|送达日期|delivery\s*by') {
+    if ($s -notmatch '分钟前|小时前|天前|今天|昨天|星期|周') { return $null }
+  }
+  # 先剥 18 位订单号，再取 1~4 位相对量（避免 5769…72428 被当成 2428 分钟）
+  $s2 = [regex]::Replace($s, '57\d{16}', ' ')
+  $s2 = [regex]::Replace($s2, '\b\d{15,20}\b', ' ')
+  $s2 = $s2.Trim()
+  if ($s2 -match '(\d{1,4})\s*分钟前') { return $Ref.AddMinutes(-[int]$Matches[1]) }
+  if ($s2 -match '(\d{1,4})\s*小时前') { return $Ref.AddHours(-[int]$Matches[1]) }
+  if ($s2 -match '(\d{1,4})\s*天前') { return $Ref.AddDays(-[int]$Matches[1]) }
+  if ($s2 -match '(今天|昨天)\s*(\d{1,2}):(\d{2})(?::(\d{2}))?') {
+    $day = if ($Matches[1] -eq '今天') { $Ref.Date } else { $Ref.Date.AddDays(-1) }
+    $sec = 0; if ($Matches[4]) { $sec = [int]$Matches[4] }
+    return $day.AddHours([int]$Matches[2]).AddMinutes([int]$Matches[3]).AddSeconds($sec)
+  }
+  if ($s2 -match '(?:星期|周)([一二三四五六日天])\s*(\d{1,2}):(\d{2})(?::(\d{2}))?') {
+    $map = @{ '一' = 1; '二' = 2; '三' = 3; '四' = 4; '五' = 5; '六' = 6; '日' = 0; '天' = 0 }
+    $target = [int]$map[$Matches[1]]
+    $cur = [int]$Ref.DayOfWeek
+    $delta = ($cur - $target + 7) % 7
+    $day = $Ref.Date.AddDays(-$delta)
+    $sec = 0; if ($Matches[4]) { $sec = [int]$Matches[4] }
+    return $day.AddHours([int]$Matches[2]).AddMinutes([int]$Matches[3]).AddSeconds($sec)
+  }
+  $formats = @(
+    'yyyy/M/d H:mm:ss', 'yyyy/M/d H:mm', 'yyyy-M-d H:mm:ss', 'yyyy-M-d H:mm',
+    'yyyy/MM/dd HH:mm:ss', 'yyyy-MM-dd HH:mm:ss', 'yyyy/MM/dd HH:mm', 'yyyy-MM-dd'
+  )
+  foreach ($f in $formats) {
+    try {
+      return [datetime]::ParseExact($s2, $f, [System.Globalization.CultureInfo]::InvariantCulture)
+    } catch { }
+  }
+  try { return [datetime]::Parse($s2) } catch { return $null }
+}
+
+function ConvertTo-QingquanOrderIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [string]$StoreName = '',
+    [string]$BizDate = '',
+    [string]$Currency = 'USD',
+    [string]$SourceUrl = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = New-Object System.Collections.ArrayList
+  $refNow = Get-Date
+  try { if ($CollectedAt) { $refNow = [datetime]::Parse($CollectedAt) } } catch { $refNow = Get-Date }
+
+  foreach ($r in @($Rows)) {
+    $orderId = ''
+    if ($r.orderId) { $orderId = [string]$r.orderId }
+    elseif ($r.order_id) { $orderId = [string]$r.order_id }
+    if (-not $orderId) { continue }
+
+    $qty = 0
+    if ($null -ne $r.quantity) { try { $qty = [double]$r.quantity } catch { $qty = 0 } }
+    $pay = 0
+    if ($null -ne $r.payAmount) { try { $pay = [double]$r.payAmount } catch { $pay = 0 } }
+    elseif ($null -ne $r.pay_amount) { try { $pay = [double]$r.pay_amount } catch { $pay = 0 } }
+
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+    elseif ($r.currencyHint) { $rowCurrency = [string]$r.currencyHint }
+
+    $rowSourceUrl = $SourceUrl
+    if ($r.sourceUrl) { $rowSourceUrl = [string]$r.sourceUrl }
+
+    $rawCreate = ''
+    if ($r.createTime) { $rawCreate = [string]$r.createTime }
+    elseif ($r.create_time) { $rawCreate = [string]$r.create_time }
+    if (-not $rawCreate -and $r.createTimeRaw) { $rawCreate = [string]$r.createTimeRaw }
+    elseif (-not $rawCreate -and $r.create_time_raw) { $rawCreate = [string]$r.create_time_raw }
+    $rawPay = ''
+    if ($r.payTime) { $rawPay = [string]$r.payTime }
+    elseif ($r.pay_time) { $rawPay = [string]$r.pay_time }
+
+    $createDt = Resolve-TikTokOrderDateTime -Text $rawCreate -Ref $refNow
+    $payDt = Resolve-TikTokOrderDateTime -Text $rawPay -Ref $refNow
+    $createIso = ''
+    if ($createDt) { $createIso = $createDt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00') }
+    $payIso = ''
+    if ($payDt) { $payIso = $payDt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00') }
+
+    $biz = $BizDate
+    if (-not $biz) {
+      $cand = $null
+      if ($payDt) { $cand = $payDt.Date }
+      elseif ($createDt) { $cand = $createDt.Date }
+      if ($cand -and $cand -le $refNow.Date.AddDays(1)) {
+        $biz = $cand.ToString('yyyy-MM-dd')
+      }
+    }
+
+    $payload = @{
+      order_id        = $orderId
+      order_status    = $(if ($r.orderStatus) { [string]$r.orderStatus } elseif ($r.order_status) { [string]$r.order_status } else { '' })
+      pay_time        = $payIso
+      create_time     = $createIso
+      product_name    = $(if ($r.productName) { [string]$r.productName } elseif ($r.product_name) { [string]$r.product_name } else { '' })
+      seller_sku      = $(if ($r.sellerSku) { [string]$r.sellerSku } elseif ($r.seller_sku) { [string]$r.seller_sku } else { '' })
+      sku_id          = $(if ($r.skuId) { [string]$r.skuId } elseif ($r.sku_id) { [string]$r.sku_id } else { '' })
+      quantity        = $qty
+      pay_amount      = $pay
+      currency        = $rowCurrency
+      shipping_status = $(if ($r.shippingStatus) { [string]$r.shippingStatus } else { '' })
+      buyer_region    = $(if ($r.buyerRegion) { [string]$r.buyerRegion } else { '' })
+      source_url      = $rowSourceUrl
+    }
+    if ($r.createTimeRaw) { $payload['create_time_raw'] = [string]$r.createTimeRaw }
+    elseif ($rawCreate) { $payload['create_time_raw'] = $rawCreate }
+
+    [void]$items.Add([pscustomobject]@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $(if ($biz) { $biz } else { $null })
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_orders:{0}:{1}" -f $StoreId, $orderId)
+      payload         = $payload
+      evidence        = @{ source_url = $rowSourceUrl }
+    })
+  }
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanProductIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [string]$StoreName = '',
+    [string]$Currency = 'GBP',
+    [string]$SourceUrl = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'GBP' }
+  $items = New-Object System.Collections.ArrayList
+  foreach ($r in @($Rows)) {
+    $productId = ''
+    if ($r.productId) { $productId = [string]$r.productId }
+    elseif ($r.product_id) { $productId = [string]$r.product_id }
+    $sellerSku = ''
+    if ($r.sellerSku) { $sellerSku = [string]$r.sellerSku }
+    elseif ($r.seller_sku) { $sellerSku = [string]$r.seller_sku }
+    $productName = ''
+    if ($r.productName) { $productName = [string]$r.productName }
+    elseif ($r.product_name) { $productName = [string]$r.product_name }
+    if (-not $productId) {
+      if ($sellerSku) { $productId = "sku:$sellerSku" }
+      elseif ($productName) { $productId = "name:$($productName.Substring(0, [Math]::Min(80, $productName.Length)))" }
+    }
+    if (-not $productId) { continue }
+
+    $stock = $null
+    if ($null -ne $r.stockQty -and "$($r.stockQty)" -ne '') { try { $stock = [double]$r.stockQty } catch {} }
+    $price = $null
+    if ($null -ne $r.price -and "$($r.price)" -ne '') { try { $price = [double]$r.price } catch {} }
+    $sales = $null
+    if ($null -ne $r.salesQty -and "$($r.salesQty)" -ne '') { try { $sales = [double]$r.salesQty } catch {} }
+
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+    elseif ($r.currencyHint) { $rowCurrency = [string]$r.currencyHint }
+    $rowSourceUrl = $SourceUrl
+    if ($r.sourceUrl) { $rowSourceUrl = [string]$r.sourceUrl }
+
+    $payload = @{
+      product_id   = $productId
+      product_name = $productName
+      seller_sku   = $sellerSku
+      status       = $(if ($r.status) { [string]$r.status } else { '' })
+      stock_qty    = $stock
+      price        = $price
+      sales_qty    = $sales
+      currency     = $rowCurrency
+      source_url   = $rowSourceUrl
+    }
+
+    [void]$items.Add([pscustomobject]@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $null
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_products:{0}:{1}" -f $StoreId, $productId)
+      payload         = $payload
+      evidence        = @{ source_url = $rowSourceUrl }
+    })
+  }
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanProductTrafficIngestItems {
+  <#
+    P2.1a 商品卡流量 → tiktok_product_traffic
+    输入：scrape-product-traffic-page.js 的 payload（含 products[]）
+    语义：窗口快照；一行一 product；biz_date 为窗口锚点日（不拆 7 日）
+  #>
+  param(
+    [Parameter(Mandatory = $true)] $Payload,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [Parameter(Mandatory = $true)] [string]$BizDate,
+    [string]$StoreName = '',
+    [string]$Currency = 'GBP',
+    [string]$SourceUrl = ''
+  )
+  $items = New-Object System.Collections.ArrayList
+  $p = $Payload
+  if (-not $p) { Write-Output -NoEnumerate @(); return }
+
+  $cur = $Currency
+  if ($p.currency) { $cur = [string]$p.currency }
+  $src = $SourceUrl
+  if ($p.url) { $src = [string]$p.url }
+  $channelDefault = 'product_card'
+  if ($p.channelDefault) { $channelDefault = [string]$p.channelDefault }
+  elseif ($p.channel) { $channelDefault = [string]$p.channel }
+
+  $windowLabel = $null
+  if ($p.window) { $windowLabel = [string]$p.window }
+  elseif ($p.raw -and $p.raw.window) { $windowLabel = [string]$p.raw.window }
+
+  $pageKpis = $null
+  if ($p.kpis) { $pageKpis = $p.kpis }
+
+  $rows = @()
+  if ($p.products) { $rows = @($p.products) }
+  elseif ($p.Rows) { $rows = @($p.Rows) }
+
+  foreach ($r in $rows) {
+    $productId = ''
+    if ($r.productId) { $productId = [string]$r.productId }
+    elseif ($r.product_id) { $productId = [string]$r.product_id }
+    $productName = ''
+    if ($r.title) { $productName = [string]$r.title }
+    elseif ($r.productName) { $productName = [string]$r.productName }
+    elseif ($r.product_name) { $productName = [string]$r.product_name }
+    if (-not $productId) {
+      if ($productName -match '\b(\d{10,})\b') { $productId = $Matches[1] }
+    }
+    if (-not $productId) { continue }
+
+    $channel = $channelDefault
+    if ($r.channel) { $channel = [string]$r.channel }
+    if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'product_card' }
+
+    $rowCur = $cur
+    if ($r.currency) { $rowCur = [string]$r.currency }
+    $rowSrc = $src
+    if ($r.href) { $rowSrc = [string]$r.href }
+    elseif ($r.sourceUrl) { $rowSrc = [string]$r.sourceUrl }
+
+    $numImpr = $null; $numClicks = $null; $numCtr = $null
+    $numOrders = $null; $numGmv = $null; $numCvr = $null; $numCust = $null
+    if ($null -ne $r.impressions -and "$($r.impressions)" -ne '') { try { $numImpr = [double]$r.impressions } catch {} }
+    if ($null -ne $r.clicks -and "$($r.clicks)" -ne '') { try { $numClicks = [double]$r.clicks } catch {} }
+    if ($null -ne $r.ctr -and "$($r.ctr)" -ne '') { try { $numCtr = [double]$r.ctr } catch {} }
+    if ($null -ne $r.orders -and "$($r.orders)" -ne '') { try { $numOrders = [double]$r.orders } catch {} }
+    elseif ($null -ne $r.orders_cnt -and "$($r.orders_cnt)" -ne '') { try { $numOrders = [double]$r.orders_cnt } catch {} }
+    if ($null -ne $r.gmv -and "$($r.gmv)" -ne '') { try { $numGmv = [double]$r.gmv } catch {} }
+    if ($null -ne $r.cvr -and "$($r.cvr)" -ne '') { try { $numCvr = [double]$r.cvr } catch {} }
+    if ($null -ne $r.customers -and "$($r.customers)" -ne '') { try { $numCust = [double]$r.customers } catch {} }
+
+    # 英文站 Viewers / View-to-paid 漏映射时，从 rawCells 形态回填（名称|GMV|CVR%|曝光|操作）
+    if (($null -eq $numImpr -or $null -eq $numCvr -or $null -eq $numGmv) -and $r.rawCells) {
+      foreach ($cell in @($r.rawCells)) {
+        $t = [string]$cell
+        if ([string]::IsNullOrWhiteSpace($t)) { continue }
+        if ($t -match 'details?|详情|操作') { continue }
+        if (($null -eq $numGmv) -and ($t -match '[£$€¥￥]')) {
+          if ($t -match '([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)') {
+            try { $numGmv = [double]($Matches[1] -replace ',', '') } catch {}
+          }
+          continue
+        }
+        if (($null -eq $numCvr) -and ($t -match '([0-9]+(?:\.[0-9]+)?)\s*%')) {
+          try { $numCvr = [double]$Matches[1] } catch {}
+          continue
+        }
+        if (($null -eq $numImpr) -and ($t -match '([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*([KkMm万])')) {
+          try {
+            $base = [double]($Matches[1] -replace ',', '')
+            $u = $Matches[2]
+            if ($u -eq 'K' -or $u -eq 'k') { $numImpr = $base * 1000 }
+            elseif ($u -eq 'M' -or $u -eq 'm') { $numImpr = $base * 1000000 }
+            elseif ($u -eq '万') { $numImpr = $base * 10000 }
+            else { $numImpr = $base }
+          } catch {}
+        }
+      }
+    }
+
+    $body = @{
+      product_id   = $productId
+      product_name = $productName
+      channel      = $channel
+      impressions  = $numImpr
+      clicks       = $numClicks
+      ctr          = $numCtr
+      orders_cnt   = $numOrders
+      gmv          = $numGmv
+      cvr          = $numCvr
+      customers    = $numCust
+      currency     = $rowCur
+      source_url   = $rowSrc
+    }
+    if ($windowLabel) { $body['window'] = $windowLabel }
+    if ($pageKpis) { $body['page_kpis'] = $pageKpis }
+    if ($r.rawCells) { $body['raw_cells'] = $r.rawCells }
+    if ($p.raw -and $p.raw.tableHeaders) { $body['table_headers'] = $p.raw.tableHeaders }
+
+    $idem = ("tiktok_product_traffic:{0}:{1}:{2}:{3}" -f $StoreId, $BizDate, $productId, $channel)
+    [void]$items.Add([pscustomobject]@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $BizDate
+      collected_at    = $CollectedAt
+      idempotency_key = $idem
+      payload         = $body
+      evidence        = @{ source_url = $rowSrc }
+    })
+  }
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanContentIngestItems {
+  <#
+    P2.1b 视频内容行 → tiktok_content
+    输入：scrape-video-list-page.js 的 payload（含 videos[]）
+    语义：窗口快照；一行一 content_id；biz_date 为窗口锚点日（不拆 7 日）
+    content_id 必须来自 video-detail-item?id= 等稳定键；无 id 行跳过
+  #>
+  param(
+    [Parameter(Mandatory = $true)] $Payload,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [Parameter(Mandatory = $true)] [string]$BizDate,
+    [string]$StoreName = '',
+    [string]$Currency = 'GBP',
+    [string]$SourceUrl = ''
+  )
+  $items = New-Object System.Collections.ArrayList
+  $p = $Payload
+  if (-not $p) { Write-Output -NoEnumerate @(); return }
+
+  $cur = $Currency
+  if ($p.currency) { $cur = [string]$p.currency }
+  $src = $SourceUrl
+  if ($p.url) { $src = [string]$p.url }
+  $channelDefault = 'short_video'
+  if ($p.channelDefault) { $channelDefault = [string]$p.channelDefault }
+  elseif ($p.channel) { $channelDefault = [string]$p.channel }
+
+  $windowLabel = $null
+  if ($p.window) { $windowLabel = [string]$p.window }
+  elseif ($p.raw -and $p.raw.window) { $windowLabel = [string]$p.raw.window }
+
+  $rows = @()
+  if ($p.videos) { $rows = @($p.videos) }
+  elseif ($p.Rows) { $rows = @($p.Rows) }
+
+  foreach ($r in $rows) {
+    $contentId = ''
+    if ($r.contentId) { $contentId = [string]$r.contentId }
+    elseif ($r.content_id) { $contentId = [string]$r.content_id }
+    elseif ($r.videoId) { $contentId = [string]$r.videoId }
+    elseif ($r.video_id) { $contentId = [string]$r.video_id }
+    if (-not $contentId -and $r.href) {
+      $href = [string]$r.href
+      if ($href -match 'video-detail-item[^#]*[?&]id=(\d{6,})') { $contentId = $Matches[1] }
+      elseif ($href -match '[?&](?:video_id|videoId|content_id|contentId)=(\d{6,})') { $contentId = $Matches[1] }
+    }
+    if (-not $contentId) { continue }
+
+    $title = ''
+    if ($r.title) { $title = [string]$r.title }
+    elseif ($r.content_title) { $title = [string]$r.content_title }
+    elseif ($r.contentTitle) { $title = [string]$r.contentTitle }
+
+    $channel = $channelDefault
+    if ($r.channel) { $channel = [string]$r.channel }
+    if ([string]::IsNullOrWhiteSpace($channel)) { $channel = 'short_video' }
+
+    $productId = $null
+    if ($r.productId) { $productId = [string]$r.productId }
+    elseif ($r.product_id) { $productId = [string]$r.product_id }
+    elseif ($r.productRef -and ("$($r.productRef)" -match '\b(\d{10,})\b')) { $productId = $Matches[1] }
+
+    $rowCur = $cur
+    if ($r.currency) { $rowCur = [string]$r.currency }
+    $rowSrc = $src
+    if ($r.href) { $rowSrc = [string]$r.href }
+    elseif ($r.sourceUrl) { $rowSrc = [string]$r.sourceUrl }
+
+    $numGmv = $null; $numOrders = $null; $numUnits = $null
+    $numPlay = $null; $numImpr = $null; $numClicks = $null
+    $numCtr = $null; $numCvr = $null; $numCust = $null
+    if ($null -ne $r.attributedGmv -and "$($r.attributedGmv)" -ne '') { try { $numGmv = [double]$r.attributedGmv } catch {} }
+    elseif ($null -ne $r.attributed_gmv -and "$($r.attributed_gmv)" -ne '') { try { $numGmv = [double]$r.attributed_gmv } catch {} }
+    if ($null -ne $r.attributedSkuOrders -and "$($r.attributedSkuOrders)" -ne '') { try { $numOrders = [double]$r.attributedSkuOrders } catch {} }
+    elseif ($null -ne $r.attributed_sku_orders -and "$($r.attributed_sku_orders)" -ne '') { try { $numOrders = [double]$r.attributed_sku_orders } catch {} }
+    if ($null -ne $r.attributedUnits -and "$($r.attributedUnits)" -ne '') { try { $numUnits = [double]$r.attributedUnits } catch {} }
+    elseif ($null -ne $r.attributed_units -and "$($r.attributed_units)" -ne '') { try { $numUnits = [double]$r.attributed_units } catch {} }
+    if ($null -ne $r.playCount -and "$($r.playCount)" -ne '') { try { $numPlay = [double]$r.playCount } catch {} }
+    elseif ($null -ne $r.play_count -and "$($r.play_count)" -ne '') { try { $numPlay = [double]$r.play_count } catch {} }
+    if ($null -ne $r.impressions -and "$($r.impressions)" -ne '') { try { $numImpr = [double]$r.impressions } catch {} }
+    if ($null -ne $r.clicks -and "$($r.clicks)" -ne '') { try { $numClicks = [double]$r.clicks } catch {} }
+    if ($null -ne $r.ctr -and "$($r.ctr)" -ne '') { try { $numCtr = [double]$r.ctr } catch {} }
+    if ($null -ne $r.cvr -and "$($r.cvr)" -ne '') { try { $numCvr = [double]$r.cvr } catch {} }
+    if ($null -ne $r.customers -and "$($r.customers)" -ne '') { try { $numCust = [double]$r.customers } catch {} }
+
+    $body = @{
+      content_id            = $contentId
+      content_title         = $title
+      channel               = $channel
+      product_id            = $productId
+      attributed_gmv        = $numGmv
+      attributed_sku_orders = $numOrders
+      attributed_units      = $numUnits
+      play_count            = $numPlay
+      impressions           = $numImpr
+      clicks                = $numClicks
+      ctr                   = $numCtr
+      cvr                   = $numCvr
+      customers             = $numCust
+      currency              = $rowCur
+      source_url            = $rowSrc
+    }
+    if ($windowLabel) { $body['window'] = $windowLabel }
+    if ($r.publishedAt) { $body['published_at'] = [string]$r.publishedAt }
+    elseif ($r.published_at) { $body['published_at'] = [string]$r.published_at }
+    if ($r.rawCells) { $body['raw_cells'] = $r.rawCells }
+    if ($p.raw -and $p.raw.tableHeaders) { $body['table_headers'] = $p.raw.tableHeaders }
+
+    $idem = ("tiktok_content:{0}:{1}:{2}:{3}" -f $StoreId, $BizDate, $contentId, $channel)
+    [void]$items.Add([pscustomobject]@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $BizDate
+      collected_at    = $CollectedAt
+      idempotency_key = $idem
+      payload         = $body
+      evidence        = @{ source_url = $rowSrc }
+    })
+  }
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanShopDailyIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Payload,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [Parameter(Mandatory = $true)] [string]$BizDate,
+    [string]$StoreName = '',
+    [string]$Currency = 'GBP',
+    [string]$SourceUrl = ''
+  )
+  $items = New-Object System.Collections.ArrayList
+  $p = $Payload
+  $cur = $Currency
+  if ($p.currency) { $cur = [string]$p.currency }
+  $src = $SourceUrl
+  if ($p.url) { $src = [string]$p.url }
+  $body = @{
+    gmv            = $(if ($null -ne $p.gmv) { [double]$p.gmv } else { $null })
+    orders_cnt     = $(if ($null -ne $p.ordersCnt) { [double]$p.ordersCnt } elseif ($null -ne $p.orders_cnt) { [double]$p.orders_cnt } else { $null })
+    buyers_cnt     = $(if ($null -ne $p.buyersCnt) { [double]$p.buyersCnt } elseif ($null -ne $p.buyers_cnt) { [double]$p.buyers_cnt } else { $null })
+    refund_amount  = $(if ($null -ne $p.refundAmount) { [double]$p.refundAmount } elseif ($null -ne $p.refund_amount) { [double]$p.refund_amount } else { $null })
+    currency       = $cur
+    source_url     = $src
+  }
+  if ($p.raw) { $body['scrape_raw'] = $p.raw }
+  [void]$items.Add([pscustomobject]@{
+    platform        = 'tiktok'
+    shop_id         = $StoreId
+    shop_name       = $StoreName
+    biz_date        = $BizDate
+    collected_at    = $CollectedAt
+    idempotency_key = ("tiktok_shop_daily:{0}:{1}" -f $StoreId, $BizDate)
+    payload         = $body
+    evidence        = @{ source_url = $src }
+  })
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanHealthDailyIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Payload,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [Parameter(Mandatory = $true)] [string]$BizDate,
+    [string]$StoreName = '',
+    [string]$SourceUrl = ''
+  )
+  $items = New-Object System.Collections.ArrayList
+  $p = $Payload
+  $src = $SourceUrl
+  if ($p.url) { $src = [string]$p.url }
+  $body = @{
+    health_score            = $(if ($null -ne $p.healthScore) { [double]$p.healthScore } elseif ($null -ne $p.health_score) { [double]$p.health_score } else { $null })
+    late_dispatch_rate      = $(if ($null -ne $p.lateDispatchRate) { [double]$p.lateDispatchRate } elseif ($null -ne $p.late_dispatch_rate) { [double]$p.late_dispatch_rate } else { $null })
+    negative_feedback_rate  = $(if ($null -ne $p.negativeFeedbackRate) { [double]$p.negativeFeedbackRate } elseif ($null -ne $p.negative_feedback_rate) { [double]$p.negative_feedback_rate } else { $null })
+    status_label            = $(if ($p.statusLabel) { [string]$p.statusLabel } elseif ($p.status_label) { [string]$p.status_label } else { '' })
+    source_url              = $src
+  }
+  if ($p.raw) { $body['scrape_raw'] = $p.raw }
+  [void]$items.Add([pscustomobject]@{
+    platform        = 'tiktok'
+    shop_id         = $StoreId
+    shop_name       = $StoreName
+    biz_date        = $BizDate
+    collected_at    = $CollectedAt
+    idempotency_key = ("tiktok_health_daily:{0}:{1}" -f $StoreId, $BizDate)
+    payload         = $body
+    evidence        = @{ source_url = $src }
+  })
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanFinanceDailyIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Payload,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [Parameter(Mandatory = $true)] [string]$BizDate,
+    [string]$StoreName = '',
+    [string]$Currency = 'GBP',
+    [string]$SourceUrl = ''
+  )
+  $items = New-Object System.Collections.ArrayList
+  $p = $Payload
+  $cur = $Currency
+  if ($p.currency) { $cur = [string]$p.currency }
+  $src = $SourceUrl
+  if ($p.url) { $src = [string]$p.url }
+  $body = @{
+    settlement_amount = $(if ($null -ne $p.settlementAmount) { [double]$p.settlementAmount } elseif ($null -ne $p.settlement_amount) { [double]$p.settlement_amount } else { $null })
+    pending_amount    = $(if ($null -ne $p.pendingAmount) { [double]$p.pendingAmount } elseif ($null -ne $p.pending_amount) { [double]$p.pending_amount } else { $null })
+    refund_amount     = $(if ($null -ne $p.refundAmount) { [double]$p.refundAmount } elseif ($null -ne $p.refund_amount) { [double]$p.refund_amount } else { $null })
+    currency          = $cur
+    source_url        = $src
+  }
+  if ($p.raw) { $body['scrape_raw'] = $p.raw }
+  [void]$items.Add([pscustomobject]@{
+    platform        = 'tiktok'
+    shop_id         = $StoreId
+    shop_name       = $StoreName
+    biz_date        = $BizDate
+    collected_at    = $CollectedAt
+    idempotency_key = ("tiktok_finance_daily:{0}:{1}" -f $StoreId, $BizDate)
+    payload         = $body
+    evidence        = @{ source_url = $src }
+  })
+  # 返回 object[]；单元素也保持数组，避免解包成 Hashtable
+  Write-Output -NoEnumerate @($items.ToArray())
+}
+
+function ConvertTo-QingquanIngestJson {
+  param([Parameter(Mandatory = $true)] $Items)
+  $list = Get-QingquanItemList $Items
+  if ($list.Count -eq 0) {
+    throw 'qingquan payload has 0 items'
+  }
+
+  try {
+    Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+    $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $ser.MaxJsonLength = 50MB
+    $payload = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+    $payload['items'] = $list.ToArray()
+    $json = $ser.Serialize($payload)
+  } catch {
+    $parts = New-Object System.Collections.ArrayList
+    foreach ($it in $list) {
+      $piece = ($it | ConvertTo-Json -Depth 12 -Compress)
+      [void]$parts.Add($piece)
+    }
+    $json = '{"items":[' + ($parts -join ',') + ']}'
+  }
+
+  if ([string]::IsNullOrWhiteSpace($json) -or $json -notmatch '"items"\s*:\s*\[') {
+    $preview = ''
+    if ($json) { $preview = $json.Substring(0, [Math]::Min(120, $json.Length)) }
+    $len = 0
+    if ($json) { $len = $json.Length }
+    throw ("qingquan payload json invalid (len={0}): {1}" -f $len, $preview)
+  }
+  if ($json -match '"items"\s*:\s*\[\s*\]') {
+    throw 'qingquan payload items array is empty after serialize'
+  }
+  return $json
+}
+
+function Send-QingquanIngest {
+  param(
+    [Parameter(Mandatory = $true)] $Config,
+    [Parameter(Mandatory = $true)] $Items,
+    [string]$Source = '',
+    [switch]$Quiet
+  )
+  $q = Get-QingquanConfig $Config
+  if (-not $q.enabled) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'qingquan.disabled'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+  if (-not $q.apiKey) {
+    $msg = 'qingquan.apiKey empty'
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = 0 }
+    }
+    throw $msg
+  }
+
+  $itemList = Get-QingquanItemList $Items
+  if ($itemList.Count -eq 0) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'empty-items'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+
+  # 大批量（订单 400 行 refresh）单请求易超时；按批发送并汇总
+  $batchSize = 80
+  if ($itemList.Count -gt 120) { $batchSize = 50 }
+  $chunks = New-Object System.Collections.ArrayList
+  for ($i = 0; $i -lt $itemList.Count; $i += $batchSize) {
+    $end = [Math]::Min($i + $batchSize - 1, $itemList.Count - 1)
+    $chunk = New-Object System.Collections.ArrayList
+    for ($j = $i; $j -le $end; $j++) { [void]$chunk.Add($itemList[$j]) }
+    # 关键：不要把单元素 ArrayList 直接当 $Items 传——PS 会解包成 Hashtable，
+    # Get-QingquanItemList 再按字典 key 枚举 → 0 items → 假成功 accepted=0
+    [void]$chunks.Add(@($chunk.ToArray()))
+  }
+
+  $totAccepted = 0; $totDup = 0; $totFailed = 0; $lastErr = $null; $anyOk = $false
+  $idx = 0
+  foreach ($chunk in $chunks) {
+    $idx++
+    $n = @($chunk).Count
+    if ($chunks.Count -gt 1 -and -not $Quiet) {
+      Write-Host ("  qingquan batch {0}/{1} items={2}" -f $idx, $chunks.Count, $n)
+    }
+    $one = Send-QingquanIngestBatch -Config $Config -Items $chunk -Source $Source -Quiet:$Quiet -TimeoutSecOverride $(if ($n -gt 40) { 90 } else { 0 })
+    if ($one.ok) { $anyOk = $true }
+    $totAccepted += [int]$one.accepted
+    $totDup += [int]$one.duplicated
+    $totFailed += [int]$one.failed
+    if ($one.error) { $lastErr = [string]$one.error }
+  }
+  return [pscustomobject]@{
+    ok = $anyOk -or ($totFailed -eq 0)
+    skipped = $false
+    accepted = $totAccepted
+    duplicated = $totDup
+    failed = $totFailed
+    error = $lastErr
+  }
+}
+
+function Send-QingquanIngestBatch {
+  param(
+    [Parameter(Mandatory = $true)] $Config,
+    [Parameter(Mandatory = $true)] $Items,
+    [string]$Source = '',
+    [switch]$Quiet,
+    [int]$TimeoutSecOverride = 0
+  )
+  $q = Get-QingquanConfig $Config
+  if (-not $q.enabled) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'qingquan.disabled'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+  if (-not $q.apiKey) {
+    $msg = 'qingquan.apiKey empty'
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = 0 }
+    }
+    throw $msg
+  }
+
+  $itemList = Get-QingquanItemList $Items
+  if ($itemList.Count -eq 0) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'empty-items'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+
+  $useSource = $q.source
+  if (-not [string]::IsNullOrWhiteSpace($Source)) { $useSource = $Source.Trim() }
+  $url = "{0}/api/v1/ingest/{1}" -f $q.baseUrl, $useSource
+  try {
+    $json = ConvertTo-QingquanIngestJson -Items $itemList
+  } catch {
+    $msg = [string]$_
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = $itemList.Count }
+    }
+    throw
+  }
+
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  $bodyBytes = $utf8.GetBytes($json)
+  if ($bodyBytes.Length -lt 10) {
+    $msg = ("qingquan body too short: {0} bytes" -f $bodyBytes.Length)
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = $itemList.Count }
+    }
+    throw $msg
+  }
+
+  $timeoutSec = [Math]::Max(10, [int]$q.timeoutSec)
+  if ($TimeoutSecOverride -gt 0) { $timeoutSec = [Math]::Max($timeoutSec, $TimeoutSecOverride) }
+
+  try {
+    $curlCmd = Get-Command curl.exe -ErrorAction SilentlyContinue
+    $text = $null
+    $httpCode = 0
+    if ($curlCmd) {
+      $tmp = [System.IO.Path]::GetTempFileName()
+      try {
+        [System.IO.File]::WriteAllBytes($tmp, $bodyBytes)
+        $outFile = [System.IO.Path]::GetTempFileName()
+        try {
+          $curlArgs = @(
+            '-sS', '-X', 'POST', $url,
+            '-H', 'Content-Type: application/json; charset=utf-8',
+            '-H', ("X-Api-Key: {0}" -f $q.apiKey),
+            '--data-binary', ("@{0}" -f $tmp),
+            '-o', $outFile,
+            '-w', '%{http_code}',
+            '--connect-timeout', '15',
+            '--max-time', ([string]$timeoutSec)
+          )
+          $httpCodeStr = & curl.exe @curlArgs 2>&1
+          if ($LASTEXITCODE -ne 0 -and -not (Test-Path $outFile)) {
+            throw ("curl failed: {0}" -f $httpCodeStr)
+          }
+          if ($httpCodeStr -match '(\d{3})\s*$') { $httpCode = [int]$Matches[1] }
+          elseif ("$httpCodeStr" -match '^\d{3}$') { $httpCode = [int]$httpCodeStr }
+          $text = [System.IO.File]::ReadAllText($outFile, $utf8)
+          if ($httpCode -ge 400) {
+            throw ("HTTP {0}: {1}" -f $httpCode, $text)
+          }
+        } finally {
+          Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+        }
+      } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+      }
+    } else {
+      $req = [System.Net.HttpWebRequest]::Create($url)
+      $req.Method = 'POST'
+      $req.Timeout = [Math]::Max(5000, [int]($timeoutSec * 1000))
+      $req.ReadWriteTimeout = $req.Timeout
+      $req.ContentType = 'application/json; charset=utf-8'
+      $req.Accept = 'application/json'
+      $req.Headers.Add('X-Api-Key', $q.apiKey)
+      $req.ContentLength = $bodyBytes.Length
+      $req.ServicePoint.Expect100Continue = $false
+      $stream = $req.GetRequestStream()
+      try { $stream.Write($bodyBytes, 0, $bodyBytes.Length) } finally { $stream.Close() }
+
+      $httpResp = $req.GetResponse()
+      try {
+        $httpCode = [int]$httpResp.StatusCode
+        $reader = New-Object System.IO.StreamReader($httpResp.GetResponseStream(), $utf8)
+        try { $text = $reader.ReadToEnd() } finally { $reader.Close() }
+      } finally { $httpResp.Close() }
+    }
+
+    $resp = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      try { $resp = $text | ConvertFrom-Json } catch { $resp = $null }
+    }
+    $accepted = 0; $duplicated = 0; $failed = 0
+    if ($null -ne $resp -and $null -ne $resp.accepted) { $accepted = [int]$resp.accepted }
+    if ($null -ne $resp -and $null -ne $resp.duplicated) { $duplicated = [int]$resp.duplicated }
+    if ($null -ne $resp -and $null -ne $resp.failed) { $failed = [int]$resp.failed }
+    return [pscustomobject]@{
+      ok         = ($failed -eq 0)
+      skipped    = $false
+      accepted   = $accepted
+      duplicated = $duplicated
+      failed     = $failed
+      resp       = $resp
+      error      = $null
+      httpCode   = $httpCode
+      bodyBytes  = $bodyBytes.Length
+    }
+  }
+  catch {
+    $err = [string]$_
+    $statusCode = 0
+    try {
+      $ex = $_.Exception
+      while ($ex -and -not ($ex -is [System.Net.WebException])) { $ex = $ex.InnerException }
+      if ($ex -is [System.Net.WebException] -and $ex.Response) {
+        $statusCode = [int]$ex.Response.StatusCode
+        $sr = New-Object System.IO.StreamReader($ex.Response.GetResponseStream(), $utf8)
+        $bodyErr = $sr.ReadToEnd()
+        $sr.Close()
+        if ($bodyErr) { $err = ("HTTP {0}: {1}" -f $statusCode, $bodyErr) }
+      }
+    } catch {}
+    if ($err -match 'API Key|401') {
+      $err = $err + ' | check stores.config.json qingquan.apiKey == server INGEST_DEFAULT_API_KEY'
+    }
+    if ($err -match 'Field required' -and $err -match 'body') {
+      $err = $err + (" | local bodyBytes={0} url={1}" -f $bodyBytes.Length, $url)
+    }
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning ("qingquan ingest failed (failOpen): {0}" -f $err) }
+      return [pscustomobject]@{
+        ok         = $false
+        skipped    = $false
+        accepted   = 0
+        duplicated = 0
+        failed     = $itemList.Count
+        resp       = $null
+        error      = $err
+        httpCode   = $statusCode
+        bodyBytes  = $bodyBytes.Length
+      }
+    }
+    throw
+  }
+}
+
+function Test-QingquanHealth {
+  param([Parameter(Mandatory = $true)] $Config)
+  $q = Get-QingquanConfig $Config
+  $url = "{0}/health" -f $q.baseUrl
+  try {
+    $r = Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 10
+    return [pscustomobject]@{ ok = ($r.status -eq 'ok'); resp = $r; error = $null }
+  }
+  catch {
+    return [pscustomobject]@{ ok = $false; resp = $null; error = [string]$_ }
+  }
+}

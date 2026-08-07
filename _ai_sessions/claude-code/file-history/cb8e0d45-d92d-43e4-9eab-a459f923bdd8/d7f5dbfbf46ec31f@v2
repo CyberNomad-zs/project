@@ -1,0 +1,81 @@
+# -*- coding: utf-8 -*-
+"""
+探清 ERP「全部渠道」弹层里渠道项的 DOM，并实测：打开->(搜索)->选中某渠道->确定->数该渠道待处理。
+只读。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+TEST_CHANNEL = "昇新海外仓-BLACKCAT-RM"
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            print("ERP 未登录"); ctx.close(); return
+        erp.open_order_ship(page)
+        erp.goto_view(page, "待处理")
+        time.sleep(2)
+        n_all = erp.count_orders(page)
+        print("全部待处理:", n_all)
+
+        # 打开渠道弹层
+        page.click("input[placeholder*='渠道']", timeout=5000)
+        time.sleep(1.2)
+
+        # 探清渠道项结构：找含 '昇新海外仓' 且较短的可见叶子元素
+        items = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('*').forEach(e=>{
+                if(e.children.length>0) return;               // 只要叶子
+                const t=(e.innerText||'').trim();
+                if(t.startsWith('昇新海外仓') && t.length<40 && e.offsetParent!==null){
+                    let cb=e.closest('[class*=checkbox]') || e.parentElement;
+                    out.push({tag:e.tagName, cls:(typeof e.className==='string'?e.className:'').slice(0,50),
+                              txt:t, parentCls:(cb&&typeof cb.className==='string'?cb.className:'').slice(0,60)});
+                }
+            });
+            return out;
+        }""")
+        print("=== 渠道叶子项 ===")
+        for it in items:
+            print("  ", it)
+
+        # 搜索框
+        sb = page.query_selector("input[placeholder='搜索']")
+        print("搜索框存在:", bool(sb))
+        if sb:
+            sb.fill(TEST_CHANNEL); time.sleep(1.2)
+            print("已在搜索框输入:", TEST_CHANNEL)
+
+        # 点中目标渠道项（可见、文本==目标）
+        clicked = False
+        for e in page.query_selector_all("*"):
+            try:
+                if e.is_visible() and (e.inner_text() or "").strip() == TEST_CHANNEL and len(e.query_selector_all("*")) == 0:
+                    e.click(); clicked = True; break
+            except Exception:
+                continue
+        print("点中渠道项:", clicked)
+        time.sleep(0.8)
+
+        # 确定
+        for t in ["确定", "确认"]:
+            b = page.query_selector(f".el-popper:visible button:has-text('{t}'), button:has-text('{t}')")
+            if b and b.is_visible():
+                b.click(); print("点了", t); break
+        time.sleep(2.5)
+
+        n_ch = erp.count_orders(page)
+        print(f"=== 渠道[{TEST_CHANNEL}] 待处理: {n_ch}  (全部={n_all}) ===")
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_channel_pick.png"), full_page=True)
+        time.sleep(12)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

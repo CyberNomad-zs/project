@@ -1,0 +1,272 @@
+# -*- coding: utf-8 -*-
+"""
+ERP（赛狐 Sellfox）操作：订单 > 订单处理（订单发货）
+=== 第一步：物流下单（对应视频前 50 多秒）===
+  在【待处理】视图，(可选)按渠道筛选 -> 全选订单 -> 点击【物流下单】把订单投入海外仓
+  -> 读取结果弹窗「成功X 失败Y」(失败常见：所选仓库库存不足)。
+DRY_RUN=True 时：完成 切视图/筛选/全选/统计，但【不】点击"物流下单"，只记录将处理的订单数。
+
+其它阶段(审核通过/确认发货/获取跟踪单号)见后续，同样受 DRY_RUN 保护。
+"""
+import re, time
+import config, core
+from core import log
+
+
+# ---------------- 打开与导航 ----------------
+def open_order_ship(page):
+    core.safe_goto(page, config.ERP_URL)
+    for _ in range(30):
+        time.sleep(1)
+        if page.query_selector(".el-table") or page.query_selector("text=订单处理"):
+            break
+    time.sleep(2)
+    dismiss_alert_modal(page)
+
+
+def dismiss_alert_modal(page):
+    """关闭落地时弹出的「订单异常提醒」等拦截弹窗（点 稍后处理/关闭），避免挡住后续操作。"""
+    for _ in range(3):
+        closed = False
+        for t in ["稍后处理", "关 闭", "关闭", "我知道了", "取 消", "取消"]:
+            b = page.query_selector(f".el-dialog:visible button:has-text('{t}'), .el-message-box:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try:
+                    b.click(); closed = True; time.sleep(1)
+                except Exception:
+                    pass
+                break
+        if not closed:
+            break
+
+
+def goto_view(page, name):
+    """点击左侧导航切换视图，如 '待处理' / '待审核'。"""
+    try:
+        page.click(f"text={name}", timeout=6000)
+        time.sleep(3)
+        log(f"[ERP] 切换到视图：{name}")
+        return True
+    except Exception as e:
+        log(f"[ERP] 切换视图 {name} 失败: {e}")
+        return False
+
+
+def report_counts(page):
+    labels = ["待审核", "待处理", "自营仓库", "三方仓", "有货", "缺货", "已发货", "已搁置", "异常处理"]
+    result = {}
+    for lb in labels:
+        try:
+            el = page.query_selector(f"text={lb}")
+            num = None
+            if el:
+                parent = el.evaluate_handle("e=>e.parentElement")
+                txt = page.evaluate("e=>e.innerText", parent)
+                m = re.findall(r"\d+", txt or "")
+                num = m[-1] if m else None
+            result[lb] = num
+        except Exception:
+            result[lb] = None
+    log(f"[ERP] 阶段统计: {result}")
+    return result
+
+
+# ---------------- 渠道筛选（可选） ----------------
+def filter_by_channel(page, channel_keyword):
+    """在 全部渠道 下拉里选择包含 channel_keyword 的渠道。channel_keyword=None 则不筛选。"""
+    if not channel_keyword:
+        return True
+    try:
+        page.click("text=全部渠道", timeout=5000)
+        time.sleep(1.5)
+        picked = False
+        for el in page.query_selector_all(".el-select-dropdown__item, .el-checkbox"):
+            t = (el.inner_text() or "").strip()
+            if channel_keyword in t:
+                el.click(); picked = True
+                log(f"[ERP] 渠道筛选选中: {t}")
+                break
+        # 确认（若有）
+        for t in ["确定", "确认"]:
+            b = page.query_selector(f".el-select-dropdown button:has-text('{t}'), button:has-text('{t}')")
+            if b:
+                try: b.click()
+                except Exception: pass
+                break
+        time.sleep(2)
+        page.click("button:has-text('查询')", timeout=3000) if page.query_selector("button:has-text('查询')") else None
+        time.sleep(2)
+        return picked
+    except Exception as e:
+        log(f"[ERP] 渠道筛选失败: {e}")
+        return False
+
+
+# ---------------- 选择与下单 ----------------
+def _find_toolbar_button(page, text):
+    """定位工具栏批量按钮：文本恰为 text、不在 vxe 表格行内、可见、y 最靠上的那个。
+    返回 elementhandle（用于 Playwright 真实点击）。"""
+    target, ty = None, None
+    for h in page.query_selector_all("button, .el-button, .base_button_comp, .myj-btn, [class*=btn]"):
+        try:
+            if (h.inner_text() or "").replace("　", " ").replace(" ", "").strip() != text:
+                continue
+            if h.evaluate("e=>!!e.closest('.vxe-body--row')"):
+                continue
+            if not h.is_visible():
+                continue
+            bb = h.bounding_box()
+            if not bb:
+                continue
+            if target is None or bb["y"] < ty:
+                target, ty = h, bb["y"]
+        except Exception:
+            continue
+    return target
+
+
+
+def count_orders(page):
+    """读取订单总数。订单表是 vxe-table，自定义分页把总数拆成
+    `共 <span class=total_style>N</span> 条`，故读 .total_style（页面可能有多个分页实例，取最大值）。
+    数据是异步加载的：轮询等待 total>0 或超时。"""
+    for _ in range(20):
+        try:
+            n = page.evaluate(
+                "() => { const a=[...document.querySelectorAll('.total_style')]"
+                ".map(e=>parseInt((e.innerText||'0').replace(/\\D/g,''),10))"
+                ".filter(x=>!isNaN(x)); return a.length? Math.max(...a):0; }"
+            )
+            if n and n > 0:
+                return int(n)
+        except Exception:
+            pass
+        time.sleep(1)
+    # 兜底：按去重后的 vxe 行数（固定列会翻倍，用逻辑行组 .parentRowGroup）
+    try:
+        return page.evaluate("() => document.querySelectorAll('.parentRowGroup').length")
+    except Exception:
+        return 0
+
+
+def select_all(page):
+    """点击 vxe-table 表头全选框，并校验确有行被勾选。"""
+    th = page.query_selector(".vxe-header--column.col--checkbox .vxe-cell--checkbox")
+    if not th:
+        log("[ERP] 未找到 vxe 表头全选框"); return False
+    if "is--disabled" in (th.get_attribute("class") or ""):
+        log("[ERP] 表头全选框禁用（可能无数据）"); return False
+    try:
+        th.click(); time.sleep(1.5)
+    except Exception as e:
+        log(f"[ERP] 全选点击失败: {e}"); return False
+    checked = page.evaluate(
+        "() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length"
+    )
+    if not checked:
+        log("[ERP] 全选后未检测到勾选行"); return False
+    log(f"[ERP] 已全选，勾选标记数≈{checked}")
+    return True
+
+
+def parse_result_text(txt):
+    """从结果框文本解析 成功/失败数 与失败订单号。返回 {success,fail,fail_orders,text}。"""
+    if not txt:
+        return {"success": None, "fail": None, "fail_orders": [], "text": ""}
+    ms = re.search(r"成功[:：]?\s*(\d+)", txt)
+    mf = re.search(r"失败[:：]?\s*(\d+)", txt)
+    # 订单/包裹号形如 P2AC6TCD61425（P + 十余位字母数字）
+    orders = re.findall(r"\bP[0-9A-Z]{9,15}\b", txt)
+    # 去掉可能混入的表头等，保留失败区（有失败时才收集）
+    return {
+        "success": int(ms.group(1)) if ms else None,
+        "fail": int(mf.group(1)) if mf else None,
+        "fail_orders": list(dict.fromkeys(orders)),
+        "text": txt,
+    }
+
+
+def read_result_dialog(page):
+    """读取物流下单后的结果弹窗文本（成功X 失败Y + 原因），解析后关闭。返回 parse 字典。"""
+    txt = None
+    for _ in range(30):
+        dlg = page.query_selector(".el-dialog__wrapper:not([style*='display: none']) .el-dialog, .el-message-box")
+        if dlg:
+            try: txt = (dlg.inner_text() or "").strip()
+            except Exception: pass
+            break
+        time.sleep(1)
+    if txt:
+        log("[ERP] 物流下单结果:\n" + txt[:800])
+    # 关闭
+    for t in ["关闭", "关 闭", "确定", "确 定", "ok"]:
+        b = page.query_selector(f".el-dialog button:has-text('{t}'), .el-message-box__btns button:has-text('{t}')")
+        if b:
+            try: b.click(); break
+            except Exception: pass
+    time.sleep(1)
+    return parse_result_text(txt)
+
+
+def place_logistics_orders(page, channel_keyword=None):
+    """
+    第一步核心：待处理视图 -> (可选渠道筛选) -> 全选 -> 物流下单 -> 读结果。
+    DRY_RUN 下不点击"物流下单"。
+    """
+    open_order_ship(page)
+    if not goto_view(page, "待处理"):
+        return
+    filter_by_channel(page, channel_keyword)
+    n = count_orders(page)
+    log(f"[ERP] 待处理订单 共 {n} 条" + (f"（渠道过滤: {channel_keyword}）" if channel_keyword else ""))
+    if n == 0:
+        log("[ERP] 无待处理订单"); return {"count": 0, "success": 0, "fail": 0, "fail_orders": []}
+
+    if not select_all(page):
+        log("[ERP] 全选失败，终止物流下单"); return {"count": n, "error": "全选失败"}
+
+    if config.DRY_RUN:
+        log(f"[ERP][DRY] 将点击【物流下单】处理 {n} 条订单（已跳过实际点击）")
+        return {"count": n, "dry_run": True}
+
+    # 点"物流下单"。行内也有同名按钮，必须点工具栏批量按钮。
+    # 关键：必须用 Playwright 真实点击(elementhandle.click)，JS 合成 click 不触发 Vue 事件！
+    btn = _find_toolbar_button(page, "物流下单")
+    if not btn:
+        log("[ERP] 未定位到工具栏【物流下单】按钮"); return {"count": n, "error": "未找到物流下单按钮"}
+    try:
+        btn.click()
+        log(f"[ERP] 已点击工具栏【物流下单】，处理 {n} 条")
+    except Exception as e:
+        log(f"[ERP] 点击物流下单失败: {e}"); return {"count": n, "error": str(e)}
+    time.sleep(3)
+    r = read_result_dialog(page)
+    if r.get("fail"):
+        log(f"[ERP] ⚠️ 物流下单失败 {r['fail']} 单：{r['fail_orders']}")
+    return {"count": n, "success": r.get("success"), "fail": r.get("fail"),
+            "fail_orders": r.get("fail_orders", []), "result_text": r.get("text")}
+
+
+# ---------------- 其它阶段（后续，DRY_RUN 保护） ----------------
+def get_tracking(page):
+    if config.DRY_RUN:
+        log("[ERP][DRY] 将执行'获取跟踪单号'（已跳过）"); return
+    try:
+        page.click("button:has-text('更多')", timeout=5000); time.sleep(1)
+        page.click("text=获取跟踪单号", timeout=5000); time.sleep(3)
+        for _ in range(30):
+            b = page.query_selector(".el-dialog button:has-text('关闭'), .el-dialog button:has-text('关 闭')")
+            if b:
+                try: b.click()
+                except Exception: pass
+                break
+            time.sleep(1)
+        log("[ERP] 已执行获取跟踪单号")
+    except Exception as e:
+        log(f"[ERP] 获取跟踪单号失败（需按实际菜单微调）: {e}")
+
+
+def confirm_shipping(page):
+    if config.DRY_RUN:
+        log("[ERP][DRY] 将执行'确认发货'（已跳过）"); return
+    log("[ERP] confirm_shipping 需在明确阶段/筛选并联调后启用")

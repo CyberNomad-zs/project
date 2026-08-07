@@ -1,0 +1,75 @@
+========================================
+  Temu 店铺监测 · 同事本机版使用说明
+========================================
+
+【分工】
+  本机（你的电脑）只跑：
+    · 商品流量待关注（数量增加 + 商品链接）
+    · 商品流量近期有下降（徽标 + 商品链接）
+    · 在售数量 / 多店轮巡
+    · 飞书告警、登录过期提醒
+
+  下架 / 上架 由公司固定 IP 服务器自动跑（赛狐），
+  本机不要配置、不要运行赛狐相关功能。
+
+  不必再装 Chrome 插件（若已装请关掉，避免双报）。
+
+
+==== A. 发送方打包前，务必删掉 ====
+
+  - .userdata\              登录态（本机绑定，别人用不了）
+  - data\                   监测基线与日志
+  - logs\
+  - sellfox.config.json     赛狐密钥（勿发给同事）
+  - openapi.config.json     若有
+  - config.json             含你的飞书 webhook；同事用 example 自己填
+  - node_modules\           让对方自己 npm install
+
+
+==== B. 同事首次使用（约 10 分钟）====
+
+  1) 安装 Node.js LTS（https://nodejs.org）+ Google Chrome
+  2) 解压本包，进入目录
+  3) ★ 先双击「首次运行.bat」（或 first-run.bat）
+       会自动：生成 config.json + npm install
+       等窗口提示 OK 再往下
+  4) 用记事本打开 config.json，改：
+       - feishuWebhooks：自己飞书群机器人 webhook
+       - storeList：要盯的店名（与卖家中心顶栏英文名一致）
+       - fullRun 保持 false
+  5) 双击 启动.bat / 美化启动器.bat → 选 1 登录 Temu
+  6) 选 2 测一轮；选 3 或 4 常驻
+
+
+
+==== C. 日常 ====
+
+  - 推荐双击「美化启动器.bat」（有 Python 时图形界面）
+  - 无 Python 时用「启动.bat」/ start-menu.bat 英文菜单
+  - 默认每 15 分钟扫一轮流量（intervalMinutes 可改）
+  - 登录过期：飞书橙色提醒 或 日志写未登录 → 再跑一次「登录 Temu」
+  - 监测时不要用同一 .userdata 再开人工 Chrome 登 Temu
+
+
+==== D. 不要做 ====
+
+  - 不要把 fullRun 改成 true
+  - 不要配置 / 运行 sellfox（探测、once、常驻）——那是服务器的事
+  - 不要向同事索要或外传 sellfox.config.json
+  - 已装的 Temu 监测 Chrome 插件请卸掉或关掉
+
+
+==== E. 命令速查 ====
+
+  npm run login          登录一次
+  npm run once           流量一轮
+  npm run start          流量常驻
+  （赛狐上下架：服务器 systemctl status temu-sellfox，本机不用）
+
+
+==== F. 出问题 ====
+
+  - 「未登录」→ npm run login
+  - 窗口闪一下没数据 → 看 logs\ 或 data\monitor.log；确认 Chrome 已装
+  - 飞书没消息 → 检查 config.json 的 feishuWebhooks；首轮不告警是正常的
+  - 若日志出现 sellfox / 40005 白名单 → 说明误开了 fullRun，改回 false

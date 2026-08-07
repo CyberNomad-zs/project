@@ -1,0 +1,58 @@
+# Temu 多店铺监测
+
+**主路径（2026-07-31）**
+
+| 在哪跑 | 跑什么 | 怎么用 |
+|--------|--------|--------|
+| **同事日常 Chrome** | 流量待关注 / 近期下降 | 装 `temu-plugin`（v14 仅流量） |
+| **固定 IP 服务器** | 下架 / 上架点名（赛狐） | systemd `temu-sellfox` |
+| **本机 Playwright** | 仅维护者应急，**不发同事日常包** | `npm run once`（勿与插件双开） |
+
+同事**不要**再依赖 `temu-traffic-local` zip / `npm start` 常驻。  
+上下架**不要**开 `fullRun`、**不要**本机跑 sellfox。
+
+详见 `PLUGIN_PARITY.md`、`SELLFOX.md`、`deploy/README-SERVER.md`、插件目录 `使用说明.txt`。
+
+## 插件（日常流量）
+
+见仓库 `temu-plugin/`：
+
+1. Chrome → 开发者模式 → 加载已解压  
+2. 设置填飞书 Webhook  
+3. 打开并保留 `https://agentseller.temu.com/goods/list`  
+4. popup 显示 `后台：v14-仅流量`  
+5. **关掉**本机 Node 常驻 / 开机自启，避免双报  
+
+## 服务器 · 仅赛狐上下架
+
+见 **`deploy/README-SERVER.md`**。打包：`deploy\pack-sellfox.ps1`。
+
+## 本机 Playwright（应急 only）
+
+```bash
+cd temu-monitor
+npm install
+# config.json fullRun: false
+npm run login
+npm run once    # 不要与插件同时作为生产
+```
+
+`deploy\pack-traffic-local.ps1`：**维护者应急打包**，默认不要发给同事当日常方案。
+
+## 目录
+
+```
+temu-plugin/          同事日常 · 流量
+temu-monitor/
+  src/sellfox/        服务器 · 上下架
+  src/run.js ...      浏览器流量（应急）
+  deploy/             Linux 部署 + 打包脚本
+```
+
+## 命令
+
+| 命令 | 说明 |
+|------|------|
+| （插件）轮巡 / 测试飞书 | 日常流量 |
+| `npm run sellfox:once` / `start` | 服务器上下架 |
+| `npm run login` / `once` | 本机应急流量 |

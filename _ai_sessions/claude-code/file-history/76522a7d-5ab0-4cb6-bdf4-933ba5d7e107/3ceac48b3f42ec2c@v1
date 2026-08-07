@@ -1,0 +1,36 @@
+# TK 驾驶舱：PG → 飞书 T1/T2 日更（薄封装 → Python）
+# 用法（仓库根）:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -LookbackDays 30 -DryRun
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AdsOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -ShopOnly
+
+param(
+  [int]$LookbackDays = 14,
+  [int]$Limit = 2000,
+  [switch]$DryRun,
+  [switch]$AdsOnly,
+  [switch]$ShopOnly
+)
+
+$ErrorActionPreference = 'Stop'
+$Root = Split-Path -Parent $PSScriptRoot
+$Py = Join-Path $Root 'backend\.venv\Scripts\python.exe'
+$Script = Join-Path $Root 'scripts\feishu_tk_daily_sync.py'
+
+if (-not (Test-Path $Py)) { throw "找不到 venv: $Py" }
+if (-not (Test-Path $Script)) { throw "找不到 $Script" }
+
+$argv = @(
+  $Script,
+  '--lookback-days', "$LookbackDays",
+  '--limit', "$Limit"
+)
+if ($DryRun) { $argv += '--dry-run' }
+if ($AdsOnly) { $argv += '--ads-only' }
+if ($ShopOnly) { $argv += '--shop-only' }
+
+Write-Host "=== TK Feishu daily sync ==="
+Write-Host (& $Py --version)
+& $Py @argv
+exit $LASTEXITCODE

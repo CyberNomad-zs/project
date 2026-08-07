@@ -1,0 +1,124 @@
+/**
+ * v19 A+B 在售 diff 纯逻辑自测（不启动 Chrome）
+ * node test_onsale_ab.js
+ */
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg || 'assert failed');
+}
+
+// —— 复制 background 中的核心判定（保持与实现一致）——
+function computeDiff(prevMap, prevPending, items, onSaleTabCount) {
+  const trueZero = typeof onSaleTabCount === 'number' && onSaleTabCount === 0 && items.length === 0;
+  if (!Array.isArray(items)) return { aborted: true };
+  if (!items.length && !trueZero) return { aborted: true, reason: 'empty' };
+
+  const known = typeof onSaleTabCount === 'number' && onSaleTabCount >= 0 ? onSaleTabCount : null;
+  if (known != null && known > 0 && items.length < known) return { aborted: true, reason: 'incomplete' };
+  if (known != null && items.length > known) return { aborted: true, reason: 'overflow' };
+
+  const newMap = {};
+  for (const it of items) {
+    if (it && it.productId) newMap[String(it.productId)] = { name: it.name || '', skc: it.skc || '', productId: String(it.productId) };
+  }
+
+  if (!prevMap) {
+    return { first: true, onSaleIds: newMap, pending: {}, delisted: [], listed: [] };
+  }
+
+  const rawDelisted = Object.keys(prevMap).filter((pid) => !(pid in newMap));
+  const confirmedListed = [];
+  for (const pid of Object.keys(prevPending || {})) {
+    if (pid in newMap) confirmedListed.push(pid);
+  }
+  const listedSet = new Set(confirmedListed);
+  const nextPending = {};
+  for (const pid of Object.keys(newMap)) {
+    if (pid in prevMap) continue;
+    if (listedSet.has(pid)) continue;
+    nextPending[pid] = { productId: pid, name: newMap[pid].name, skc: newMap[pid].skc };
+  }
+  const nextOnSale = {};
+  for (const pid of Object.keys(prevMap)) {
+    if (pid in newMap) nextOnSale[pid] = newMap[pid];
+  }
+  for (const pid of confirmedListed) nextOnSale[pid] = newMap[pid];
+
+  return {
+    first: false,
+    delisted: rawDelisted,
+    listed: confirmedListed,
+    pending: nextPending,
+    onSaleIds: nextOnSale,
+  };
+}
+
+// 1) 首轮建基
+{
+  const r = computeDiff(null, {}, [{ productId: 'A', name: 'a' }], 1);
+  assert(r.first && r.onSaleIds.A, 'first baseline');
+}
+
+// 2) 下架点名
+{
+  const prev = { A: { name: '茶蜡', skc: '1' }, B: { name: 'x', skc: '2' } };
+  const r = computeDiff(prev, {}, [{ productId: 'B', name: 'x' }], 1);
+  assert(!r.first && r.delisted.length === 1 && r.delisted[0] === 'A', 'delist A');
+  assert(!r.pending.A && r.onSaleIds.B, 'B remains');
+}
+
+// 3) 真清零
+{
+  const prev = { A: { name: '茶蜡', skc: '7636599333' } };
+  const r = computeDiff(prev, {}, [], 0);
+  assert(r.delisted.length === 1 && r.delisted[0] === 'A', 'true zero delist');
+  assert(Object.keys(r.onSaleIds).length === 0, 'empty baseline after zero');
+}
+
+// 4) 空扫描但非权威 0 → 放弃
+{
+  const prev = { A: { name: 'a' } };
+  const r = computeDiff(prev, {}, [], null);
+  assert(r.aborted, 'empty abort');
+}
+
+// 5) 上架二次确认
+{
+  const prev = { A: { name: 'a' } };
+  const r1 = computeDiff(prev, {}, [{ productId: 'A', name: 'a' }, { productId: 'C', name: 'new' }], 2);
+  assert(r1.listed.length === 0 && r1.pending.C, 'C pending first seen');
+  assert(!r1.onSaleIds.C, 'C not in committed yet');
+  const r2 = computeDiff(r1.onSaleIds, r1.pending, [{ productId: 'A', name: 'a' }, { productId: 'C', name: 'new' }], 2);
+  assert(r2.listed.length === 1 && r2.listed[0] === 'C', 'C confirmed second round');
+  assert(r2.onSaleIds.C, 'C in baseline');
+  assert(!r2.pending.C, 'C left pending');
+}
+
+// 6) 上架抖动：pending 后消失
+{
+  const prev = { A: { name: 'a' } };
+  const r1 = computeDiff(prev, {}, [{ productId: 'A' }, { productId: 'C' }], 2);
+  const r2 = computeDiff(r1.onSaleIds, r1.pending, [{ productId: 'A' }], 1);
+  assert(r2.listed.length === 0 && !r2.pending.C, 'jitter dropped');
+}
+
+// 7) 扫不全
+{
+  const prev = { A: {}, B: {} };
+  const r = computeDiff(prev, {}, [{ productId: 'A' }], 2);
+  assert(r.aborted && r.reason === 'incomplete', 'incomplete');
+}
+
+// 8) 数量 A 逻辑
+function qtyDecision(prev, cur) {
+  if (prev == null) return { first: true, shouldScan: false };
+  if (prev === cur) return { dropped: 0, rose: 0, shouldScan: false };
+  const dropped = cur < prev ? prev - cur : 0;
+  const rose = cur > prev ? cur - prev : 0;
+  return { dropped, rose, shouldScan: dropped > 0 || rose > 0, from: prev, to: cur };
+}
+assert(qtyDecision(null, 13).first, 'qty first');
+assert(qtyDecision(1, 0).dropped === 1 && qtyDecision(1, 0).shouldScan, '1→0');
+assert(qtyDecision(13, 14).rose === 1, 'rise');
+assert(!qtyDecision(5, 5).shouldScan, 'same');
+
+console.log('test_onsale_ab: OK (8 groups)');

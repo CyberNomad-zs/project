@@ -1,0 +1,50 @@
+# -*- coding: utf-8 -*-
+"""
+只读：列出 ERP 订单发货【待处理】视图下「全部渠道」下拉里的所有渠道选项，
+以及每个渠道当前待处理单数（若下拉项带数字）。用于设计"按渠道串行"编排。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            print("ERP 未登录"); ctx.close(); return
+        core.safe_goto(page, config.ERP_URL)
+        time.sleep(6)
+
+        # 打开"全部渠道"下拉
+        opened = False
+        for sel in ["text=全部渠道", ".el-select:has-text('全部渠道')", "input[placeholder*='渠道']"]:
+            try:
+                page.click(sel, timeout=3000); opened = True; break
+            except Exception:
+                continue
+        time.sleep(1.5)
+        print("下拉已打开:", opened)
+
+        # 抓所有可见下拉项
+        items = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('.el-select-dropdown__item, .el-cascader-node__label, li.el-select-dropdown__item').forEach(e=>{
+                if(e.offsetParent!==null){ const t=(e.innerText||'').trim(); if(t) out.push(t); }
+            });
+            return [...new Set(out)];
+        }""")
+        print("=== 渠道下拉可见项 ===")
+        for it in items:
+            print("  -", it)
+
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_channels.png"), full_page=True)
+        print("截图: capture/dumps/erp_channels.png")
+        time.sleep(12)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

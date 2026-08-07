@@ -1,0 +1,730 @@
+# -*- coding: utf-8 -*-
+"""
+ERP（赛狐 Sellfox）操作：订单 > 订单处理（订单发货）
+=== 第一步：物流下单（对应视频前 50 多秒）===
+  在【待处理】视图，(可选)按渠道筛选 -> 全选订单 -> 点击【物流下单】把订单投入海外仓
+  -> 读取结果弹窗「成功X 失败Y」(失败常见：所选仓库库存不足)。
+DRY_RUN=True 时：完成 切视图/筛选/全选/统计，但【不】点击"物流下单"，只记录将处理的订单数。
+
+其它阶段(审核通过/确认发货/获取跟踪单号)见后续，同样受 DRY_RUN 保护。
+"""
+import re, time
+import config, core
+from core import log
+
+
+# ---------------- 打开与导航 ----------------
+def open_order_ship(page):
+    core.safe_goto(page, config.ERP_URL)
+    for _ in range(30):
+        time.sleep(1)
+        if page.query_selector(".el-table") or page.query_selector("text=订单处理"):
+            break
+    time.sleep(2)
+    dismiss_alert_modal(page)
+
+
+def dismiss_alert_modal(page):
+    """关闭落地时弹出的「订单异常提醒」等拦截弹窗（点 稍后处理/关闭），避免挡住后续操作。"""
+    for _ in range(3):
+        closed = False
+        for t in ["稍后处理", "关 闭", "关闭", "我知道了", "取 消", "取消"]:
+            b = page.query_selector(f".el-dialog:visible button:has-text('{t}'), .el-message-box:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try:
+                    b.click(); closed = True; time.sleep(1)
+                except Exception:
+                    pass
+                break
+        if not closed:
+            break
+
+
+def dismiss_notifications(page):
+    """清掉右上角 el-notification toast（如"下载中心"通知）。它是浮层，会盖在筛选框/按钮上
+    拦截 Playwright 点击（intercepts pointer events），直接从 DOM 移除最稳。"""
+    try:
+        page.evaluate("() => document.querySelectorAll('.el-notification').forEach(e => e.remove())")
+    except Exception:
+        pass
+
+
+def goto_view(page, name):
+    """点击左侧导航切换视图，如 '待处理' / '待审核'。"""
+    try:
+        page.click(f"text={name}", timeout=6000)
+        time.sleep(3)
+        log(f"[ERP] 切换到视图：{name}")
+        return True
+    except Exception as e:
+        log(f"[ERP] 切换视图 {name} 失败: {e}")
+        return False
+
+
+def report_counts(page):
+    labels = ["待审核", "待处理", "自营仓库", "三方仓", "有货", "缺货", "已发货", "已搁置", "异常处理"]
+    result = {}
+    for lb in labels:
+        try:
+            el = page.query_selector(f"text={lb}")
+            num = None
+            if el:
+                parent = el.evaluate_handle("e=>e.parentElement")
+                txt = page.evaluate("e=>e.innerText", parent)
+                m = re.findall(r"\d+", txt or "")
+                num = m[-1] if m else None
+            result[lb] = num
+        except Exception:
+            result[lb] = None
+    log(f"[ERP] 阶段统计: {result}")
+    return result
+
+
+# ---------------- 渠道筛选（可选） ----------------
+def _el_visible(el):
+    try: return el.is_visible()
+    except Exception: return False
+
+
+# 「模板 popover / loading 遮罩」拦路者选择器（含渠道下拉自身容器 .el-popover/.select-menu——
+# 故 _wait_page_settle 只在【打开下拉之前】调用，等【残留】弹层/遮罩散去，别在打开后调用）。
+_BLOCKER_SEL = ".el-popover, .select-menu, .search_more_temp_new, .el-loading-mask, .loading-indicator-overlay, .vxe-loading--wrapper"
+
+
+def _wait_page_settle(page, timeout=6.0):
+    """等模板 popover 与 loading 遮罩都消失再操作。实测坑(2026-07-15 扩展版排查)：选中筛选模板后
+    模板 popover 残留 + 列表刷新 loading 遮罩，会让紧接着点渠道 input 弹不开渠道下拉（单例
+    popover 被占/遮罩拦点）→ 渠道选项读到空、误判无此渠道。返回是否在超时内稳定。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        try:
+            busy = page.evaluate(
+                r"""(sel)=>[...document.querySelectorAll(sel)].some(e=>{
+                    if(e.offsetParent===null) return false;
+                    const s=getComputedStyle(e);
+                    return s.visibility!=='hidden' && s.display!=='none' && e.getClientRects().length>0;})""",
+                _BLOCKER_SEL)
+        except Exception:
+            busy = False
+        if not busy:
+            return True
+        time.sleep(0.3)
+    return False
+
+
+def filter_by_channel(page, channel_keyword):
+    """在「全部渠道」多选弹层里选中 == channel_keyword 的渠道并确定。channel_keyword=None 不筛选。
+    实测：触发控件 input[placeholder*='渠道']；渠道选项是 span.main_label（精确匹配文本，
+    别用包含匹配——订单行 物流信息列 也含渠道文字会误点）；弹层有 取消/确定。
+    ⚠️「偶发弹不开」根因=时机(2026-07-15 扩展版锤实)：渠道下拉是 vue-recycle-scroller 虚拟滚动+
+    异步加载，且紧跟在「选模板」之后(模板单例 popover 残留会吃掉点击)。旧代码固定 sleep 1.2s 后
+    立刻读 span.main_label → 赶上点击没生效/选项没加载好就读空→误判无此渠道跳过(→可能漏发)。
+    修复=先 Esc 清残留弹层 + _wait_page_settle 等页面稳定，再【轮询等选项出现 + 最多重试 3 轮点击】。"""
+    if not channel_keyword:
+        return True
+    try:
+        dismiss_notifications(page)   # 先清右上角通知浮层，否则会拦截点击
+        # 清掉可能残留的弹层（如上一步筛选模板未关的 popover）。渠道弹层是 single_el_popover 单例
+        # 机制：有旧弹层开着时点渠道 input 只会关旧弹层、不弹渠道下拉 → 选项为空（实测）。
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+        time.sleep(0.4)
+        _wait_page_settle(page)       # 等模板 popover/loading 遮罩散去，否则渠道下拉弹不开
+
+        if not page.query_selector("input[placeholder*='渠道']"):
+            log("[ERP] ❌ 未定位到渠道筛选输入框（选择器 input[placeholder*='渠道'] 无命中，疑 ERP 改版）")
+            return False
+
+        # 每轮重新抓 input（模板刷新可能使工具栏重渲染、旧引用失效）+ 轮询等 span.main_label 冒出来，
+        # 最多重试 3 轮点击。不再固定 sleep 后就读（旧 bug）。
+        def read_labels():
+            return [e for e in page.query_selector_all("span.main_label") if _el_visible(e)]
+
+        labels = []
+        for attempt in range(3):
+            inp = page.query_selector("input[placeholder*='渠道']")
+            if not inp:
+                break
+            try: inp.click(timeout=4000, force=True)
+            except Exception: pass
+            end = time.time() + 4     # 耐心等（弹层开+选项异步/虚拟滚动渲染）
+            while time.time() < end:
+                labels = read_labels()
+                if labels:
+                    break
+                time.sleep(0.3)
+            if labels:
+                break
+            log(f"[ERP] 渠道下拉未弹开/选项未出现（第{attempt + 1}次），重试…")
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+            time.sleep(0.6)
+
+        if not labels:
+            log(f"[ERP] 未找到渠道选项: {channel_keyword}；当前下拉可选渠道=[]（下拉未弹开或选项为空，已重试3轮）")
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+            return False
+
+        picked = False
+        for el in labels:
+            try:
+                if (el.inner_text() or "").strip() == channel_keyword:
+                    el.click(); picked = True
+                    log(f"[ERP] 渠道选中: {channel_keyword}")
+                    break
+            except Exception:
+                continue
+        if not picked:
+            # 下拉弹开了、但没有这个渠道——打出【实际可选】渠道，便于判断是「该渠道确实无正常单
+            # (模板已排除取消单)」还是「有单却漏筛」。
+            avail = sorted({(e.inner_text() or "").strip() for e in labels
+                            if (e.inner_text() or "").strip()})
+            log(f"[ERP] 未找到渠道选项: {channel_keyword}；当前下拉可选渠道={avail}")
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+            return False
+        time.sleep(0.5)
+        # 确定（限可见弹层）
+        for t in ["确定", "确认"]:
+            b = page.query_selector(f".el-popper:visible button:has-text('{t}')")
+            if not (b and b.is_visible()):
+                b = page.query_selector(f"button:has-text('{t}'):visible")
+            if b and b.is_visible():
+                b.click(); break
+        time.sleep(2.5)
+        return True
+    except Exception as e:
+        log(f"[ERP] 渠道筛选失败: {e}")
+        return False
+
+
+# ---------------- 筛选模板（需求1，用户 2026-07-10；模板 2026-07-17 改用单品单数版）----------------
+# 物流下单选渠道后加一步：选「筛选模板」= 单品单数未取消等待发货
+# （该模板含 退款订单/换货订单/申请取消/禁止处理 全=否 + 包裹类型=单品单数：
+#  既排除已取消/退款/换货/禁处理的单，又只保留单品单数的包裹）。
+# 模板列表里另有「未取消等待发货」(无单品单数限制)——用户 2026-07-17 改定用带「单品单数」的这个。
+# ⚠️ 名称是前者的超集(前者是后者的子串)，选择用【精确==匹配】不会误点到短名的那个。
+FILTER_TEMPLATE = "单品单数未取消等待发货"
+# 新功能.docx 收尾流程：待更新全选后、点手动更新前的等待秒数（给跟踪号留生成时间）。
+FINALIZE_TRACK_WAIT = 120
+
+
+def select_filter_template(page, template_name=FILTER_TEMPLATE):
+    """点工具栏「筛选模板」下拉 -> 弹层左侧模板名称列表里点选 template_name（点击模板名称即选中）。
+    实测(截图 新需求.docx image1/2)：按钮文本『筛选模板』；弹层左列是模板名称，右侧悬停看详情。
+    ⚠️ 待实测确认：选模板会不会重置已选的渠道筛选（截图里包裹数 2->5、渠道 chip 疑消失）。
+       故本函数只负责『选中模板』；渠道是否被重置由调用方在选后校验（见 place_logistics_orders）。
+    返回 True/False。"""
+    if not template_name:
+        return True
+    try:
+        dismiss_notifications(page)
+        # 触发器优先用 class 定位（探测实证 reference class=search_more_temp_reference）——比按
+        # 「筛选模板」文本可靠：页面别处也有该文字（如"更多筛选"区），文本匹配取 y 最靠上易选错、
+        # 点了不弹 popover（扩展版 run 里三次重试都没弹开=定位错触发器）。兜底再退回文本触发。
+        def find_trigger():
+            t = page.query_selector(".search_more_temp_reference")
+            if t and _el_visible(t):
+                return t
+            for el in page.query_selector_all("span, div, a, button"):
+                try:
+                    if _el_visible(el) and (el.inner_text() or "").strip() == "筛选模板":
+                        return el
+                except Exception:
+                    continue
+            return None
+
+        trigger = find_trigger()
+        if not trigger:
+            log("[ERP] 未找到『筛选模板』触发控件")
+            return False
+
+        # 模板选项异步渲染 + 合成点击偶发不生效（扩展版探测两次一次弹开一次没弹）。轮询等选项出现、
+        # 最多重试 3 轮点击，别固定 sleep 后就读。精确匹配（== 而非 in；目标是短名『未取消等待发货』的超集，须精确匹配才不误点短名那个）。
+        def find_opt(scope):
+            # scope=可见弹层内(便宜)；找不到再由调用方做一次全页兜底扫描(贵，只跑一次)。
+            sel = (".el-popper:visible *, .el-popover:visible *, .el-dropdown-menu:visible *"
+                   if scope else "span, div, li, a")
+            for el in page.query_selector_all(sel):
+                try:
+                    if _el_visible(el) and (el.inner_text() or "").strip() == template_name:
+                        return el
+                except Exception:
+                    continue
+            return None
+
+        opt = None
+        for attempt in range(3):
+            trigger = find_trigger() or trigger
+            try: trigger.click(timeout=4000)
+            except Exception: pass
+            end = time.time() + 4
+            while time.time() < end:      # 轮询仅扫可见弹层（便宜）
+                opt = find_opt(True)
+                if opt:
+                    break
+                time.sleep(0.3)
+            if opt:
+                break
+            log(f"[ERP] 筛选模板选项未出现（第{attempt + 1}次），重试…")
+            time.sleep(0.6)
+
+        if not opt:                       # 全页精确文本兜底（仅一次；精确匹配故安全）
+            opt = find_opt(False)
+
+        if not opt:
+            log(f"[ERP] 未找到筛选模板选项：{template_name}")
+            # 找不到也要按 Esc 关掉模板弹层，否则它是单例 popover、残留开着会导致下一步点渠道 input
+            # 只关旧弹层、不弹渠道下拉（实测渠道选项为空）。
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+            time.sleep(0.4)
+            return False
+
+        try: opt.click()
+        except Exception: pass
+        time.sleep(1.5)
+        # 主动关掉模板 popover（Element el-popover 点选后不一定自动关；残留会占用单例弹层机制、
+        # 导致下一步渠道 input 点击只被消费为"关模板"而不弹渠道下拉），再等页面稳定。
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+        try: page.evaluate("() => document.body.click()")
+        except Exception: pass
+        _wait_page_settle(page)
+        log(f"[ERP] 已选择筛选模板：{template_name}")
+        return True
+    except Exception as e:
+        log(f"[ERP] 选择筛选模板失败: {e}")
+        return False
+
+
+# ---------------- 选择与下单 ----------------
+def _find_toolbar_button(page, text):
+    """定位工具栏批量按钮：文本恰为 text、不在 vxe 表格行内、可见、y 最靠上的那个。
+    返回 elementhandle（用于 Playwright 真实点击）。"""
+    target, ty = None, None
+    for h in page.query_selector_all("button, .el-button, .base_button_comp, .myj-btn, [class*=btn]"):
+        try:
+            if (h.inner_text() or "").replace("　", " ").replace(" ", "").strip() != text:
+                continue
+            if h.evaluate("e=>!!e.closest('.vxe-body--row')"):
+                continue
+            if not h.is_visible():
+                continue
+            bb = h.bounding_box()
+            if not bb:
+                continue
+            if target is None or bb["y"] < ty:
+                target, ty = h, bb["y"]
+        except Exception:
+            continue
+    return target
+
+
+
+def count_orders(page):
+    """读取订单总数。订单表是 vxe-table，自定义分页把总数拆成
+    `共 <span class=total_style>N</span> 条`，故读 .total_style（页面可能有多个分页实例，取最大值）。
+    数据是异步加载的：轮询等待 total>0 或超时。"""
+    for _ in range(5):   # 最多 5s：有单基本秒出，0 单最多等 5s 判空（原 20s）
+        try:
+            n = page.evaluate(
+                "() => { const a=[...document.querySelectorAll('.total_style')]"
+                ".map(e=>parseInt((e.innerText||'0').replace(/\\D/g,''),10))"
+                ".filter(x=>!isNaN(x)); return a.length? Math.max(...a):0; }"
+            )
+            if n and n > 0:
+                return int(n)
+        except Exception:
+            pass
+        time.sleep(1)
+    # 兜底：按去重后的 vxe 行数（固定列会翻倍，用逻辑行组 .parentRowGroup）
+    try:
+        return page.evaluate("() => document.querySelectorAll('.parentRowGroup').length")
+    except Exception:
+        return 0
+
+
+def select_all(page):
+    """点击 vxe-table 表头全选框，并校验确有行被勾选。"""
+    th = page.query_selector(".vxe-header--column.col--checkbox .vxe-cell--checkbox")
+    if not th:
+        log("[ERP] 未找到 vxe 表头全选框"); return False
+    if "is--disabled" in (th.get_attribute("class") or ""):
+        log("[ERP] 表头全选框禁用（可能无数据）"); return False
+    try:
+        th.click(); time.sleep(1.5)
+    except Exception as e:
+        log(f"[ERP] 全选点击失败: {e}"); return False
+    checked = page.evaluate(
+        "() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length"
+    )
+    if not checked:
+        log("[ERP] 全选后未检测到勾选行"); return False
+    log(f"[ERP] 已全选，勾选标记数≈{checked}")
+    return True
+
+
+def parse_result_text(txt):
+    """从结果框文本解析 成功/失败数 与失败订单号。返回 {success,fail,fail_orders,text}。"""
+    if not txt:
+        return {"success": None, "fail": None, "fail_orders": [], "text": ""}
+    ms = re.search(r"成功[:：]?\s*(\d+)", txt)
+    mf = re.search(r"失败[:：]?\s*(\d+)", txt)
+    # 订单/包裹号形如 P2AC6TCD61425（P + 十余位字母数字）
+    orders = re.findall(r"\bP[0-9A-Z]{9,15}\b", txt)
+    # 去掉可能混入的表头等，保留失败区（有失败时才收集）
+    return {
+        "success": int(ms.group(1)) if ms else None,
+        "fail": int(mf.group(1)) if mf else None,
+        "fail_orders": list(dict.fromkeys(orders)),
+        "text": txt,
+    }
+
+
+def _shelve_canceled_orders(page):
+    """处理【确认发货/物流下单】时弹出的「订单已取消」拦截弹窗（新弹窗，2026-07-16 首见）：
+    「系统检测到以下包裹对应的订单已取消，是否继续处理或搁置包裹？」按钮=继续处理/搁置包裹/取消。
+    用户 2026-07-16 定：一律点【搁置包裹】——把取消单移出本批（后续不再提醒）、让其余正常单
+    继续完成提交；绝不【继续处理】(会把已取消单误发)、也不【取消】(会中止整批正常单)。
+    本次处理一个可见弹窗并点【搁置包裹】。返回本次搁置的包裹号 list（无此弹窗则 []）。"""
+    btn = page.query_selector(
+        ".el-dialog__wrapper:not([style*='display: none']) button:has-text('搁置包裹'), "
+        ".el-message-box__wrapper:not([style*='display: none']) button:has-text('搁置包裹')")
+    if not (btn and btn.is_visible()):
+        return []
+    shelved = []
+    try:  # 先抓弹窗里的包裹号做留存/审计，再点搁置
+        dlg = page.query_selector(
+            ".el-dialog__wrapper:not([style*='display: none']) .el-dialog, "
+            ".el-message-box__wrapper:not([style*='display: none']) .el-message-box")
+        txt = (dlg.inner_text() or "") if dlg else ""
+        shelved = list(dict.fromkeys(re.findall(r"\bP[0-9A-Z]{9,15}\b", txt)))
+    except Exception:
+        pass
+    try:
+        btn.click(timeout=3000)
+        log(f"[ERP] 检测到「订单已取消」弹窗 -> 已点【搁置包裹】(移出本批、不再提醒)：{shelved}")
+    except Exception as e:
+        log(f"[ERP] ⚠️ 点【搁置包裹】失败: {e}"); return []
+    time.sleep(1.5)
+    return shelved
+
+
+def read_result_dialog(page):
+    """读取物流下单后的结果弹窗文本（成功X 失败Y + 原因），解析后关闭。返回 parse 字典
+    （含 shelved：因订单已取消而被搁置的包裹号）。"""
+    # 先排掉挡在前面的「订单已取消」拦截弹窗（点【搁置包裹】），可能连弹多轮；处理完正常结果框才出现。
+    shelved = []
+    for _ in range(10):
+        s = _shelve_canceled_orders(page)
+        if not s:
+            break
+        shelved.extend(s); time.sleep(1)
+    txt = None
+    for _ in range(30):
+        dlg = page.query_selector(".el-dialog__wrapper:not([style*='display: none']) .el-dialog, .el-message-box")
+        if dlg:
+            try: txt = (dlg.inner_text() or "").strip()
+            except Exception: pass
+            break
+        time.sleep(1)
+    if txt:
+        log("[ERP] 物流下单结果:\n" + txt[:800])
+    # 关闭：只在【可见】弹窗内找按钮，且 click 用短超时。
+    # 旧写法 query_selector 不限定可见弹窗、b.click() 用默认 30 秒超时——命中隐藏 el-dialog
+    # 里的同名按钮就会干等满 30 秒，几个候选累计 ~90–120 秒（2026-07-10 日志：全成功也卡
+    # 124s≈4×30、有失败卡 91s≈3×30），这才是“下单后卡在结果页很久”的真因。
+    closed = False
+    for t in ["关 闭", "关闭", "确 定", "确定", "知道了", "ok"]:
+        b = page.query_selector(
+            f".el-dialog__wrapper:not([style*='display: none']) button:has-text('{t}'), "
+            f".el-message-box__wrapper:not([style*='display: none']) button:has-text('{t}')")
+        if b and b.is_visible():
+            try:
+                b.click(timeout=3000); closed = True; break
+            except Exception:
+                pass
+    if not closed:
+        try: page.keyboard.press("Escape")
+        except Exception: pass
+    time.sleep(1)
+    r = parse_result_text(txt)
+    r["shelved"] = list(dict.fromkeys(shelved))
+    return r
+
+
+def place_logistics_orders(page, channel_keyword=None):
+    """
+    第一步核心：待处理视图 -> (可选渠道筛选) -> 全选 -> 物流下单 -> 读结果。
+    DRY_RUN 下不点击"物流下单"。
+    """
+    open_order_ship(page)
+    if not goto_view(page, "待处理"):
+        return
+    # 需求1（用户 2026-07-10；模板 2026-07-17 改单品单数版）：选「筛选模板=单品单数未取消等待发货」排除 已取消/退款/换货/禁处理 的单。
+    # ⚠️ 实测(erp_probe_template 2026-07-10)：选模板会【重置渠道筛选】(仅渠道1单->选模板后8单)，
+    #    故必须『先选模板 -> 再筛渠道』：让渠道筛选【最后】生效=下单时渠道范围一定有效(安全底线)，
+    #    且实测再筛渠道后模板的4个条件仍保留(模板∩渠道，C=1单)。模板选择失败不致命——
+    #    渠道安全底线由下方 filter_by_channel 保证，仅少一层取消单排除，不会造成误发。
+    if not select_filter_template(page):
+        log("[ERP] ⚠️ 筛选模板未选中，继续（渠道筛选仍会保证范围，仅少了取消/退款单的排除）")
+    # 安全底线：指定了渠道就必须筛选成功(且在模板之后)，否则会对未筛选的全量订单下单（跨渠道误发）。
+    if channel_keyword and not filter_by_channel(page, channel_keyword):
+        log(f"[ERP] 渠道筛选未成功({channel_keyword})，为避免全量误下单，跳过本渠道")
+        core.log.event("物流下单", channel=channel_keyword, error="渠道筛选失败跳过", dry_run=config.DRY_RUN)
+        return {"count": 0, "error": "渠道筛选失败", "channel_filter_failed": True}
+    n = count_orders(page)
+    log(f"[ERP] 待处理订单 共 {n} 条" + (f"（渠道过滤: {channel_keyword}）" if channel_keyword else ""))
+    if n == 0:
+        log("[ERP] 无待处理订单"); return {"count": 0, "success": 0, "fail": 0, "fail_orders": []}
+
+    if not select_all(page):
+        log("[ERP] 全选失败，终止物流下单"); return {"count": n, "error": "全选失败"}
+
+    if config.DRY_RUN:
+        log(f"[ERP][DRY] 将点击【物流下单】处理 {n} 条订单（已跳过实际点击）")
+        core.log.event("物流下单", channel=channel_keyword, count=n, dry_run=True)
+        return {"count": n, "dry_run": True}
+
+    # 点"物流下单"。行内也有同名按钮，必须点工具栏批量按钮。
+    # 关键：必须用 Playwright 真实点击(elementhandle.click)，JS 合成 click 不触发 Vue 事件！
+    btn = _find_toolbar_button(page, "物流下单")
+    if not btn:
+        log("[ERP] 未定位到工具栏【物流下单】按钮"); return {"count": n, "error": "未找到物流下单按钮"}
+    try:
+        btn.click()
+        log(f"[ERP] 已点击工具栏【物流下单】，处理 {n} 条")
+    except Exception as e:
+        log(f"[ERP] 点击物流下单失败: {e}"); return {"count": n, "error": str(e)}
+    time.sleep(3)
+    r = read_result_dialog(page)
+    if r.get("fail"):
+        log(f"[ERP] ⚠️ 物流下单失败 {r['fail']} 单：{r['fail_orders']}")
+    core.log.event("物流下单", channel=channel_keyword, count=n,
+                   success=r.get("success"), fail=r.get("fail"),
+                   fail_orders=r.get("fail_orders", []), dry_run=False)
+    return {"count": n, "success": r.get("success"), "fail": r.get("fail"),
+            "fail_orders": r.get("fail_orders", []), "result_text": r.get("text")}
+
+
+# ---------------- 订单状态更新（三方仓>待更新>手动更新，获取跟踪号）----------------
+def _toolbar_btn_coord(page, text):
+    """返回工具栏(非行内)中 去空白后文本==text 的按钮中心坐标 {x,y}（取最内层）。无则 None。"""
+    return page.evaluate(r"""(text) => {
+        const norm = s => (s||'').replace(/\s+/g,'');
+        let best=null;
+        document.querySelectorAll('button, .el-button, .base_button_comp, [class*=btn]').forEach(e=>{
+            if(e.offsetParent===null) return;
+            if(norm(e.innerText)!==text) return;
+            if(e.closest('.vxe-body--row')) return;   // 排除行内同名按钮
+            const r=e.getBoundingClientRect();
+            const desc=e.querySelectorAll('*').length;
+            if(!best || desc<best.desc) best={desc, x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+        });
+        return best;
+    }""", text)
+
+
+def update_order_status(page, apply_template=False, wait_before=0):
+    """订单状态更新：三方仓 -> 待更新 子标签 -> 工具栏【手动更新】-> 拉取跟踪号 ->
+    读「获取完成 共N包裹 已获取X 失败Y」-> 关闭。不分渠道。返回 {total,got,fail,text}。
+    此操作只拉取/更新状态，不发货，DRY_RUN 也执行（属只读性质的状态同步）。
+
+    参数（新功能.docx 收尾流程用；默认值保持旧行为不变，status_update_loop.py 不受影响）：
+      apply_template: True 时在进入待更新后先应用筛选模板「单品单数未取消等待发货」
+                      （排除 取消/退款/换货/禁处理 单）。
+      wait_before:    >0 时全选后等待该秒数再点【手动更新】（文档要求等 120s，
+                      给跟踪号有时间生成）。"""
+    open_order_ship(page)
+    # 三方仓
+    try:
+        page.click("text=三方仓", timeout=6000); time.sleep(3)
+    except Exception as e:
+        log(f"[ERP] 进三方仓失败: {e}"); return {"error": "进三方仓失败"}
+    # 待更新 子标签
+    try:
+        page.click("text=待更新", timeout=6000); time.sleep(2.5)
+    except Exception as e:
+        log(f"[ERP] 点待更新子标签失败: {e}"); return {"error": "待更新子标签失败"}
+
+    # 新功能：待更新后先选筛选模板（文档步骤3-4）。失败不致命，仅少一层取消单排除。
+    if apply_template:
+        if not select_filter_template(page):
+            log("[ERP] ⚠️ 待更新筛选模板未选中，继续（不影响手动更新，仅少了取消/退款单排除）")
+
+    n = count_orders(page)
+    if not n:
+        log("[ERP] 待更新 0 条，无需状态更新")
+        return {"total": 0, "got": 0, "fail": 0, "text": "待更新为空"}
+    # 手动更新按钮无选中时禁用 -> 先全选（vxe 表头框）
+    if not select_all(page):
+        log("[ERP] 待更新全选失败"); return {"error": "待更新全选失败"}
+
+    # 新功能：全选后等待再点手动更新（文档步骤6「等待120s后点击手动更新」，给平台/仓库
+    # 回传跟踪号留时间）。DRY_RUN 也等——这步是只读拉取，等待不产生外向不可逆动作。
+    if wait_before and wait_before > 0:
+        log(f"[ERP] 已全选，按要求等待 {wait_before}s 后再点【手动更新】…")
+        time.sleep(wait_before)
+
+    loc = _toolbar_btn_coord(page, "手动更新")
+    if not loc:
+        log("[ERP] 未找到【手动更新】按钮")
+        return {"total": n, "got": 0, "fail": 0, "text": "无手动更新按钮"}
+    page.mouse.click(loc["x"], loc["y"])
+    log(f"[ERP] 已全选 {n} 条并点【手动更新】，拉取跟踪号中…")
+
+    # 轮询提示框直到 获取完成/100%
+    final = None
+    for _ in range(60):
+        time.sleep(1)
+        txt = page.evaluate(r"""() => {
+            const d=[...document.querySelectorAll('.el-dialog, .el-message-box')].find(e=>e.offsetParent!==null);
+            return d? (d.innerText||'').trim() : null;
+        }""")
+        if txt:
+            final = txt
+            if ("获取完成" in txt) or ("100%" in txt):
+                break
+    # 解析 共N 已获取X 失败Y
+    res = {"total": None, "got": None, "fail": None, "text": final}
+    if final:
+        mt = re.search(r"共\s*(\d+)\s*个?包裹", final)
+        mg = re.search(r"已获取\s*(\d+)", final)
+        mf = re.search(r"(\d+)\s*个?获取失败", final)
+        res["total"] = int(mt.group(1)) if mt else None
+        res["got"] = int(mg.group(1)) if mg else None
+        res["fail"] = int(mf.group(1)) if mf else None
+        log(f"[ERP] 状态更新结果: 共{res['total']} 已获取{res['got']} 失败{res['fail']}")
+    core.log.event("获取跟踪号", total=res.get("total"), got=res.get("got"), fail=res.get("fail"))
+    # 关闭提示框
+    for t in ["关闭", "关 闭", "确定", "确 定", "ok", "OK"]:
+        b = page.query_selector(f".el-dialog:visible button:has-text('{t}'), .el-message-box:visible button:has-text('{t}')")
+        if b and b.is_visible():
+            try: b.click()
+            except Exception: pass
+            break
+    time.sleep(1)
+    return res
+
+
+def _click_subtab(page, name):
+    """点三方仓顶部子标签（成功/失败/获取中/待更新/异常件）。子标签文本形如『成功(11)』，
+    text= 子串匹配即可命中（与 update_order_status 里点『待更新』同法，已实测可用）。"""
+    try:
+        page.click(f"text={name}", timeout=6000); time.sleep(2.5)
+        return True
+    except Exception as e:
+        log(f"[ERP] 切换子标签失败({name}): {e}")
+        return False
+
+
+def _click_confirm_dialog(page, ok_texts=("确定", "确 定")):
+    """点确认弹窗（el-dialog/el-message-box）里的『确定』。只在【可见】弹窗内找按钮、短超时，
+    避免命中隐藏弹窗同名按钮干等 30s（同 read_result_dialog 的坑）。返回是否点到。"""
+    for _ in range(15):
+        for t in ok_texts:
+            b = page.query_selector(
+                f".el-message-box__wrapper:not([style*='display: none']) button:has-text('{t}'), "
+                f".el-dialog__wrapper:not([style*='display: none']) button:has-text('{t}')")
+            if b and b.is_visible():
+                try:
+                    b.click(timeout=3000); return True
+                except Exception:
+                    pass
+        time.sleep(0.5)
+    return False
+
+
+def confirm_success_shipments(page):
+    """新功能.docx 步骤8-11：三方仓 -> 【成功】子标签 -> 全选 -> 工具栏【确认发货】->
+    确认弹窗『已选N个包裹，会扣减库存并提交平台』点【确定】。⚠️ 该操作扣库存+提交平台，
+    不可逆，DRY_RUN 保护（空跑不点确认发货/确定）。用户 2026-07-15 定：按文档全选成功标签
+    所有单（含其他店铺/往次遗留的成功单）。假定当前已在三方仓视图（紧跟 update_order_status）。
+    返回 {total, success, fail, fail_orders, text} 或 {error}/{dry_run}。"""
+    open_order_ship(page)
+    try:
+        page.click("text=三方仓", timeout=6000); time.sleep(3)
+    except Exception as e:
+        log(f"[ERP] 进三方仓失败: {e}"); return {"error": "进三方仓失败"}
+    if not _click_subtab(page, "成功"):
+        return {"error": "切换成功子标签失败"}
+
+    # 用户 2026-07-17：确认发货前先选「筛选模板=单品单数未取消等待发货」过滤，排除 已取消/退款/换货/禁处理
+    # 的单，再全选确认发货。⚠️ 本步是确认发货（扣库存+提交平台、不可逆），比物流下单/待更新更敏感，
+    # 故筛选模板【失败即中止本次发货】(不同于那两处的“失败继续”)——宁可不发、也绝不对未过滤的成功单
+    # 误发已取消/退款单。
+    if not select_filter_template(page):
+        log("[ERP] ⚠️ 成功标签筛选模板未选中，为避免误发已取消/退款单，跳过本次确认发货")
+        core.log.event("确认发货收尾", error="筛选模板未选中跳过", dry_run=config.DRY_RUN)
+        return {"total": 0, "error": "筛选模板未选中", "template_failed": True}
+
+    n = count_orders(page)
+    if not n:
+        log("[ERP] 成功标签 0 条，无需确认发货")
+        return {"total": 0, "success": 0, "fail": 0, "fail_orders": []}
+    if not select_all(page):
+        log("[ERP] 成功标签全选失败"); return {"total": n, "error": "全选失败"}
+
+    if config.DRY_RUN:
+        log(f"[ERP][DRY] 将点击【确认发货】确认 {n} 条成功单（已跳过实际点击，不扣库存/不提交平台）")
+        core.log.event("确认发货收尾", count=n, dry_run=True)
+        return {"total": n, "dry_run": True}
+
+    # 点工具栏【确认发货】（真实点击；行内也有同名按钮，_find_toolbar_button 已排除行内）
+    btn = _find_toolbar_button(page, "确认发货")
+    if not btn:
+        log("[ERP] 未定位到工具栏【确认发货】按钮"); return {"total": n, "error": "未找到确认发货按钮"}
+    try:
+        btn.click()
+        log(f"[ERP] 已点击【确认发货】，确认 {n} 条成功单，等待确认弹窗…")
+    except Exception as e:
+        log(f"[ERP] 点击确认发货失败: {e}"); return {"total": n, "error": str(e)}
+    time.sleep(2)
+    # 确认弹窗『已选N个包裹，会扣减库存并提交平台。继续操作?』-> 点【确定】
+    # （不勾选“订单已提交平台，直接确认发货”复选框，保持默认，照文档只点确定）
+    if not _click_confirm_dialog(page):
+        log("[ERP] ⚠️ 未点到确认发货的【确定】按钮（弹窗未出现或按钮不可见）")
+        return {"total": n, "error": "确认弹窗确定按钮未点到"}
+    log("[ERP] 已点【确定】，提交平台中…")
+    time.sleep(3)
+    r = read_result_dialog(page)
+    shelved = r.get("shelved", [])
+    if shelved:
+        log(f"[ERP] ⚠️ 确认发货中检测到已取消订单，已【搁置】(移出本批、不再提醒、无需跟进)：{shelved}")
+    if r.get("fail"):
+        log(f"[ERP] ⚠️ 确认发货失败 {r['fail']} 单：{r['fail_orders']}")
+    core.log.event("确认发货收尾", count=n, success=r.get("success"), fail=r.get("fail"),
+                   fail_orders=r.get("fail_orders", []), shelved=shelved, dry_run=False)
+    return {"total": n, "success": r.get("success"), "fail": r.get("fail"),
+            "fail_orders": r.get("fail_orders", []), "shelved": shelved, "text": r.get("text")}
+
+
+def finalize_shipments(page):
+    """新功能.docx 完整收尾流程（发货生命周期最后一步，接在按渠道发货之后跑）：
+      三方仓 > 待更新 >（筛选模板「单品单数未取消等待发货」）> 全选 > 等120s > 手动更新（拉跟踪号）> 关闭
+      -> 成功子标签 > 全选 > 确认发货 > 确定（扣库存+提交平台，不可逆）。
+    ⚠️ 确认发货那步受 DRY_RUN 保护，空跑不真点。返回 {tracking, confirm}。"""
+    log("=" * 50)
+    log("[收尾] 发货收尾：拉跟踪号 + 成功标签确认发货")
+    track = update_order_status(page, apply_template=True, wait_before=FINALIZE_TRACK_WAIT)
+    conf = confirm_success_shipments(page)
+    return {"tracking": track, "confirm": conf}
+
+
+# ---------------- 其它阶段（后续，DRY_RUN 保护） ----------------
+def get_tracking(page):
+    """[已废弃] 手册 v1.0 初版把「获取跟踪单号」理解为 待发货列表>更多>获取跟踪单号，
+    但实际落地时确认真实路径是 三方仓>待更新>手动更新（见 update_order_status，已实测验证）。
+    保留此函数名做兼容，直接转发到已验证实现，避免再用旧 el-table 假设的错误路径。"""
+    log("[ERP] get_tracking 已并入 update_order_status（三方仓>待更新>手动更新），转发调用。")
+    return update_order_status(page)
+
+
+def confirm_shipping(page, channel_keyword=None):
+    """[已废弃/等同] 业务确认（2026-07-08）：ERP「确认发货」与「物流下单」是同一步操作，
+    都在【待处理】视图、勾选后触发、结果框「成功X/失败Y（失败=库存不足）」。
+    故不再单列实现，直接转发到已实测验证的 place_logistics_orders，避免重复扣库存/提交平台。"""
+    log("[ERP] confirm_shipping 与 place_logistics_orders 为同一步，转发调用。")
+    return place_logistics_orders(page, channel_keyword=channel_keyword)

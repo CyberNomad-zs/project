@@ -1,0 +1,108 @@
+# 每日 17:20 广告日报自动拉取
+
+## 做什么
+
+每天 **本地时间 17:20**，Windows 计划任务启动：
+
+1. 动态从紫鸟拉店铺列表  
+2. 按 `config/stores.config.json` 筛选（TikTok + 已绑 IP 等）  
+3. **串行**打开每家店 → 广告数据面板 → 抓取 → 写入飞书  
+4. 关闭店铺窗口  
+5. 日志写入 `logs/daily-report-*.log`
+
+## 一键安装计划任务
+
+在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1
+```
+
+指定时间（默认 17:20）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1 -Time "17:20"
+```
+
+卸载：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1 -Uninstall
+```
+
+## 运行前必须满足
+
+| 条件 | 说明 |
+|------|------|
+| 用户已登录 Windows | 紫鸟需要桌面会话，锁屏一般可以，**注销/关机不行** |
+| 紫鸟客户端已打开并登录 | `ziniao-cli doctor` 通过 |
+| `config\stores.config.json` | 飞书凭证正确；`dryRun: false`（安装脚本配套配置已默认 false） |
+| 店铺已绑设备 | `requireIp: true` 会跳过未绑 IP 的店 |
+
+## 配置要点（日报）
+
+`config/stores.config.json`：
+
+```json
+"options": {
+  "dryRun": false,
+  "dateMode": "yesterday",
+  "setPageDateRange": true,
+  "waitAfterDateChangeMs": 8000
+}
+```
+
+- **当前约定：17:20 跑「昨天」数据** → `dateMode: "yesterday"`  
+  - 飞书「日期」字段 = 昨日  
+  - 打开广告面板后会自动点日期快捷项 **「昨天」**（页面默认常为近 7 天，不切会抓到周汇总）  
+- 若要写当天 → 改为 `"today"`（页面同样会切到「今天」）  
+- 若只想改业务日标签、不自动切页面日期 → `"setPageDateRange": false`（不推荐）
+
+## 手动试跑
+
+```powershell
+# 立即执行计划任务
+schtasks /Run /TN TK-Ad-Daily-Report
+
+# 或直接跑包装脚本
+powershell -ExecutionPolicy Bypass -File .\scripts\run-daily-report.ps1
+
+# 只看会抓哪些店
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -ListOnly
+```
+
+## 查日志 / 查任务
+
+```powershell
+# 最近日志
+Get-ChildItem .\logs\daily-report-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 80
+
+# 任务详情
+schtasks /Query /TN TK-Ad-Daily-Report /V /FO LIST
+```
+
+## 常见问题
+
+1. **17:20 没跑**  
+   - 电脑休眠/关机/未登录  
+   - 任务被禁用：任务计划程序里查看「TK-Ad-Daily-Report」
+
+2. **跑了但 0 店**  
+   - 紫鸟未登录 / Bridge 挂了  
+   - 筛选过严（可 `-ListOnly` 检查）
+
+3. **某店失败**  
+   - 广告页 URL 不对、未登录卖家中心、页面改版  
+   - 看 `logs/daily-report-*.log` 与 `logs/multi-store-*.json`
+
+4. **飞书写入失败**  
+   - 凭证过期、应用未加入多维表  
+   - 插件/脚本字段名与表不一致
+
+## 相关脚本
+
+| 文件 | 作用 |
+|------|------|
+| `scripts/install-daily-task.ps1` | 安装/卸载计划任务 |
+| `scripts/run-daily-report.ps1` | 计划任务入口（写日志 + 强制写飞书） |
+| `scripts/run-multi-store.ps1` | 实际多店串行逻辑 |

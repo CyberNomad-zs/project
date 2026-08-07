@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Temu 店铺监测",
+  "version": "0.1.0",
+  "description": "监测 Temu 后台在售数量下降 / 商品流量异常，异常时发飞书告警。数据仅在本机处理，不上传任何服务器。",
+  "permissions": ["storage", "alarms", "tabs", "idle"],
+  "host_permissions": [
+    "https://agentseller.temu.com/*",
+    "https://open.feishu.cn/*",
+    "https://open.larksuite.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Temu 店铺监测" },
+  "options_page": "options.html",
+  "content_scripts": [
+    {
+      "matches": ["https://agentseller.temu.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    { "resources": ["inject.js"], "matches": ["https://agentseller.temu.com/*"] }
+  ]
+}

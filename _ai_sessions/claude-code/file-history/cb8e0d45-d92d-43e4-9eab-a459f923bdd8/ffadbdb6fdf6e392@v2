@@ -1,0 +1,161 @@
+# -*- coding: utf-8 -*-
+"""
+忠实复刻视频 WMS 段(50s~1:24)：黑猫JMCAT 平台订单 未发货 -> 全选 ->
+批量修改快递方=RM -> 确认 -> 批量发货 -> 捕获"预发货成功"。
+只做 RM 这一轮（与视频一致），每步截图。真实动作。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, secrets
+from core import log, ORDERINFO_WMS
+from playwright.sync_api import sync_playwright
+
+JMCAT = [a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMCAT"][0]
+SHOT = config.DUMP_DIR
+
+
+def shot(page, name):
+    try:
+        page.screenshot(path=os.path.join(SHOT, name), full_page=True)
+    except Exception:
+        pass
+
+
+def close_tips(page, rounds=4):
+    """关闭所有可见的 el-message-box / Tip 弹窗（点 ok/确定/关闭）。返回关掉的文本。"""
+    texts = []
+    for _ in range(rounds):
+        box = page.query_selector(".el-message-box__wrapper:visible .el-message-box")
+        if not box:
+            break
+        try:
+            texts.append((box.inner_text() or "").strip()[:120])
+        except Exception:
+            pass
+        clicked = False
+        for t in ["ok", "OK", "确定", "确认", "关闭", "知道了"]:
+            b = page.query_selector(f".el-message-box__wrapper:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try:
+                    b.click(); clicked = True
+                except Exception:
+                    pass
+                break
+        if not clicked:
+            try: page.keyboard.press("Escape")
+            except Exception: pass
+        time.sleep(1)
+    return texts
+
+
+def total_count(page):
+    el = page.query_selector(".el-pagination__total")
+    if el:
+        import re
+        m = re.findall(r"\d+", el.inner_text() or "")
+        if m:
+            return int(m[0])
+    return None
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.wms_login(page, JMCAT):
+            log("[WMS] 登录失败"); ctx.close(); return
+        core.safe_goto(page, ORDERINFO_WMS)
+        time.sleep(5)
+        page.click("button:has-text('查询')", timeout=6000); time.sleep(3)
+
+        n0 = total_count(page)
+        log(f"[WMS] 未发货 共 {n0} 条（发货前）")
+        shot(page, "wms_step1_before.png")
+        if not n0:
+            log("[WMS] 无未发货订单，结束"); time.sleep(3); ctx.close(); return
+
+        # 全选
+        hcb = page.query_selector(".el-table__header-wrapper .el-checkbox, .el-table__header .el-checkbox")
+        if not hcb or "is-disabled" in (hcb.get_attribute("class") or ""):
+            log("[WMS] 表头全选框不可用"); ctx.close(); return
+        hcb.click(); time.sleep(1.5)
+        sel = page.evaluate("() => document.querySelectorAll('.el-table__row .el-checkbox.is-checked').length")
+        log(f"[WMS] 已全选，勾选行标记≈{sel}")
+
+        # 批量修改快递方（限定可见弹窗 :visible）
+        page.click("button:has-text('批量修改快递方')", timeout=6000); time.sleep(1.5)
+        title = page.query_selector(".el-dialog:visible .el-dialog__title")
+        log(f"[WMS] 可见弹窗标题: {title.inner_text() if title else None}")
+        shot(page, "wms_step2_dialog.png")
+
+        # 打开可见弹窗内的快递方下拉并选 RM
+        page.click(".el-dialog:visible .el-select", timeout=5000); time.sleep(1)
+        opts = [(o.inner_text() or "").strip() for o in page.query_selector_all(".el-select-dropdown__item") if o.is_visible()]
+        log(f"[WMS] 快递方可选: {opts}")
+        target = None
+        for o in page.query_selector_all(".el-select-dropdown__item"):
+            if o.is_visible() and (o.inner_text() or "").strip() == "RM":
+                target = o; break
+        if not target:
+            log("[WMS] 未找到可见 RM 选项，取消"); page.keyboard.press("Escape"); ctx.close(); return
+        target.click(); time.sleep(0.8)
+        shot(page, "wms_step3_rm_selected.png")
+
+        # 确认（可见弹窗内的主按钮，优先 primary，其次文本含 确认/确定）
+        ok = page.query_selector(".el-dialog:visible button.el-button--primary")
+        if not ok:
+            for b in page.query_selector_all(".el-dialog:visible button"):
+                t = (b.inner_text() or "").replace(" ", "")
+                if t in ("确认", "确定"):
+                    ok = b; break
+        if not ok:
+            log("[WMS] 未找到可见确认按钮"); page.keyboard.press("Escape"); ctx.close(); return
+        ok.click(); time.sleep(2.5)
+        log("[WMS] 已确认 批量修改快递方 = RM")
+        tips = close_tips(page)
+        log(f"[WMS] 改快递方后 Tip: {tips}")
+        shot(page, "wms_step4_after_setcourier.png")
+
+        # 改完快递方后需要重新全选（列表可能刷新丢失勾选）
+        hcb2 = page.query_selector(".el-table__header-wrapper .el-checkbox, .el-table__header .el-checkbox")
+        if hcb2 and "is-checked" not in (hcb2.get_attribute("class") or ""):
+            try: hcb2.click(); time.sleep(1.2); log("[WMS] 发货前重新全选")
+            except Exception: pass
+
+        # 批量发货
+        page.click("button:has-text('批量发货')", timeout=6000); time.sleep(2)
+        # 可能的二次确认（限可见）
+        for t in ["确定", "确认", "ok", "OK"]:
+            b = page.query_selector(f".el-message-box:visible button:has-text('{t}'), .el-dialog:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                try: b.click(); log(f"[WMS] 点了二次确认按钮 {t}"); time.sleep(1.5)
+                except Exception: pass
+                break
+        time.sleep(2)
+        # 捕获 Tip 预发货成功
+        tip = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('.el-dialog, .el-message-box, .el-message').forEach(d=>{
+                if(d.offsetParent!==null){ const t=(d.innerText||'').trim(); if(t) out.push(t.slice(0,200)); }
+            });
+            return out;
+        }""")
+        log(f"[WMS] 发货后弹窗: {tip}")
+        shot(page, "wms_step5_shipresult.png")
+        closed = close_tips(page)
+        log(f"[WMS] 发货结果 Tip 文本: {closed}")
+
+        # 复查未发货
+        core.safe_goto(page, ORDERINFO_WMS); time.sleep(4)
+        page.click("button:has-text('查询')", timeout=6000); time.sleep(3)
+        n1 = total_count(page)
+        log(f"[WMS] 未发货 共 {n1} 条（发货后）")
+        shot(page, "wms_step6_after.png")
+
+        log(f"[WMS] === 完成：发货前 {n0} → 发货后 {n1} ===")
+        time.sleep(5)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

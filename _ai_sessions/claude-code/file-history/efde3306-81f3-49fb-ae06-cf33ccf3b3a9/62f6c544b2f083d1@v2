@@ -1,0 +1,40 @@
+import { chromium } from 'playwright';
+
+const PROXY = 'http://127.0.0.1:7897';
+const USERDATA = 'E:/project/temu/temu-monitor/.userdata';
+const DEEP = 'https://agentseller.temu.com/goods/list';
+const ROOT = 'https://agentseller.temu.com/';
+
+async function trial(name, extraArgs, rootFirst = false) {
+  const ctx = await chromium.launchPersistentContext(USERDATA, {
+    headless: false,
+    viewport: { width: 1280, height: 800 },
+    locale: 'zh-CN',
+    proxy: { server: PROXY },
+    args: ['--disable-blink-features=AutomationControlled', ...extraArgs],
+  });
+  const page = ctx.pages()[0] || await ctx.newPage();
+  const lines = [];
+  for (let i = 0; i < 3; i++) {
+    if (rootFirst) {
+      try { await page.goto(ROOT, { waitUntil: 'commit', timeout: 20000 }); await page.waitForTimeout(1200); }
+      catch { /* ignore */ }
+    }
+    const t0 = Date.now();
+    try {
+      const resp = await page.goto(DEEP, { waitUntil: 'commit', timeout: 20000 });
+      lines.push(`try${i + 1}: OK  status=${resp && resp.status()}  url=${page.url().slice(0, 55)}  ${Date.now() - t0}ms`);
+    } catch (e) {
+      lines.push(`try${i + 1}: FAIL ${(e.message || '').split('\n')[0]}  ${Date.now() - t0}ms`);
+    }
+    await page.waitForTimeout(1500);
+  }
+  await ctx.close().catch(() => {});
+  console.log(`\n[${name}]`);
+  lines.forEach((l) => console.log('  ' + l));
+}
+
+await trial('A http2-ON  direct-deep', []);
+await trial('B http2-OFF direct-deep', ['--disable-http2']);
+await trial('C http2-OFF root-first', ['--disable-http2'], true);
+console.log('\nDONE');

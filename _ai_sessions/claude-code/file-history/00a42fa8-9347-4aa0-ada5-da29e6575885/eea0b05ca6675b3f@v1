@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from app.config import Settings, get_app_config, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def find_overdue_tasks(db: Database) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    open_tasks = [t for t in db.list_tasks() if t.get("status") not in ("closed", "resolved")]
+    overdue = []
+    for t in open_tasks:
+        due = t.get("due_at")
+        if due and due < now:
+            overdue.append(t)
+    return overdue
+
+
+def _filter_escalation_targets(tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """过滤需要升级的任务：需要老板决策 或 红色逾期 &gt;=2 工作日。"""
+    targets = []
+    for t in tasks:
+        if t.get("need_boss"):
+            targets.append(t)
+            continue
+        if t.get("level") == "red":
+            # 红色任务逾期超过 2 个自然日 → 升级
+            due = t.get("due_at") or ""
+            try:
+                due_dt = datetime.strptime(due, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                if (now - due_dt).days >= 2:
+                    targets.append(t)
+            except ValueError:
+                pass
+    return targets
+
+
+def build_overdue_message(tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return "当前无逾期未关闭任务。"
+    lines = [f"【ASIN健康度】逾期任务 {len(tasks)} 条"]
+    for t in tasks[:30]:
+        lines.append(
+            f"- [{t.get('level')}] {t.get('owner')} {t.get('shop_name')} "
+            f"{t.get('asin')} {t.get('anomaly_type')} due={t.get('due_at')}"
+        )
+    if len(tasks) > 30:
+        lines.append(f"…另有 {len(tasks) - 30} 条")
+    return "\n".join(lines)
+
+
+def build_escalate_card(tasks: list[dict[str, Any]], *, settings: Settings | None = None) -> dict[str, Any]:
+    """构建逾期升级交互式卡片。"""
+    from app.clients.feishu import (
+        build_level_color,
+        build_level_icon,
+        card_action,
+        card_button,
+        card_header,
+        card_hr,
+        card_md,
+    )
+
+    settings = settings or get_settings()
+    cfg = get_app_config()
+    notify = cfg.get("notify") or {}
+    base_url = (notify.get("view_base_url") or "").rstrip("?&")
+    if not base_url and settings.feishu_bitable_app_token:
+        base_url = f"https://dcnkj1up67d5.feishu.cn/base/{settings.feishu_bitable_app_token}"
+    tasks_url = base_url
+    if settings.feishu_table_tasks:
+        sep = "&" if "?" in base_url else "?"
+        tasks_url = f"{base_url}{sep}table={settings.feishu_table_tasks}"
+
+    # 按负责人分组统计
+    by_owner: dict[str, list[dict[str, Any]]] = {}
+    for t in tasks:
+        owner = str(t.get("owner") or "未分配")
+        by_owner.setdefault(owner, []).append(t)
+
+    md_lines = ["**以下任务已逾期，请优先处理：**", ""]
+    for owner, items in sorted(by_owner.items()):
+        r = sum(1 for t in items if t.get("level") == "red")
+        o = sum(1 for t in items if t.get("level") == "orange")
+        md_lines.append(f"👤 **{owner}**: 🔴{r} 🟠{o}")
+        for t in items[:8]:
+            icon = build_level_icon(t.get("level") or "")
+            cn = t.get("product_title_cn") or t.get("product_title") or ""
+            cn_s = f" {cn}" if cn else ""
+            md_lines.append(
+                f"{icon} `{t.get('task_id')}` {t.get('shop_name')} {t.get('asin')}{cn_s}"
+                f" | {t.get('anomaly_type')}"
+            )
+        if len(items) > 8:
+            md_lines.append(f"  …另有 {len(items) - 8} 条")
+        md_lines.append("")
+
+    elements = [
+        card_md("\n".join(md_lines)),
+        card_hr(),
+        card_action(card_button("📋 查看任务表", tasks_url)),
+    ]
+
+    return {
+        **card_header(f"⚠️ 逾期任务 {len(tasks)} 条", color="red"),
+        "elements": elements,
+    }
+
+
+def send_escalate_notification(
+    db: Database,
+    *,
+    settings: Settings | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """查找逾期任务并发送升级通知（卡片格式）。"""
+    settings = settings or get_settings()
+    overdue = find_overdue_tasks(db)
+    if not overdue:
+        logger.info("无逾期任务")
+        return {"overdue": 0, "escalated": 0, "sent": False}
+
+    targets = _filter_escalation_targets(overdue)
+    if not targets:
+        logger.info("逾期任务 %s 条，无满足升级条件（需老板决策或红色逾期≥2天）", len(overdue))
+        return {"overdue": len(overdue), "escalated": 0, "sent": False}
+
+    card = build_escalate_card(targets, settings=settings)
+    db.log_notify(
+        "escalate",
+        {
+            "overdue_count": len(overdue),
+            "escalated_count": len(targets),
+            "card": card,
+        },
+    )
+
+    if dry_run:
+        import json
+
+        logger.info(
+            "escalate dry-run: %s 条升级\n%s",
+            len(targets),
+            json.dumps(card, ensure_ascii=False, indent=2),
+        )
+        return {
+            "overdue": len(overdue),
+            "escalated": len(targets),
+            "sent": False,
+            "dry_run": True,
+        }
+
+    webhook = (settings.feishu_bot_webhook or "").strip()
+    if not webhook:
+        logger.warning("未配置 FEISHU_BOT_WEBHOOK，逾期升级仅写 notify_log")
+        return {"overdue": len(overdue), "escalated": len(targets), "sent": False}
+
+    try:
+        from app.clients.feishu import FeishuClient
+
+        with FeishuClient(settings) as client:
+            client.send_webhook_card(card, webhook=webhook)
+        logger.info("逾期升级通知已发送: %s 条", len(targets))
+        return {"overdue": len(overdue), "escalated": len(targets), "sent": True}
+    except Exception:
+        logger.exception("逾期升级通知发送失败")
+        return {"overdue": len(overdue), "escalated": len(targets), "sent": False, "error": True}

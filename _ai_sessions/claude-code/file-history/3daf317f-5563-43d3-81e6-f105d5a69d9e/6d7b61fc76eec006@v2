@@ -1,0 +1,131 @@
+{
+  "_comment": "复制为 stores.config.json 后修改。店铺列表每次运行时从紫鸟动态获取，不要写死 storeId（除非 includeStoreIds）。",
+  "feishu": {
+    "appId": "cli_xxxxxxxx",
+    "appSecret": "从开放平台获取，勿提交真实密钥到 Git",
+    "appToken": "多维表格 app_token",
+    "tableId": "table_id",
+    "writeMode": "dual"
+  },
+  "_feishu_writeMode": "direct=只写飞书 | dual=中心+飞书(Stage A，推荐) | center=只上报中心，飞书由中心同步(Stage B)",
+  "qingquan": {
+    "enabled": true,
+    "baseUrl": "https://qingquan.jmzlai.com",
+    "apiKey": "dev-ingest-key",
+    "source": "tiktok_ads",
+    "failOpen": true,
+    "timeoutSec": 120
+  },
+  "_qingquan_note": "P0：enabled=true + writeMode=dual。failOpen=true 时中心失败只告警，不阻断飞书。生产 baseUrl=https://qingquan.jmzlai.com；apiKey 必须等于服务器 INGEST_DEFAULT_API_KEY（不是 dev-ingest-key）。timeoutSec 建议 120（大批量 orders/products 30s 易超时）。上报字段含 P1：daily_budget/target_roi/net_cost/avg_order_cost/delivery_status/plan_status。",
+  "filter": {
+    "platformContains": ["TikTok"],
+    "nameContains": [],
+    "nameExclude": [],
+    "requireIp": true,
+    "includeStoreIds": [],
+    "excludeStoreIds": []
+  },
+  "_filter_note": "excludeStoreIds 示例：Nookora Home 核验未完成时填 \"27841084722470\"，核验通过后删掉。",
+  "adsUrl": {
+    "default": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+    }
+  },
+  "orderUrl": {
+    "default": "https://seller-uk.tiktok.com/order?selected_sort=6&tab=all",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/order?selected_sort=6&tab=all",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/order?selected_sort=6&tab=all"
+    },
+    "_note": "P2a 订单列表；实页 URL 以紫鸟打开为准，可改"
+  },
+  "productUrl": {
+    "default": "https://seller-uk.tiktok.com/product/manage",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/product/manage",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/product/manage"
+    },
+    "_note": "P2b 商品管理列表；URL 需按实页校准"
+  },
+  "shopDailyUrl": {
+    "default": "https://seller-uk.tiktok.com/homepage",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/homepage"
+    },
+    "_note": "P2c：首页近N天 GMV/客户/订单卡片更稳；compass/data-overview 常占位不渲染"
+  },
+  "healthUrl": {
+    "default": "https://seller-uk.tiktok.com/health-center",
+    "_note": "P3a 账号健康分；shop/health-score 会 404"
+  },
+  "financeUrl": {
+    "default": "https://seller-uk.tiktok.com/finance/bills",
+    "_note": "P3b 财务/账单；路径因站而异"
+  },
+  "modules": {
+    "ads": true,
+    "orders": true,
+    "products": true,
+    "shopDaily": true,
+    "health": true,
+    "finance": true,
+    "opsExcludeStoreIds": ["27758103898326"],
+    "opsExcludePlatformContains": ["欧盟"],
+    "ordersExcludeStoreIds": ["27758103898326"],
+    "ordersExcludePlatformContains": ["欧盟"],
+    "_ops_exclude_note": "欧盟 Pop：orders/products/shop-modules 共用 opsExclude*（兼容 ordersExclude*）；广告 dual 不读此列表，仍可采 Pop。不要把 Pop 放进 filter.excludeStoreIds，否则广告也会被排除。",
+    "_note": "ads→run-multi-store；orders/products/shop-modules→日更脚本。全店=includeStoreIds 空 + requireIp。"
+  },
+  "storeNameMap": {
+    "Tiktok_Shop2": "Deal to deal",
+    "Nookora Home": "Nookora Home",
+    "Tiktok - KK Seagull": "Gardena",
+    "TikTok - Pop": "TikTok - Pop",
+    "TT-L": "TT-L"
+  },
+  "_storeNameMap_note": "展示名应与 public.shop.name 对齐。ingest 侧也会用 shop 主数据覆盖 shop_name。历史错误：KK Seagull 曾映射成 SHOP INOUT、Pop 曾映射成 Gardena。",
+  "options": {
+    "dryRun": true,
+    "dateMode": "yesterday",
+    "setPageDateRange": true,
+    "waitAfterDateChangeMs": 8000,
+    "_date_note": "面板默认近7天；setPageDateRange=true 时抓前点「昨天」，避免业务日=昨天但数值是周汇总",
+    "closeAfter": true,
+    "waitAfterOpenMs": 25000,
+    "waitAfterVisitMs": 25000,
+    "delayBetweenStoresMs": 5000,
+    "scrapeRetries": 3,
+    "scrapeRetryWaitMs": 15000,
+    "reopenOnBlank": true,
+    "bridgeRetryWaitMs": 20000,
+    "maximizeWindow": true,
+    "windowRatio": "full",
+    "skipZeroDisabledCampaigns": true,
+    "orderMaxPages": 10,
+    "orderPageWaitMs": 5000,
+    "productMaxPages": 5,
+    "productPageWaitMs": 5000,
+    "_order_paging_note": "订单翻页最多 N 页；1=仅首屏",
+    "_product_paging_note": "商品翻页；需 products-click-next.js",
+    "_skipZeroDisabled_note": "策略C：关停且花费=0且销售额=0 才跳过；有花费的关停计划仍写入"
+  },
+  "analysis": {
+    "enabled": true,
+    "lowRoiThreshold": 3,
+    "writeSummaryToFeishu": true
+  },
+  "currency": {
+    "target": "USD",
+    "pageDefault": "USD",
+    "convert": true,
+    "ratesToUsd": {
+      "USD": 1,
+      "GBP": 1.27,
+      "EUR": 1.08,
+      "CNY": 0.14
+    },
+    "_comment": "广告花费/销售额统一美金(USD)，与广告后台一致。检测到英镑等才会换算。"
+  }
+}

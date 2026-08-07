@@ -1,0 +1,85 @@
+# -*- coding: utf-8 -*-
+"""
+ERP 手动登录一次（过腾讯滑块），保存登录态到持久化 profile，并抓取 订单发货 页 DOM。
+用法：python capture/erp_manual_login.py
+浏览器弹出后：登录赛狐ERP（输入账号密码+图形验证码+滑块）。登录成功后脚本会自动继续，无需关闭。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN = "https://www.sellfox.com/amzup-web-main/login.html"
+
+
+def is_logged_in(page):
+    try:
+        r = page.request.get("https://www.sellfox.com/api/isLogin.json?reqTime=%d" % int(time.time() * 1000))
+        j = r.json()
+        return bool(j.get("data"))
+    except Exception:
+        return False
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            page.goto(LOGIN, wait_until="domcontentloaded", timeout=45000)
+        except Exception as e:
+            print("goto:", e)
+
+        print("=" * 64)
+        print(" 请在浏览器里登录赛狐ERP：")
+        print("   账号:", secrets.ERP["user"])
+        print("   密码:", secrets.ERP["password"])
+        print("   （手动输入图形验证码，并完成腾讯滑块验证）")
+        print(" 登录成功后本脚本会自动检测并继续，请勿关闭浏览器。")
+        print("=" * 64)
+
+        # 轮询最多 5 分钟，检测是否登录成功
+        ok = False
+        for i in range(150):
+            time.sleep(2)
+            if is_logged_in(page):
+                ok = True
+                print(">>> 检测到已登录！")
+                break
+            if i % 5 == 0:
+                print(f"  ...等待登录中 ({i*2}s)")
+        if not ok:
+            print("!! 5分钟内未检测到登录，退出。可重试。")
+            ctx.close(); return
+
+        # 保存登录态
+        ctx.storage_state(path=os.path.join(config.BASE_DIR, "erp_state.json"))
+        print("  已保存 erp_state.json + 持久化 profile")
+
+        # 打开 订单发货 页并抓取
+        try:
+            page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+            # 等 SPA 渲染出订单表格/工具栏
+            for _ in range(30):
+                time.sleep(1)
+                if page.query_selector("text=确认发货") or page.query_selector(".el-table"):
+                    break
+            time.sleep(3)
+            html = page.content()
+            with open(os.path.join(config.DUMP_DIR, "erp_orderShip.html"), "w", encoding="utf-8") as f:
+                f.write(html)
+            page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_orderShip.png"), full_page=True)
+            print(f"  [OK] 抓取 订单发货 页: {len(html)} bytes, url={page.url}")
+        except Exception as e:
+            print("  抓取订单发货页异常:", e)
+
+        print("DONE。浏览器保持打开 30 秒后自动关闭。")
+        time.sleep(30)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

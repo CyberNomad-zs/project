@@ -1,0 +1,132 @@
+# TK P0: after collectors finish — anomaly rules + Feishu T1/T2/anomaly sync.
+# Rules order: ads → product → shop(①店铺分析) → feishu.
+# Safe to re-run (rules upsert open tasks; feishu sync is idempotent via map).
+#
+# Usage (repo root):
+#   powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -LookbackDays 7
+#   powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -SkipRules
+#   powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -SkipFeishu -DryRun
+
+param(
+  [int]$LookbackDays = 14,
+  [switch]$SkipRules,
+  [switch]$SkipFeishu,
+  [switch]$DryRun,
+  [string]$BizDate = ""
+)
+
+$ErrorActionPreference = 'Continue'
+$RepoRoot = Split-Path $PSScriptRoot -Parent
+if (-not (Test-Path (Join-Path $RepoRoot 'backend\app'))) {
+  # script may live at repo/scripts; cwd-aware fallback
+  if (Test-Path (Join-Path $PSScriptRoot '..\backend\app')) {
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
+  }
+}
+
+$logDir = Join-Path $RepoRoot 'logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$logFile = Join-Path $logDir "tk-p0-post-collect-$stamp.log"
+
+function Log([string]$msg) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  Add-Content -Path $logFile -Value $line -Encoding UTF8
+  Write-Host $line
+}
+
+function Find-Python() {
+  $cands = @(
+    (Join-Path $RepoRoot 'backend\.venv\Scripts\python.exe'),
+    (Join-Path $RepoRoot '.venv\Scripts\python.exe'),
+    'python'
+  )
+  foreach ($c in $cands) {
+    if ($c -eq 'python') { return $c }
+    if (Test-Path $c) { return $c }
+  }
+  return 'python'
+}
+
+Log "===== TK P0 post-collect START ====="
+Log "root=$RepoRoot log=$logFile lookback=$LookbackDays dryRun=$DryRun"
+
+$py = Find-Python
+Log "python=$py"
+$backend = Join-Path $RepoRoot 'backend'
+$env:PYTHONPATH = $backend
+if (Test-Path (Join-Path $RepoRoot '.env')) {
+  # jobs read Settings from cwd/env; prefer backend cwd
+  Log "note: ensure FEISHU_* / DATABASE_URL loaded via backend Settings (.env)"
+}
+
+$codes = @()
+
+if (-not $SkipRules) {
+  Push-Location $backend
+  try {
+    $adsJob = Join-Path $backend 'app\jobs\tk_ads_anomaly_eval.py'
+    $prodJob = Join-Path $backend 'app\jobs\tk_product_anomaly_eval.py'
+    $shopJob = Join-Path $backend 'app\jobs\tk_shop_anomaly_eval.py'
+    if (Test-Path $adsJob) {
+      $argsAds = @('-m', 'app.jobs.tk_ads_anomaly_eval')
+      if ($DryRun) { $argsAds += '--dry-run' }
+      if ($BizDate) { $argsAds += @('--biz-date', $BizDate) }
+      Log ("run ads anomaly: {0}" -f ($argsAds -join ' '))
+      & $py @argsAds
+      $codes += $LASTEXITCODE
+      Log ("ads anomaly exit={0}" -f $LASTEXITCODE)
+    } else {
+      Log "WARN missing $adsJob — skip ads rules CLI"
+    }
+    if (Test-Path $prodJob) {
+      $argsP = @('-m', 'app.jobs.tk_product_anomaly_eval')
+      if ($DryRun) { $argsP += '--dry-run' }
+      Log ("run product anomaly: {0}" -f ($argsP -join ' '))
+      & $py @argsP
+      $codes += $LASTEXITCODE
+      Log ("product anomaly exit={0}" -f $LASTEXITCODE)
+    } else {
+      Log "WARN missing $prodJob — skip product rules CLI"
+    }
+    if (Test-Path $shopJob) {
+      $argsS = @('-m', 'app.jobs.tk_shop_anomaly_eval')
+      if ($DryRun) { $argsS += '--dry-run' }
+      if ($BizDate) { $argsS += @('--biz-date', $BizDate) }
+      Log ("run shop anomaly: {0}" -f ($argsS -join ' '))
+      & $py @argsS
+      $codes += $LASTEXITCODE
+      Log ("shop anomaly exit={0}" -f $LASTEXITCODE)
+    } else {
+      Log "WARN missing $shopJob — skip shop rules CLI"
+    }
+  } finally {
+    Pop-Location
+  }
+} else {
+  Log "SkipRules"
+}
+
+if (-not $SkipFeishu) {
+  $syncPy = Join-Path $RepoRoot 'scripts\feishu_tk_daily_sync.py'
+  if (-not (Test-Path $syncPy)) {
+    Log "FATAL missing $syncPy"
+    $codes += 1
+  } else {
+    $argsS = @($syncPy, '--lookback-days', "$LookbackDays")
+    if ($DryRun) { $argsS += '--dry-run' }
+    Log ("run feishu sync: {0}" -f ($argsS -join ' '))
+    & $py @argsS
+    $codes += $LASTEXITCODE
+    Log ("feishu sync exit={0}" -f $LASTEXITCODE)
+  }
+} else {
+  Log "SkipFeishu"
+}
+
+$failed = @($codes | Where-Object { $_ -ne 0 -and $_ -ne $null }).Count
+$final = if ($failed -gt 0) { 1 } else { 0 }
+Log ("steps={0} failed={1} final={2}" -f $codes.Count, $failed, $final)
+Log "===== TK P0 post-collect END ====="
+exit $final

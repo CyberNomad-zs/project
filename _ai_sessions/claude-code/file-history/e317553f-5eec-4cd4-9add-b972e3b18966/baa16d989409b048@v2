@@ -1,0 +1,25 @@
+// 用真实抓包数据验证插件的解析逻辑（复制 background.js 里的函数）
+import { readFileSync } from 'node:fs';
+
+function parseCountStatus(body) {
+  const j = JSON.parse(body);
+  const list = j && j.result && j.result.skcTopStatusCountList;
+  if (!Array.isArray(list)) return null;
+  const pick = (s) => { const x = list.find((e) => e && e.skcTopStatus === s); return x && typeof x.skcTotal === 'number' ? x.skcTotal : null; };
+  return { onSale: pick(100), unpublished: pick(0), removed: pick(200), deleted: pick(300) };
+}
+function parsePageQuery(body) {
+  const j = JSON.parse(body);
+  const r = j && j.result; if (!r) return null;
+  const items = Array.isArray(r.pageItems) ? r.pageItems : [];
+  const flow = {};
+  for (const it of items) for (const key of ['flowLimitStatus', 'flowAllowanceStatus', 'flowLimit']) { const kk = key + '=' + String(it ? it[key] : undefined); flow[kk] = (flow[kk] || 0) + 1; }
+  return { total: r.total, sample: items.length, flow };
+}
+
+const dir = 'E:\\project\\temu\\temu-monitor\\capture\\';
+const cs = JSON.parse(readFileSync(dir + 'hit-086.json', 'utf8')); // countStatus
+const pq = JSON.parse(readFileSync(dir + 'hit-068.json', 'utf8')); // pageQuery
+
+console.log('countStatus 解析 =>', parseCountStatus(cs.body));
+console.log('pageQuery   解析 =>', parsePageQuery(pq.body));

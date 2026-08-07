@@ -1,0 +1,7 @@
+{"ts_ms":1785396483226,"kind":"purge","reason":"session-load-replay","hook_installed":false,"purge_us":0}
+{"ts_ms":1785396490912,"kind":"start","pid":2180,"version":"0.2.113"}
+{"ts_ms":1785396490912,"kind":"sample"}
+{"ts_ms":1785396510984,"kind":"purge","reason":"session-load-replay","hook_installed":false,"purge_us":0}
+{"ts_ms":1785396520912,"kind":"sample"}
+{"ts_ms":1785396550913,"kind":"sample"}
+{"ts_ms":1785396580914,"kind":"sample"}

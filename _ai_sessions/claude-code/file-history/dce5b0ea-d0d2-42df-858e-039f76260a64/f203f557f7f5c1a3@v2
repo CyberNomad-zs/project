@@ -1,0 +1,67 @@
+# -*- coding: utf-8 -*-
+"""
+step2：复用已登录 profile，打开关键页面，导出真实 DOM(HTML) + 截图，供分析并编写选择器。
+前提：已先运行 step1_login.py 并登录两个系统。
+用法：python capture/step2_capture.py
+产物：capture/dumps/*.html 与 *.png
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+TARGETS = [
+    ("wms_platform_order", config.WMS_URL),   # 登录后需人工/脚本点到 一件代发>平台订单
+    ("erp_order_ship", config.ERP_URL),
+]
+
+
+def dump(page, name):
+    os.makedirs(config.DUMP_DIR, exist_ok=True)
+    html_path = os.path.join(config.DUMP_DIR, f"{name}.html")
+    png_path = os.path.join(config.DUMP_DIR, f"{name}.png")
+    try:
+        html = page.content()
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        page.screenshot(path=png_path, full_page=True)
+        print(f"  [OK] {name}: {len(html)} bytes -> {html_path}")
+    except Exception as e:
+        print(f"  [ERR] {name}: {e}")
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE,
+            headless=config.HEADLESS,
+            no_viewport=True,
+            args=["--start-maximized"],
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        for name, url in TARGETS:
+            print(f">>> 打开 {name}: {url}")
+            try:
+                page.goto(url, wait_until="networkidle", timeout=60000)
+            except Exception as e:
+                print("  goto 异常:", e)
+            time.sleep(3)
+            # 登录校验：若出现登录框/被跳转登录页，提示重登
+            low = (page.url or "").lower()
+            if "login" in low:
+                print(f"  [!] {name} 似乎未登录（当前URL含 login）：{page.url}")
+            dump(page, name)
+        print("== 抓取完成。若 WMS 需要先点到'一件代发>平台订单'，请保持浏览器停留在该页后按需再抓 ==")
+        print("== 浏览器将保持打开 120 秒，可手动导航到目标页 ==")
+        # 保持打开，便于人工导航到真正的目标列表页后再抓一次
+        for i in range(24):
+            time.sleep(5)
+            try:
+                dump(page, "wms_current")  # 周期性抓当前页，捕捉人工导航后的真实列表页
+            except Exception:
+                pass
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

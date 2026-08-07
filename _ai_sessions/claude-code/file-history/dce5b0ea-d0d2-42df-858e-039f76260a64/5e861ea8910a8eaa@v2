@@ -1,0 +1,14 @@
+import os, sys
+import imageio.v3 as iio
+import imageio_ffmpeg
+import numpy as np
+
+video = r"E:\project\海外仓\2026-07-08 09-47-00.mp4"
+outdir = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\dce5b0ea-d0d2-42df-858e-039f76260a64\scratchpad\frames"
+os.makedirs(outdir, exist_ok=True)
+
+meta = iio.immeta(video, plugin="pyav")
+print("META:", meta)
+fps = meta.get("fps", 30)
+dur = meta.get("duration", None)
+print("fps:", fps, "duration:", dur)

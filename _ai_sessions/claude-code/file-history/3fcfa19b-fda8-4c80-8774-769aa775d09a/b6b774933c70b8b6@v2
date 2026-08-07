@@ -1,0 +1,102 @@
+# HomeCove 单店灰度 G1 专用配置
+# 用法：python main.py --config config/config.g1-homecove.yaml
+# 或双击 run_g1_homecove.bat（会二次确认）
+#
+# G1 目标：
+#   - 只处理 HomeCove (shopId 398202)
+#   - 不 dry-run：有渠道单推进本地 CHANNEL_ASSIGNED（不调赛狐写接口）
+#   - auto_apply_track_no: false → 绝不自动物流下单
+#   - 无渠道：人工在赛狐指派（与主策略一致）
+# 回退：停进程，改回 run_dryrun.bat + config/config.yaml
+
+customer:
+  name: 金猫商贸-G1-HomeCove
+
+sellfox:
+  base_url: https://openapi.sellfox.com
+  client_id: "368233"
+  client_secret: "8d2a49e8-82cf-40b1-a1ff-5484b57fbc9e"
+
+wms:
+  base_url: http://193.112.93.60:9999
+  profiles:
+    jinmao:
+      key: 100000073
+      api_secret: "2a7dbba0807e4746ab96399369ae7466"
+    blackcat:
+      key: 100000081
+      api_secret: "78a4d04bdb0f4214928d19abc95d1e44"
+  default_profile: jinmao
+
+run:
+  poll_interval_sec: 300
+  purchase_date_days: 7
+  # ★ G1：仅 HomeCove
+  shop_whitelist: ["398202"]
+  hold_on_channel_mismatch: true
+  # ★ G1：禁止自动物流下单
+  auto_apply_track_no: false
+  keep_existing_channel: true
+  ship_confirm_mode: weighing
+  default_weight_unit: g
+  default_country: GB
+
+channels:
+  - name: BLACKCAT-RM
+    sellfox_provider_auth_detail_id: 591
+    expected_carrier: RM
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-DPD
+    sellfox_provider_auth_detail_id: 590
+    expected_carrier: DPD
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-EH
+    sellfox_provider_auth_detail_id: 1303
+    expected_carrier: EH
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-RM
+    sellfox_provider_auth_detail_id: 480
+    expected_carrier: RM
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-DPD
+    sellfox_provider_auth_detail_id: 481
+    expected_carrier: DPD
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+
+warehouse:
+  is_oversea: "1"
+
+sku_weights: {}
+
+notify:
+  feishu_webhook: ""

@@ -1,0 +1,27 @@
+---
+name: ai-competition-project
+description: Ongoing — building a single-person entry for the company AI automation competition (compete 2026-07-31)
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: fa9673d6-883e-4c6f-9bcf-bb28b222107c
+---
+
+公司"AI 自动化场景创意比赛"：报名截止 2026-07-29（联系 李瑾），2026-07-31 周五下午四楼会议室现场演示。限单人、独立完成、原创、"简单好用=高分"。奖金 一等1000/二等500/三等200/参与50。用户是技术/开发/产品岗；演示环境有稳定网络、装了 Python/Node、有大模型 API Key。项目目录 E:\project\AIc。
+
+已用多智能体工作流评估 10 个候选方案（报告：E:\project\AIc\AI比赛方案评估报告.html，线上 artifact 已发布），加权均分推荐冠军 **图秒成表**（图片→可编辑 Excel，8.1 分）；备选 纪要快手、小跑腿（浏览器自动化 Agent，#3）。
+
+**已定方向**：作品 = **「发货哨兵」**（FulfillSentinel）——**只读**聚合 Temu/赛狐ERP/海外仓WMS 的统一发货看板 + 履约异常预警（超时/卡仓/未回填运单/未同步/库存不一致）。演示约束：只有生产账号、WMS 仅公司网络可达 → 取数以「各系统导出 xlsx/csv」为主，打包成自包含 HTML 可离线演示，不做写操作。见 [[company-work-systems]]。
+
+**工程**：E:\project\AIc\ship-sentinel。已完成真实数据端到端管线：backend/xlsx_reader.py（零依赖、绕过赛狐/Temu 导出的错误 dimension 声明）+ build.py（ingest+统一模型+8类异常引擎+PII脱敏→unified.json）+ pack.py（→frontend/data.js + dist/发货哨兵-离线演示.html 单文件离线）。frontend/index.html 已改为真实数据驱动、明暗双主题、可交互（异常/平台/状态联动筛选、排序、导出催发清单CSV），Playwright 验证渲染正确。
+
+**样例真相（2026-07-16 收到）**：用户给的不是我要的三系统订单，而是——赛狐"包裹导出"**Package2026_07_16(0).xlsx（72列/505单，50MB因内嵌505张商品图，是真正的订单主干，且赛狐已聚合 Amazon176/TikTok165/Temu半托管154/SHEIN10 四平台）** + Temu**库存**上传模板(货号×当前库存) + WMS**商品主数据**(SKU尺寸/仓库代码/关联ASIN)。即：赛狐=订单枢纽，Temu/WMS=库存交叉核对层。跨系统匹配键=**内部货号(JMCAT*/VIP*)**：赛狐SKU/MSKU ↔ Temu SKU货号 ↔ WMS仓库代码（已验证7个货号打通）。⚠️赛狐导出**未脱敏含买家PII**，已在解析层丢弃。
+
+**关键发现——快照"太平静"**：这是午间快照，480/505已发货、当日发货率99.6%(中位6.4h)，运营很健康；仅16待处理、**4单需立即处理**(其中1单"卡虚拟仓+缺渠道"是明星案例)、2个Temu断货货号。overdue=0/no_tracking=0 都是引擎**正确**判定(超期单都已作废、已发货单都有运单)。"主数据缺失=12"是**样例库存仅160货号**的误报，已降级不计入头条KPI。→ 演示戏剧性偏弱。
+
+**待用户决策(已问)**：①数据策略——就用这份真实快照 / 换"早晨/积压"快照让在途单更多 / 再导全量WMS主数据+WMS出库单+Temu订单以支撑完整三系统流。②最在意哪几类异常。跨系统匹配字段已确认(内部货号)，无需再问。已启动后台工作流做异常引擎对抗式复核+评委视角批评+演示脚本。
+
+**比赛前提已确认（2026-07-16）**：允许基于开源二次开发；评分偏「业务落地价值」。**可复用开源**：跨系统订单匹配用 recordlinkage + rapidfuzz（dedupe/Splink 需训练太重，只借思路）；列名映射直接用 LLM prompt 一次映射+缓存，别上 llmTableSchemaMapping/LLMatch 框架；看板前端不引任何库（自包含 HTML 离线演示，避 CSP/打包风险）。注意：browser-use/Skyvern 这类活体浏览器自动化**不适配**发货哨兵的只读+读导出文件范围，别抱错。
+
+**Why:** 贴合真实业务场景的作品原创性和现场说服力更高，评委共鸣更强；只读聚合规避生产系统翻车风险。
+**How to apply:** 收到样例前无法写 ingest 适配器（列名未知）；避免在生产 ERP/Temu/WMS 上做现场写操作。

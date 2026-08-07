@@ -1,0 +1,88 @@
+@echo off
+setlocal EnableExtensions
+cd /d "%~dp0"
+
+REM Double-click: reopen self with cmd /k so window never flashes away
+if not "%~1"=="__inner__" (
+  cmd /k call "%~f0" __inner__
+  exit /b
+)
+
+title sellfox-bridge dry-run
+echo ========================================
+echo  sellfox-bridge  dry-run
+echo  read-only: no write APIs
+echo  log file: bridge.log
+echo  stop: Ctrl+C
+echo  workdir: %CD%
+echo ========================================
+echo.
+
+REM Prefer the Python that already has project deps (3.12 on this machine).
+REM Do NOT use bare "py -3" first — it may pick a newer empty install (e.g. 3.14).
+set "PYEXE="
+
+if exist "%LocalAppData%\Programs\Python\Python312\python.exe" (
+  set "PYEXE=%LocalAppData%\Programs\Python\Python312\python.exe"
+  goto :have_py
+)
+if exist "C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe" (
+  set "PYEXE=C:\Users\Administrator\AppData\Local\Programs\Python\Python312\python.exe"
+  goto :have_py
+)
+if exist "%LocalAppData%\Programs\Python\Python313\python.exe" (
+  set "PYEXE=%LocalAppData%\Programs\Python\Python313\python.exe"
+  goto :have_py
+)
+
+where python >nul 2>&1 && for /f "delims=" %%I in ('where python') do (
+  set "PYEXE=%%I"
+  goto :have_py
+)
+
+echo [ERROR] Python not found.
+echo Install Python 3.12, check "Add to PATH", then:
+echo   pip install -r requirements.txt
+echo.
+goto :end
+
+:have_py
+echo Using: %PYEXE%
+"%PYEXE%" --version
+if errorlevel 1 (
+  echo [ERROR] Python failed to start.
+  goto :end
+)
+
+REM Quick dep check
+"%PYEXE%" -c "import yaml, requests" 2>nul
+if errorlevel 1 (
+  echo [ERROR] Missing packages for this Python. Installing...
+  "%PYEXE%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+  if errorlevel 1 (
+    echo [ERROR] pip install failed. Run manually:
+    echo   "%PYEXE%" -m pip install -r requirements.txt
+    goto :end
+  )
+)
+
+if not exist "config\config.yaml" (
+  echo [ERROR] Missing config\config.yaml
+  goto :end
+)
+if not exist "main.py" (
+  echo [ERROR] Missing main.py in %CD%
+  goto :end
+)
+
+echo.
+echo Starting dry-run at %date% %time%
+echo.
+"%PYEXE%" main.py --dry-run
+echo.
+echo Process exited, code=%errorlevel%
+
+:end
+echo.
+echo Window stays open. Type exit to close, or press Ctrl+C then exit.
+endlocal

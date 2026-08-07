@@ -1,0 +1,95 @@
+@echo off
+cd /d "%~dp0"
+title Temu Monitor
+
+rem ---- check Node.js ----
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [ERROR] Node.js not found.
+  echo   Install Node.js LTS first: https://nodejs.org
+  echo   Then run this program again.
+  echo.
+  pause
+  exit /b
+)
+
+rem ---- first run: install deps ----
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [First run] Installing dependencies, please wait 1-2 min...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   Install failed. Check network and retry.
+    pause
+    exit /b
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo              Temu Monitor  Console
+echo   ( Chinese guide: open the .txt file in this folder )
+echo ============================================
+echo.
+echo    1.  Login to Temu   ^(required on first use^)
+echo    2.  Start monitoring ^(keep window open^)
+echo    3.  Test once now
+echo    4.  Enable auto-start on boot ^(recommended^)
+echo    5.  Disable auto-start
+echo    0.  Exit
+echo.
+set /p "c=Enter a number and press Enter: "
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_start
+if "%c%"=="3" goto do_once
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="0" exit /b
+goto menu
+
+:do_login
+echo.
+echo A browser will open. Log in to your Temu account (phone + password / SMS).
+echo When you see the product list, it is done. No need to close the window.
+echo.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo Monitoring started, checks every 15 minutes.
+echo Keep this window open = keep monitoring. Close window = stop.
+echo For background auto-run, use option 4 instead.
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+echo A Windows admin prompt (UAC) will appear - click Yes.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-autostart.ps1"
+echo.
+pause
+goto menu

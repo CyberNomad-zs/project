@@ -1,0 +1,2 @@
+- [Company work systems](company-work-systems.md) — 跨境电商；赛狐ERP + 海外仓WMS + Temu欧区后台
+- [AI competition project](ai-competition-project.md) — 单人参赛作品，2026-07-31 现场演示，暂荐「图秒成表」，或转向跨系统自动化

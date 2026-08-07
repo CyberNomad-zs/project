@@ -1,0 +1,377 @@
+# 亚马逊 ASIN 健康度监控与运营闭环 · 项目说明
+
+| 项 | 内容 |
+|---|---|
+| **项目名称** | ASIN 健康度驾驶舱（赛狐 → 规则 → 飞书闭环） |
+| **一期范围** | 监控、异常任务、负责人提醒、动作与复查闭环 |
+| **明确不做（一期）** | 利润核算、自动操作亚马逊后台、关键词自然排名、AI 日报/周报 |
+| **原始需求** | 根目录 `亚马逊ASIN健康度监控与运营闭环系统需求说明.docx` |
+| **工程入口** | `README.md`（快速开始）· 本文（完整说明） |
+
+---
+
+## 1. 一句话目标
+
+**赛狐回答「数据发生了什么」；本系统回答「谁负责、要不要处理、做了什么、何时复查」。**
+
+老板与负责人不必再从赛狐抄数拼表，每日自动得到红/橙异常与待办推送；动作在飞书「异常任务」同行填写，形成可复查的运营闭环。
+
+---
+
+## 2. 系统分工
+
+| 系统 | 职责 |
+|---|---|
+| **赛狐 OpenAPI** | 产品分析 V2、FBA 库存等经营数据源 |
+| **本系统（Python）** | 同步、映射、规则引擎、任务去重、日批编排 |
+| **本地 SQLite** | 运行态底库（`data/bridge.db`）：日数据、任务、同步日志 |
+| **飞书多维表格** | 业务可见表：ASIN 日数据、异常任务（含动作字段）、配置、汇总、产品主档案 |
+| **飞书群机器人** | 日摘要 + 按负责人待办卡片（可选 @） |
+| **本地仪表盘** | `data/dashboard/*.html` 集团总览 / 店盘（可选） |
+
+---
+
+## 3. 端到端数据流
+
+```text
+每日 10:00（Windows 计划任务）
+        │
+        ▼
+python -m app.main once
+        │
+        ├─ 1) Sellfox productAnalyze V2  ──► asin_daily（SQLite）
+        ├─ 2) FBA 库存合并               ──► 更新可售/在途/库龄等
+        ├─ 3) 规则引擎 evaluate          ──► 黄/橙/红 Anomaly
+        ├─ 4) 橙/红落 anomaly_tasks      ──► 防重复、算截止时间
+        ├─ 5) 双写飞书「ASIN每日数据」「异常任务」
+        │       （任务表只写异常指标列，不覆盖人工动作列）
+        ├─ 6) 按负责人推送待办 + 全量摘要
+        └─ 7) （可选）每日汇总表 / 逾期升级
+```
+
+负责人随后在飞书 **异常任务同一行** 补全：是否属实 / 原因 / 采取动作 / 复查日期 / 闭环状态等。
+
+---
+
+## 4. 覆盖范围（试运行）
+
+| 店铺（规范名） | 负责人（配置示例） |
+|---|---|
+| 特米-UK、Ledvia-UK | 潘启豪 |
+| 昇新-UK、起的快-UK | 马文静 |
+| Nottac-UK、字同道合 | 梦晴 |
+
+样本量级约 **6 店、百余 ASIN/日**（以实际同步为准）。  
+店铺别名与规范名见 `config/config.yaml` 的 `shop_aliases` / `owners`。
+
+---
+
+## 5. 异常等级与规则
+
+配置文件：`config/rules.default.yaml`（运行时读取；后续可改由飞书配置表覆盖）。
+
+### 5.1 等级含义
+
+| 等级 | 含义 | 是否建飞书任务 | 处理时限 |
+|---|---|---|---|
+| **yellow** | 观察 | **否**（仅统计） | — |
+| **orange** | 必须处理 | 是 | **1 个工作日** |
+| **red** | 立即升级 | 是 | **当天 23:59** |
+
+判定顺序：同类型内 **红 → 橙 → 黄**，命中高档不再落低档。  
+未关闭的同店铺+ASIN+异常类型任务 **不重复建单**，只更新数值与 `streak`（连续异常次数）；已是红不会被橙降级。
+
+### 5.2 异常类型一览
+
+| 类型 key | 中文名 | 要点（详见规则文件） |
+|---|---|---|
+| `sales_drop` | 销售下降 | 基线销售额门槛；S/A 大幅下降或连续无订单为红 |
+| `order_drop` | 订单下降 | 基线订单门槛；S/A 大幅下降为红 |
+| `traffic_drop` | 流量下降 | Sessions 环比；S/A 大幅下降为红 |
+| `conversion_drop` | 转化下降 | 百分点绝对差，非相对比例 |
+| `acos_abnormal` | ACOS异常 | 默认目标 35%；低花费不报；按高于目标 pp 分档 |
+| `ad_spend_abnormal` | 广告花费异常 | 花费上涨且广告销售未增 |
+| `inventory_low` | 库存不足 | **有动销才报**；断货或可售天数过低为红 |
+| `inventory_high` | 库存过高 | 可售天数偏高（需动销）或 365+ 库龄为红 |
+| `review_abnormal` | 评价异常 | 星级下降 / 中差评 / 星级跌破 3.5 |
+
+S/A 级产品（`core_grades`）在销售/订单/流量上触发更严红档。
+
+### 5.3 指标语义（如何读「当前值」）
+
+异常任务表保留通用列 `当前值 / 对比值 / 变化幅度`，但不同异常含义不同。请优先看：
+
+| 字段 | 作用 |
+|---|---|
+| **指标摘要** | 一行可读，如「可售天数 3.3天 · FBA可售件数 13件」 |
+| **说明** | 规则判定文案 + 指标摘要 |
+| 当前值含义 / 对比值含义 / 变化幅度含义 | 本行三个数字分别代表什么 |
+
+常见对照：
+
+| 异常类型 | 当前值 | 对比值 | 变化幅度 |
+|---|---|---|---|
+| 库存不足·断货 | FBA可售件数 | — | — |
+| 库存不足·天数 | 可售天数 | FBA可售件数 | — |
+| 库存过高 | 可售天数 或 365+库龄件数 | FBA可售件数 | — |
+| ACOS异常 | 当前ACOS | 目标ACOS | 高于目标(pp) |
+| 销售/订单/流量下降 | 当日指标 | 对比基线 | 环比 |
+| 转化下降 | 当日转化率 | — | 变化(pp) |
+| 评价异常 | 当前星级 | 中差评数 | 星级变化 |
+
+补列 / 回填历史：
+
+```powershell
+python scripts\add_task_metric_fields.py
+python scripts\add_task_metric_fields.py --backfill --date 2026-07-21
+```
+
+---
+
+## 6. 飞书表结构
+
+### 6.1 业务表
+
+| 表名 | 谁写 | 用途 |
+|---|---|---|
+| **ASIN每日数据** | 系统 | 赛狐同步底表；主键 = 日期\|站点\|店铺\|ASIN |
+| **异常任务** | 系统 + 人 | 橙/红任务；系统写异常指标；**负责人在同行写动作字段** |
+| **配置表** | 人/管理员 | 负责人、阈值等（二期可读飞书覆盖 YAML） |
+| **每日汇总** | 系统 | 日级 KPI 摘要 |
+| **产品主档案** | 人/导入 | 等级、负责人、档案字段 |
+
+> **2026-07 变更：** 原「运营动作记录」表已合并进「异常任务」。  
+> 合并脚本：`scripts/merge_action_to_task.py`。
+
+### 6.2 异常任务：系统列 vs 人工列
+
+**系统日批可写（示例）：** 主键、日期、店铺、ASIN、产品/中文名、异常类型、等级、当前值/对比值/变化幅度及含义、指标摘要、说明、负责人、审核人、状态、截止时间、连续异常次数、需要老板决策。
+
+**人工填写（系统 upsert 不覆盖）：**
+
+| 字段 | 说明 |
+|---|---|
+| 是否属实 | 属实 / 误报 / 待核实 |
+| 原因 | 一句话原因 |
+| 判断依据 | 可选 |
+| 采取动作 | 已做或计划做的动作 |
+| 执行日期 / 执行人 | 可选 |
+| 需审核事项 | 可选 |
+| 复查日期 | 一般 +3～7 天 |
+| 动作前数据 / 动作后数据 | 可选 |
+| 是否有效 | 复查结论 |
+| 下一步动作 | 可选 |
+| 闭环状态 | 待核实 → 处理中 → 待复查 → 已关闭 |
+
+代码保护：`app/sync/writer.py` 中 `HUMAN_ACTION_FIELD_NAMES`，`write_tasks_to_feishu` 会剥离这些列。
+
+### 6.3 母表 + 按店子表（方案 B）
+
+- **母表**：跨店总览（全量）。  
+- **子表**：`{母表名}__{规范店名}`，如 `异常任务__特米-UK`，便于分权。  
+- 注册表：`data/feishu_shop_tables.json`。  
+- 开关：`config.yaml` → `sync.dual_write_shop_tables`。
+
+初始化：
+
+```powershell
+python scripts\init_shop_tables.py
+python -m app.main backfill-shop-tables --date 2026-07-21
+```
+
+### 6.4 推荐视图（异常任务）
+
+| 视图 | 筛选建议 |
+|---|---|
+| 01_红色任务 | 等级 = red |
+| 02_橙色任务 | 等级 = orange |
+| 03/04/05_按负责人 | 负责人 = 姓名 |
+| 06_待老板决策 | 需要老板决策 = 勾选 |
+| 店铺_xxx | 店铺 = 店名 |
+
+脚本：`scripts/setup_feishu_views.py`、`scripts/setup_asin_shop_views.py`。
+
+---
+
+## 7. 角色与日节奏
+
+| 角色 | 做什么 |
+|---|---|
+| **系统** | 每日同步、建/更任务、推送 |
+| **负责人** | 先红后橙；在任务行补全动作字段；复查日回填是否有效 |
+| **审核人** | 配置默认审核人（如唐丹）；重大事项把关 |
+| **老板** | 看红色任务、待老板决策、群摘要 |
+| **IT** | 凭证、计划任务、阈值与表结构维护 |
+
+| 时间 | 动作 |
+|---|---|
+| ~10:00 | 日批 `once` 完成 |
+| 上午 | 负责人处理红/橙 |
+| 复查日 | 回填是否有效 / 闭环状态 |
+
+操作细则：[`飞书协作者与动作表操作手册.md`](./飞书协作者与动作表操作手册.md)。
+
+---
+
+## 8. 工程结构
+
+```text
+app/
+  main.py              # CLI：sync / rules / notify / dispatch / once / dashboard …
+  config.py            # Settings + YAML
+  clients/
+    sellfox.py         # 鉴权、签名、限速
+    feishu.py          # 多维表、机器人卡片
+  sync/
+    product_analyze.py # 产品分析日同步
+    inventory.py       # FBA 库存
+    mapping.py         # 赛狐字段 → 本地行
+    feishu_schema.py   # 飞书字段定义与 row/task 映射
+    writer.py          # SQLite / 飞书写入（含人工列保护）
+    shops.py           # 店名规范与子表注册表
+  rules/
+    engine.py          # 规则判定 + 指标语义
+    tasks.py           # 任务创建/更新/语义回填
+  notify/
+    actions.py         # dispatch 编排
+    owner_push.py      # 按负责人推送
+    daily_digest.py    # 全量摘要
+    escalate.py        # 逾期升级
+    summary_table.py   # 每日汇总表
+  dashboard/           # 本地 HTML 仪表盘
+  store/db.py          # SQLite schema 与 CRUD
+config/
+  config.example.yaml  # 应用配置模板
+  rules.default.yaml   # 规则阈值
+scripts/               # 初始化、迁移、冒烟、视图、合并动作表等
+tests/                 # 单元测试
+docs/                  # 本文与专题文档
+data/                  # bridge.db、日志、仪表盘输出（勿提交密钥）
+```
+
+---
+
+## 9. 配置清单
+
+| 文件 | 作用 | 是否提交 |
+|---|---|---|
+| `.env` | 赛狐/飞书密钥与 table id | **否** |
+| `.env.example` | 环境变量模板 | 是 |
+| `config/config.yaml` | 负责人、限速、sink、店名别名 | 本地；示例见 example |
+| `config/rules.default.yaml` | 黄/橙/红阈值 | 是 |
+| `data/feishu_shop_tables.json` | 按店子表 table_id 注册表 | 环境生成 |
+
+### 9.1 关键环境变量
+
+```env
+SELLFOX_CLIENT_ID=
+SELLFOX_CLIENT_SECRET=
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_BITABLE_APP_TOKEN=
+FEISHU_TABLE_ASIN_DAILY=
+FEISHU_TABLE_TASKS=
+FEISHU_TABLE_CONFIG=
+FEISHU_TABLE_DAILY_SUMMARY=
+FEISHU_TABLE_PRODUCT_MASTER=
+FEISHU_BOT_WEBHOOK=
+```
+
+### 9.2 sync.sink
+
+| 值 | 含义 |
+|---|---|
+| `sqlite` | 仅本地（默认，无飞书也能跑通） |
+| `feishu` / `both` | 写飞书（需配置 `FEISHU_*`） |
+
+---
+
+## 10. 常用命令
+
+```powershell
+# 环境
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 冒烟
+python scripts\smoke_sellfox.py
+python scripts\smoke_feishu.py
+
+# 日常
+python -m app.main sync --date 2026-07-21
+python -m app.main rules --date 2026-07-21
+python -m app.main notify --date 2026-07-21 --dry-run
+python -m app.main dispatch --date 2026-07-21 --dry-run-notify
+python -m app.main once --date 2026-07-21 --dry-run-notify
+
+# 仪表盘
+python -m app.main dashboard --open
+
+# 日批计划任务
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1
+
+# 测试
+pytest -q
+```
+
+`once` 流水线说明与机器人配置：[`日批与机器人.md`](./日批与机器人.md)。
+
+---
+
+## 11. 验收清单（一期）
+
+- [ ] 每日可 `sync` 成功/失败有 `sync_runs` 记录  
+- [ ] 主键日期+站点+店铺+ASIN 不混淆  
+- [ ] 黄/橙/红按 `rules.default.yaml` 触发  
+- [ ] 橙/红生成任务并带负责人  
+- [ ] 未关闭异常不重复建任务（仅更新 streak）  
+- [ ] 任务含可读 **指标摘要 / 说明**  
+- [ ] 负责人可在任务行填写动作字段；**日批不覆盖**人工列  
+- [ ] 通知可 dry-run；配置 webhook 后可推送  
+- [ ] 飞书母表 + 按店子表双写可用  
+- [ ] Windows 计划任务 10:00 可稳定执行  
+
+---
+
+## 12. 常见问题
+
+| 现象 | 处理 |
+|---|---|
+| 赛狐 `40005` | IP 不在白名单，加白或换固定 IP 机器 |
+| 赛狐 `40019` | 限流，客户端会 sleep 重试；检查 `min_interval_seconds` |
+| 飞书无权限 / 99991663 | 应用开通 bitable 权限并发布；把应用加为多维表协作者 |
+| 飞书看不到「指标摘要」 | 新列在表尾；视图「显示字段」勾选；或跑 `add_task_metric_fields.py --backfill` |
+| 负责人填的原因被冲掉 | 不应发生；确认走的是 `write_tasks_to_feishu`（会剥离人工列） |
+| 任务刷屏 | 收紧 `rules.default.yaml`；库存类确认 `require_activity` |
+| 黄任务为何没有 | 设计如此：黄只观察不建任务 |
+
+---
+
+## 13. 文档索引
+
+| 文档 | 读者 | 内容 |
+|---|---|---|
+| [`README.md`](../README.md) | 开发 | 快速开始、目录、验收摘要 |
+| **本文** `docs/项目说明.md` | 全员 | 目标、架构、规则、表、角色、运维 |
+| [`项目进展汇报-….md`](./项目进展汇报-ASIN健康度监控与运营闭环.md) | 领导 | 进度与试运行快照 |
+| [`飞书接入指南.md`](./飞书接入指南.md) | IT | 建表、权限、母子表 |
+| [`飞书协作者与动作表操作手册.md`](./飞书协作者与动作表操作手册.md) | 负责人/助理 | 怎么填、视图、闭环 |
+| [`日批与机器人.md`](./日批与机器人.md) | IT | 定时任务与 webhook |
+| [`仪表盘方案-集团总览与店铺.md`](./仪表盘方案-集团总览与店铺.md) | 产品/IT | 本地仪表盘设计 |
+| `config/rules.default.yaml` | 运营/IT | 阈值真源 |
+| 根目录 `.docx` | 全员 | 原始需求 |
+
+---
+
+## 14. 二期方向（未启动）
+
+- AI 日报 / 周报  
+- 关键词自然排名  
+- 利润核算  
+- 飞书配置表覆盖 YAML 阈值  
+- 更细的品类级 ACOS 目标  
+
+---
+
+*文档随代码演进；表结构以 `app/sync/feishu_schema.py` 与飞书线上表为准，规则以 `config/rules.default.yaml` 为准。*

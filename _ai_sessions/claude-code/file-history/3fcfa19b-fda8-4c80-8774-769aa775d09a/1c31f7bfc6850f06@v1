@@ -1,0 +1,187 @@
+# 赛狐 ↔ WMS 发货桥接程序 · 项目说明（交接文档）
+
+> 更新：2026-07-15 ｜ 状态：双边 API 已联调通，dry-run 可用，写操作未放开
+> 代码：`/Users/zavier/Desktop/wms/sellfox-bridge/`（独立程序，不属于 WMS 工程）
+
+---
+
+## 1. 项目背景
+
+- 客户 **金猫商贸** 同时使用赛狐 ERP（接单）和我们的海外仓 WMS（履约，英国仓）。
+- 原流程：赛狐网页自动化点"物流下单/称重发货"等按钮 → 不稳定。
+- 本项目：用 **赛狐开放 API + WMS 客户 API** 替换网页自动化。桥接程序独立运行，
+  不改 WMS 代码（唯一例外见 §7 待办中"可选的 WMS 增强"）。
+- 业务前提：赛狐里"物流下单"动作本身会通过已有三方仓通道把包裹推给 WMS 并回填运单号
+  （这条通道是赛狐内置能力，**桥接程序不重建它**）。桥接程序管的是：
+  **触发（谁来点按钮）、决策（选哪个渠道）、闭环（出库后回传）、对账（两边数一致吗）**。
+
+## 2. 系统关系图
+
+```
+        ┌──────────────────────────────────────────┐
+        │        sellfox-bridge（本程序，Python）      │
+        │  触发 · 渠道决策 · 渠道一致性校验 · 对账告警     │
+        └──────┬──────────────────────┬─────────────┘
+        赛狐开放API                 WMS客户API(只读查询)
+   openapi.sellfox.com          193.112.93.60:9999
+               │                       │
+        ┌──────▼──────┐   推单/回运单号   ┌──▼──────────┐
+        │  赛狐 ERP    │ ──────────────→ │  海外仓 WMS   │
+        │ (金猫商贸店铺) │ ←────────────── │ (昇新, 英国)  │
+        └─────────────┘   (内置三方仓通道) └─────────────┘
+```
+
+## 3. 赛狐包裹生命周期与本程序的介入点
+
+赛狐包裹状态机（getPackagePage 的 packageStatus）：
+
+```
+to_audit(待审核) → to_process(待处理) → apply_track_no(物流下单) → to_print(待打单) → has_shipped(已发货)
+     │未实现§7-1        ▲介入:选渠道/指派      ▲介入:触发下单           (WMS作业中)      ▲介入:称重发货回传
+```
+
+本地状态机（SQLite `bridge.db`，见 `bridge/store.py`）：
+`NEW → CHANNEL_ASSIGNED → ORDERED → WMS_SHIPPED → CLOSED`，任何一步失败 → `FAILED`（告警转人工）。
+
+## 4. 已实现的逻辑（bridge/pipeline.py 四步，全部幂等）
+
+| 步骤 | 做什么 | 调用 | 当前开关状态 |
+|---|---|---|---|
+| step1_discover | 拉白名单店铺的 to_process 包裹入库本地 | 赛狐 getPackagePage | 始终开 |
+| step2_assign | 渠道处理：包裹已带可用渠道→保留不动（`keep_existing_channel: true`）；无渠道/渠道停用→selector 按目的国+预估重选最优→指派 | 赛狐 updatePackageDetail | dry-run 只演练 |
+| step3_order | 批量物流下单（触发赛狐推单到 WMS） | 赛狐 applyTrackNo | **`auto_apply_track_no: false` 关闭中** |
+| step4_close | 轮询 WMS：状态=已发货 **且** 运单号已生成 → 渠道一致性校验 → 称重发货回传赛狐 | WMS queryOrderStatus/queryTrackingNumber + 赛狐 weighingShipment | 未实际执行过写操作 |
+
+**渠道一致性校验（用户明确要求，已实现）**：渠道以赛狐为基准。step4 回传前比对
+赛狐指派渠道的 `expected_carrier` 与 WMS 实际 `express`，不一致 → 暂停该包裹闭环 + 告警，
+人工在 WMS 调整回赛狐渠道后下一轮自动恢复（`hold_on_channel_mismatch: true`）。
+
+**运行方式**：
+```bash
+pip install -r requirements.txt
+python main.py --dry-run   # 只读演练（当前推荐）
+python main.py --once      # 跑一轮退出
+python main.py             # 常驻，每 poll_interval_sec(300s) 一轮
+```
+
+## 5. 双边 API 关键事实（全部实测验证过，别再踩一遍坑）
+
+### 赛狐（openapi.sellfox.com，文档 https://sellfoxapi.apifox.cn 访问密码 VZKGdd0Q）
+- 凭证：client_id=368233（secret 在 `config/config.yaml`）。token 24h，需缓存（已实现）。
+- 签名：HMAC-SHA256(client_secret, 排序后的 `access_token&client_id&method=post&nonce&timestamp(ms)&url`)，body 不参与签名。
+- **有 IP 白名单**（错误码 40005=IP 不在白名单）。当前白名单里是本机直连出口
+  `49.77.234.254` / `222.94.107.67`（南京电信，动态家宽，会变！）。
+  **⚠️ 本机 Mac 开着 Clash 代理(127.0.0.1:7897)**，客户端已 `trust_env=False` 强制直连，
+  千万别去掉，否则出口 IP 变成代理节点直接 40005。
+- 正式部署应放 WMS 服务器 `193.112.93.60`（固定 IP）并加入赛狐白名单。
+- 用到的接口（均 POST，鉴权参数在 query）：
+
+| 用途 | 路径 |
+|---|---|
+| 拉包裹（分状态） | /api/packageShip/v1/getPackagePage.json |
+| 渠道列表 | /api/packageShip/queryShipChannel.json (logisticsType=1) |
+| 指派仓库/渠道 | /api/packageShip/updatePackageDetail.json |
+| 物流下单 | /api/packageShip/applyTrackNo.json |
+| 称重发货 | /api/packageShip/weighingShipment.json |
+| 快速出库(备用) | /api/packageShip/quickOutbound.json |
+| 仓库列表 | /api/warehouseManage/warehouseList.json |
+| 订单审核(未接入) | /api/packageShip/auditPackage.json |
+| 拆分包裹(未接入) | /api/packageShip/splitPackage.json |
+| Temu地址解密(未接入) | api-422323119，只读 |
+
+### WMS（http://193.112.93.60:9999，客户=金猫商贸）
+- 凭证：key=100000073（=wms_user_account_info.id），api_secret 在 config。
+- 签名：`MD5(key + api_secret + 秒级timestamp)` 的 **大写** hex（服务端 Common.MD5 返回大写且区分大小写），±300 秒。
+- 返回：`{success, message, systemCode, data}`，**data 可能是 JSON 字符串，要二次 json.loads**（客户端已处理）。
+- 接口：`/orderInfo/remote/queryOrderStatus.html`、`/orderInfo/remote/queryTrackingNumber.html`、
+  `/customer/remoteQueryInventory.html`（均按 customerId 隔离，只能看到金猫商贸的单）。
+- orderStatus 枚举（WMS 源码 common/Constants.java）：0待发货 / 1预发货 / **2已发货** / 4平台已发货。
+  ⚠️ 存在"状态=2 但运单未生成"的单，所以闭环判定用双条件（状态 + 运单号存在）。
+  （疑问未解：推单进 WMS 后为何立即 status=2？见 §7-6）
+
+### 双边关联键（闭环的基石，已实测）
+**赛狐包裹号 packageSn == WMS 的 platformOrderNo**。
+实证：P2AD6TCD61645 双边运单号一致（15501133283258/DPD）。
+
+## 6. 业务数据事实（2026-07-15 实测）
+
+- **金猫商贸授权店铺（= 店铺白名单，已配置）**：
+  Temu：Agnis(shopId **396706**)、HomeCove(**398202**)、Twilight Cove(**398203**)。
+  Amazon 店 Caldicotsales/起的快在 WMS"平台授权"里尚未授权，授权后再加白名单。
+  同一赛狐账号下其他店铺（Gardena、SHOP INOUT、昇新-UK 等）属于**其他 WMS 客户**，绝不能碰。
+- **渠道映射表**（config 已配，来自实拉）：
+
+| 包裹上的渠道显示名(后缀匹配) | providerAuthDetailId | 赛狐仓库ID | 承运商比对值 |
+|---|---|---|---|
+| BLACKCAT-RM | 591 | 187323 | RM |
+| BLACKCAT-DPD | 590 | 187323 | DPD |
+| BLACKCAT-EH | 1303 | 187323 | EH |
+| 昇新海外仓-RM | 480 | 180617 | RM |
+| 昇新海外仓-DPD | 481 | 180617 | DPD |
+
+- **全量对账结论（近7天 339 单已发货）**：
+  - 昇新海外仓渠道 291 单：WMS 全部有单、运单号双边一致、0 差异 ✅
+  - **BLACKCAT 渠道 47 单：金猫商贸的 WMS 账号下查无此单**——BLACKCAT 渠道的单不进（或不以金猫商贸身份进）我们 WMS，运单号来自赛狐↔BLACKCAT 直连。**闭环逻辑只对昇新渠道有效**。BLACKCAT 归属待确认（§7-5）。
+  - 提交平台率 339/340（1 单异常：P2AH6TCD62429 无渠道无运单但平台已 Shipped）。
+- Temu/TikTok 包裹地址脱敏（countryCode=None）→ 选渠道用 `default_country: GB` 兜底。
+- 业务量：约 340 单/7天 ≈ 50 单/天。
+- WMS 推送时效规则（WMS 横幅）：中国时间 16:00 前推送才能当天（英国时间）处理。
+
+## 7. 待办清单（按优先级）
+
+1. **【功能缺口】待审核阶段 SOP 未实现**（SOP 文档：微信文件"赛狐新功能.docx"）。三步：
+   - ① 地址修剪（地址1/2 ≤30字符：移尾→删通用后缀 Road/Street/…→删符号→删装饰词→去重→尾部截断）。
+     **赛狐无地址编辑 API**，只能做"检测+算好建议地址+告警转人工"（或这一步保留网页自动化）；
+   - ② 批量审核 → `auditPackage.json`，可全自动；
+   - ③ 超限拆包 → `splitPackage.json`，可全自动。规则：昇新仓 白板≤4件/层架灯≤2件/其余≤5件；
+     BLACKCAT-RM 茶几/揉面机/空气炸锅≤2件/其余≤5件；DPD≤100×60×70cm且30kg；RM≤60×45×45cm且19.5kg。
+     **依赖用户提供：SKU→品类映射（哪些SKU是白板/层架灯/茶几/揉面机/空气炸锅）**。
+   建议实现为 pipeline 的 step0（拉 to_audit → 地址检测 → 拆包 → 审核）。
+2. **【数据依赖】渠道价卡 + SKU 克重/尺寸表**（用户提供）→ 填 `config.yaml` 的
+   channels.cost_* 与 sku_weights。没有它们，selector 只能"保留现有渠道"，称重发货没有重量兜底。
+3. **【部署】迁到 WMS 服务器 193.112.93.60 常驻**（systemd/supervisor），该 IP 加进赛狐白名单。
+   本机家宽 IP 动态，只适合调试。配置飞书 webhook（config notify.feishu_webhook）。
+4. **【灰度放量】顺序**：dry-run 观察数天 → 打开 step2 写操作（指派）→ `auto_apply_track_no: true`
+   （建议先单店铺，如只放 HomeCove）→ 放开 step4 回传 → 三店全量 → 下线网页自动化（保留一周可回退）。
+5. **【业务确认】BLACKCAT 渠道归属**：物理发货是否也走我们仓库？若是，这 47 单/周没过 WMS 账（库存不扣）
+   是个口子；若走 BLACKCAT 第三方履约，则在 config 渠道表加 `wms_managed: false`，闭环跳过、仅对账。
+6. **【业务确认】WMS orderStatus=2 语义**：推单后未出库就是 2（已发货）？确认后可精化 step4 判定。
+7. **【调研】赛狐后台是否有内置"自动化规则/自动交运"**：若有且够用，本程序可瘦身为
+   "对账+告警+称重回传"，维护成本更低。
+8. **【对账】把 §6 的全量对账做成每日定时任务**（脚本逻辑在会话中已验证，可归纳进 pipeline 或独立 recon.py）：
+   已发货单 → WMS 逐单核对运单号 → 差异告警；顺带查"已发货但无 submitTime"的漏提交单。
+9. 【小事】Amazon 两店在 WMS 授权后加入 shop_whitelist；quickOutbound 的 isOversea 取值（当前写 3=海外仓，
+   与 updatePackageDetail 的 1=海外仓口径不同，来自各自接口文档，联调时再核对一次）。
+
+## 8. 文件结构
+
+```
+sellfox-bridge/
+├── 项目说明.md            # 本文档
+├── README.md              # 运行说明/灰度步骤
+├── main.py                # 入口（--dry-run / --once / 常驻）
+├── requirements.txt       # requests + PyYAML
+├── config/
+│   ├── config.yaml        # ★真实凭证+渠道表+白名单（gitignore，勿外传）
+│   └── config.example.yaml
+├── bridge/
+│   ├── clients/sellfox.py # 赛狐客户端（token缓存/HMAC签名/直连/重试）
+│   ├── clients/wms.py     # WMS客户端（大写MD5签名/data二次解析/直连）
+│   ├── pipeline.py        # 四步流水线 + 渠道一致性校验
+│   ├── selector.py        # 渠道决策引擎（价卡在config）
+│   ├── store.py           # SQLite 状态机（幂等核心）
+│   └── notify.py          # 飞书告警
+├── bridge.db              # 运行时生成：本地状态
+└── bridge.log             # 运行时生成：日志
+```
+
+## 9. 排错速查
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 赛狐 401 code=40005 | 出口 IP 不在白名单（IP 变了/走了代理） | 查当前直连 IP 加白；确认 trust_env=False 没被改掉 |
+| WMS "签名异常" | MD5 没大写 / 时间差>300s | 检查系统时间；签名必须 .upper() |
+| WMS "未查询到订单" | 单子不属于金猫商贸（BLACKCAT 渠道单）或还没推送 | 属正常隔离，见 §6 |
+| WMS "运单未生成" | 出库单还没打单 | 等下一轮轮询即可 |
+| 包裹卡 ORDERED 不闭环 | 渠道不一致被 hold / WMS 一直没运单 | 看告警明细，人工在 WMS 调整渠道 |
+| data 解析报错 | WMS data 是 JSON 字符串 | 客户端已处理，若新接口再遇到照 wms.py `_post` 处理 |

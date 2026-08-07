@@ -1,0 +1,68 @@
+# Temu 多店铺监测（Node + Playwright + 赛狐 + 飞书）
+
+**分工（重要）**
+
+| 在哪跑 | 跑什么 | 命令 |
+|--------|--------|------|
+| **本机 / 同事电脑** | 流量待关注、近期下降、在售数字（浏览器） | `npm run once` / `npm start`（默认 **不调赛狐**） |
+| **固定 IP 服务器** | 下架 / 上架点名（赛狐 OpenAPI） | `npm run sellfox:start` 或 systemd `temu-sellfox` |
+
+同事本机**不要**开 `fullRun: true`，也**不必**放 `sellfox.config.json`——否则会因 IP 不在赛狐白名单报错。
+
+能力清单：
+
+1. **下架 / 上架点名**（赛狐，服务器）+ 编辑链接  
+2. **商品流量待关注** 增加 + 商品明细链接（本机浏览器）  
+3. **商品流量近期有下降** 增加 + 商品明细链接（本机浏览器）  
+4. **在售数量**（浏览器 countStatus）  
+5. **多店轮巡**（会话级切店）  
+6. 飞书告警、登录过期提醒  
+
+详见 `PLUGIN_PARITY.md`、`SELLFOX.md`、`deploy/README-SERVER.md`、`使用说明.txt`。
+
+## 快速开始（本机 · 仅流量）
+
+```bash
+cd temu-monitor
+npm install
+# 编辑 config.json（飞书、storeList）；保持 fullRun: false
+npm run login
+npm run once    # 首轮建流量基准
+npm run start   # 常驻
+```
+
+## 服务器 · 仅赛狐上下架
+
+见 **`deploy/README-SERVER.md`**。本机打包：`deploy\pack-sellfox.ps1`。
+
+## 目录
+
+```
+config.json / sellfox.config.json
+src/
+  cli.js run.js fullRun.js   入口（默认仅浏览器；fullRun 才拼赛狐）
+  monitor.js domScan.js      浏览器扫描（待关注/下降/在售）
+  sessionStores.js           会话切店
+  sellfox/                   赛狐上下架（独立 CLI）
+  openapi/                   Temu Partner（可选）
+  state.js feishu.js ...
+data/
+.userdata/
+deploy/                      Linux 部署
+```
+
+## 命令
+
+| 命令 | 说明 |
+|------|------|
+| `npm run login` | 人工登录一次（本机） |
+| `npm run once` / `start` | **仅流量**（默认） |
+| `npm run sellfox:once` / `start` | **仅赛狐**上下架 |
+| `FULL_RUN=1 npm run once` 或 `fullRun: true` | 联调全量（需白名单） |
+
+## 注意
+
+- 卸掉 Chrome 插件里的下架逻辑，避免与服务器双报  
+- 赛狐 IP 白名单**只填服务器出口**；本机动态 IP 可移出  
+- 浏览器流量监测仍需本机：`npm run login`  
+- `alerts.delist` / `alerts.onshelf` 只影响赛狐模块  

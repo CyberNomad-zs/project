@@ -1,0 +1,161 @@
+/**
+ * 赛狐 Temu 在售集合 diff → 下架 / 上架
+ * 在售定义：selectStatus === "12"（已加入站点）
+ */
+import { SELECT_STATUS } from './products.js';
+
+/**
+ * @param {object|null} prevSnap { onSaleMap, statusCounts, ts }
+ * @param {{ onSaleMap: object, statusCounts?: object }} curr
+ */
+export function diffOnSale(prevSnap, curr) {
+  const prevMap = (prevSnap && prevSnap.onSaleMap) || null;
+  const currMap = curr.onSaleMap || {};
+  const currIds = Object.keys(currMap);
+  const events = [];
+  let skipUpdate = false;
+
+  if (prevMap) {
+    const prevN = Object.keys(prevMap).length;
+    const currN = currIds.length;
+    // 防残缺：在售骤降过半且基准≥5 → 跳过（接口窗口漏数，避免误报下架/上架）
+    if (prevN >= 5 && currN < Math.floor(prevN * 0.5)) {
+      skipUpdate = true;
+      events.push({
+        type: 'scan_incomplete',
+        severity: 'warn',
+        message: `在售疑似不全：基准 ${prevN} → 本轮 ${currN}，跳过上下架判定`,
+      });
+    }
+  }
+
+  let delisted = [];
+  let listed = [];
+  if (prevMap && !skipUpdate) {
+    const prevIds = Object.keys(prevMap);
+    delisted = prevIds.filter((id) => !(id in currMap));
+    listed = currIds.filter((id) => !(id in prevMap));
+
+    if (delisted.length) {
+      events.push({
+        type: 'delist',
+        severity: 'alert',
+        items: delisted.map((id) => ({
+          skcId: id,
+          parentId: prevMap[id]?.parentId || '',
+          name: prevMap[id]?.name || '',
+          selectStatus: prevMap[id]?.selectStatus || SELECT_STATUS.ON_SALE,
+        })),
+        from: prevIds.length,
+        to: currIds.length,
+      });
+    }
+    if (listed.length) {
+      events.push({
+        type: 'onshelf',
+        severity: 'alert',
+        items: listed.map((id) => ({
+          skcId: id,
+          parentId: currMap[id]?.parentId || '',
+          name: currMap[id]?.name || '',
+          selectStatus: currMap[id]?.selectStatus || SELECT_STATUS.ON_SALE,
+        })),
+        from: prevIds.length,
+        to: currIds.length,
+      });
+    }
+  }
+
+  const isFirst = !prevMap;
+  const nextSnap = {
+    onSaleMap: skipUpdate && prevMap ? prevMap : currMap,
+    statusCounts: curr.statusCounts || {},
+    onSaleCount: skipUpdate && prevMap ? Object.keys(prevMap).length : currIds.length,
+    ts: Date.now(),
+  };
+
+  return {
+    events,
+    nextSnap,
+    isFirst,
+    skipUpdate,
+    delistedCount: delisted.length,
+    listedCount: listed.length,
+  };
+}
+
+export function editLink(editBaseUrl, parentIdOrProductId) {
+  const base = String(editBaseUrl || 'https://agentseller.temu.com').replace(/\/$/, '');
+  // 后台编辑页参数多为 productId；赛狐 parentId 实测常等于商品父 ID，可点
+  return `${base}/goods/edit?from=productList&productId=${parentIdOrProductId}`;
+}
+
+function itemBullet(it, editBaseUrl) {
+  const nm = String(it.name || '商品').replace(/[[\]]/g, '').slice(0, 36);
+  const pid = it.parentId || it.skcId;
+  return `• [${nm}](${editLink(editBaseUrl, pid)})  SKC ${it.skcId || '-'}`;
+}
+
+/**
+ * 把 delist / onshelf 告警拼成飞书 lark_md 行
+ * @param {string} storeName
+ * @param {Array} events
+ * @param {{ editBaseUrl?: string }} [opts]
+ */
+export function formatChangeLines(storeName, events, { editBaseUrl } = {}) {
+  const lines = [`**🏬 ${storeName}**（赛狐 OpenAPI）`];
+  let any = false;
+  for (const ev of events) {
+    if (ev.severity !== 'alert') continue;
+    if (ev.type === 'delist' && ev.items?.length) {
+      any = true;
+      lines.push(
+        `📉 在售商品**下架** ${ev.items.length} 个（在售 ${ev.from} → ${ev.to}，离开 selectStatus=12）：`,
+      );
+      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
+    }
+    if (ev.type === 'onshelf' && ev.items?.length) {
+      any = true;
+      lines.push(
+        `📈 在售商品**上架** ${ev.items.length} 个（在售 ${ev.from} → ${ev.to}，进入 selectStatus=12）：`,
+      );
+      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
+    }
+  }
+  if (!any) lines.push('_本轮无上下架_');
+  lines.push('', `_检查时间：${new Date().toLocaleString('zh-CN')}_`);
+  return lines;
+}
+
+/** @deprecated 用 formatChangeLines；保留别名避免外部引用断裂 */
+export function formatDelistLines(storeName, events, opts) {
+  return formatChangeLines(storeName, events, opts);
+}
+
+/**
+ * 飞书卡片颜色：仅下架 red；仅上架 green；混合 orange
+ * @param {Array} events
+ */
+export function alertTemplate(events) {
+  const types = new Set(
+    (events || []).filter((e) => e.severity === 'alert').map((e) => e.type),
+  );
+  const hasD = types.has('delist');
+  const hasO = types.has('onshelf');
+  if (hasD && hasO) return 'orange';
+  if (hasO) return 'green';
+  return 'red';
+}
+
+export function alertTitle(events) {
+  const types = new Set(
+    (events || []).filter((e) => e.severity === 'alert').map((e) => e.type),
+  );
+  const hasD = types.has('delist');
+  const hasO = types.has('onshelf');
+  if (hasD && hasO) return '🔔 Temu 在售变动（赛狐）';
+  if (hasO) return '🔔 Temu 上架监测（赛狐）';
+  return '🔔 Temu 下架监测（赛狐）';
+}

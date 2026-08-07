@@ -1,0 +1,313 @@
+"""按负责人推送异常任务（群 webhook；交互式卡片 + @）。"""
+
+from __future__ import annotations
+
+import json as _json
+import logging
+from collections import defaultdict
+from typing import Any
+
+from app.config import Settings, get_app_config, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def _owner_open_ids(cfg: dict[str, Any]) -> dict[str, str]:
+    notify = cfg.get("notify") or {}
+    raw = notify.get("owner_open_ids") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if k and v}
+
+
+def _view_url(cfg: dict[str, Any], settings: Settings) -> str:
+    notify = cfg.get("notify") or {}
+    base = (notify.get("view_base_url") or "").rstrip("?&")
+    if not base and settings.feishu_bitable_app_token:
+        base = f"https://dcnkj1up67d5.feishu.cn/base/{settings.feishu_bitable_app_token}"
+    tasks_url = base
+    if settings.feishu_table_tasks:
+        sep = "&" if "?" in base else "?"
+        tasks_url = f"{base}{sep}table={settings.feishu_table_tasks}"
+    return tasks_url
+
+
+def _build_owner_card(
+    owner: str,
+    items: list[dict[str, Any]],
+    biz_date: str,
+    tasks_url: str,
+    open_id: str | None = None,
+) -> dict[str, Any]:
+    """为单个负责人构建交互式卡片。"""
+    from app.clients.feishu import (
+        card_action,
+        card_button,
+        card_header,
+        card_hr,
+        card_md,
+    )
+
+    red = [t for t in items if t.get("level") == "red"]
+    orange = [t for t in items if t.get("level") == "orange"]
+    ordered = sorted(
+        items,
+        key=lambda x: (0 if x.get("level") == "red" else 1, x.get("shop_name") or ""),
+    )
+
+    # 卡片颜色
+    card_color = "red" if red else "orange"
+
+    # @ 提及
+    at_line = ""
+    if open_id:
+        at_line = f"<at id={open_id}></at>\n"
+
+    md_lines = [
+        f"{at_line}📅 **{biz_date}** 待你处理",
+        "",
+        f"👤 **{owner}** | 🔴 {len(red)} | 🟠 {len(orange)}",
+        "",
+        "> 请在任务表中补全：是否属实 / 原因 / 采取动作 / 复查日期",
+        "",
+    ]
+    for t in ordered[:8]:
+        icon = "🔴" if t.get("level") == "red" else "🟠"
+        cn = t.get("product_title_cn") or t.get("product_title") or ""
+        cn_s = f" {cn}" if cn else ""
+        # 指标语义：优先 value_summary / message，避免只显示裸数字
+        metric = ""
+        payload = t.get("payload_json")
+        if isinstance(payload, str) and payload:
+            try:
+                payload = _json.loads(payload)
+            except Exception:
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        summary = t.get("value_summary") or payload.get("value_summary")
+        message = t.get("message") or payload.get("message")
+        if summary:
+            metric = f" · {summary}"
+        elif message:
+            metric = f" · {message}"
+        md_lines.append(
+            f"{icon} `{t.get('task_id')}` {t.get('shop_name')} {t.get('asin')}{cn_s}"
+            f" | {t.get('anomaly_type')}{metric}"
+        )
+    if len(ordered) > 8:
+        md_lines.append(f"…另有 {len(ordered) - 8} 条，见任务表")
+
+    elements = [
+        card_md("\n".join(md_lines)),
+        card_hr(),
+        card_action(
+            card_button("📋 查看任务表", tasks_url, primary=True),
+        ),
+    ]
+
+    title = f"{'🔴' if red else '🟠'} 待你处理 · {biz_date}"
+    return {
+        **card_header(title, color=card_color),
+        "elements": elements,
+    }
+
+
+def build_owner_messages(
+    tasks: list[dict[str, Any]],
+    *,
+    biz_date: str,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """返回 [{owner, text, card, open_id, red, orange, count}, ...]。"""
+    settings = settings or get_settings()
+    cfg = get_app_config()
+    open_ids = _owner_open_ids(cfg)
+    tasks_url = _view_url(cfg, settings)
+
+    by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in tasks:
+        if t.get("status") in ("closed", "resolved"):
+            continue
+        if t.get("level") not in ("red", "orange"):
+            continue
+        owner = str(t.get("owner") or "未分配")
+        by_owner[owner].append(t)
+
+    messages: list[dict[str, Any]] = []
+    for owner, items in sorted(by_owner.items()):
+        red = [t for t in items if t.get("level") == "red"]
+        orange = [t for t in items if t.get("level") == "orange"]
+        ordered = sorted(
+            items,
+            key=lambda x: (0 if x.get("level") == "red" else 1, x.get("shop_name") or ""),
+        )
+        # 保留纯文本 fallback
+        lines = [
+            f"【ASIN健康度】{biz_date} 待你处理",
+            f"负责人: {owner} | 红 {len(red)} | 橙 {len(orange)}",
+            "",
+            "请在任务表中补全：是否属实 / 原因 / 采取动作 / 复查日期",
+            f"任务表: {tasks_url}",
+            "",
+        ]
+        for t in ordered[:12]:
+            cn = t.get("product_title_cn") or t.get("product_title") or ""
+            cn_s = f" {cn}" if cn else ""
+            metric = ""
+            payload = t.get("payload_json")
+            if isinstance(payload, str) and payload:
+                try:
+                    payload = _json.loads(payload)
+                except Exception:
+                    payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            summary = t.get("value_summary") or payload.get("value_summary")
+            message = t.get("message") or payload.get("message")
+            if summary:
+                metric = f" · {summary}"
+            elif message:
+                metric = f" · {message}"
+            lines.append(
+                f"· [{t.get('level')}] {t.get('shop_name')} {t.get('asin')}{cn_s} "
+                f"| {t.get('anomaly_type')}{metric} | 编号 {t.get('task_id')}"
+            )
+        if len(ordered) > 12:
+            lines.append(f"· …另有 {len(ordered) - 12} 条，见任务表")
+
+        card = _build_owner_card(
+            owner, items, biz_date, tasks_url, open_ids.get(owner)
+        )
+
+        messages.append(
+            {
+                "owner": owner,
+                "text": "\n".join(lines),
+                "card": card,
+                "open_id": open_ids.get(owner),
+                "red": len(red),
+                "orange": len(orange),
+                "count": len(items),
+            }
+        )
+    return messages
+
+
+def push_tasks_to_owners(
+    db: Database,
+    biz_date: str,
+    *,
+    settings: Settings | None = None,
+    dry_run: bool = False,
+    only_new: bool = False,
+) -> dict[str, Any]:
+    """按负责人拆分推送。only_new=True 时仅推当日新建（streak==1）任务。"""
+    settings = settings or get_settings()
+    tasks = [
+        t
+        for t in db.list_tasks(biz_date=biz_date)
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange")
+    ]
+    if only_new:
+        tasks = [t for t in tasks if int(t.get("streak") or 1) <= 1]
+
+    messages = build_owner_messages(tasks, biz_date=biz_date, settings=settings)
+    result: dict[str, Any] = {
+        "owners": len(messages),
+        "tasks": len(tasks),
+        "sent": 0,
+        "dry_run": dry_run,
+        "details": [],
+    }
+
+    webhook = (settings.feishu_bot_webhook or "").strip()
+    for msg in messages:
+        detail = {
+            "owner": msg["owner"],
+            "count": msg["count"],
+            "red": msg["red"],
+            "orange": msg["orange"],
+            "at": bool(msg.get("open_id")),
+        }
+        db.log_notify(
+            "owner_push",
+            {
+                "biz_date": biz_date,
+                "owner": msg["owner"],
+                "text": msg["text"],
+                "card": msg["card"],
+                "task_count": msg["count"],
+            },
+        )
+        if dry_run:
+            logger.info(
+                "owner_push dry-run %s:\nCard:\n%s",
+                msg["owner"],
+                _json.dumps(msg["card"], ensure_ascii=False, indent=2),
+            )
+            detail["status"] = "dry_run"
+            result["details"].append(detail)
+            continue
+        if not webhook:
+            logger.warning("未配置 FEISHU_BOT_WEBHOOK，负责人推送仅写 notify_log")
+            detail["status"] = "logged_only"
+            result["details"].append(detail)
+            continue
+        try:
+            from app.clients.feishu import FeishuClient
+
+            # 优先发卡片
+            card_sent = False
+            if settings.has_feishu:
+                try:
+                    with FeishuClient(settings) as client:
+                        client.send_webhook_card(msg["card"], webhook=webhook)
+                    card_sent = True
+                except Exception:
+                    logger.exception("卡片发送失败，回退文本")
+            else:
+                # 直接 httpx 发卡片
+                try:
+                    import httpx
+                    resp = httpx.post(
+                        webhook,
+                        json={"msg_type": "interactive", "card": msg["card"]},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+                    card_sent = True
+                except Exception:
+                    logger.exception("httpx 卡片发送失败，回退文本")
+
+            if not card_sent:
+                # 回退纯文本
+                if settings.has_feishu:
+                    with FeishuClient(settings) as client:
+                        client.send_webhook_text_with_at(
+                            msg["text"],
+                            at_open_ids=[msg["open_id"]] if msg.get("open_id") else None,
+                            webhook=webhook,
+                        )
+                else:
+                    import httpx
+                    text = msg["text"]
+                    if msg.get("open_id"):
+                        text = f'<at user_id="{msg["open_id"]}"></at>\n{text}'
+                    resp = httpx.post(
+                        webhook,
+                        json={"msg_type": "text", "content": {"text": text}},
+                        timeout=30,
+                    )
+                    resp.raise_for_status()
+
+            detail["status"] = "sent"
+            result["sent"] += 1
+        except Exception as e:
+            logger.exception("负责人推送失败 owner=%s", msg["owner"])
+            detail["status"] = f"error:{e}"
+        result["details"].append(detail)
+
+    return result

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+docker exec -i qingquan-db-1 psql -U qingquan -d qingquan <<'SQL'
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema='tk'
+ORDER BY 1;
+
+SELECT 'ads' AS src, count(*) AS n, min(biz_date)::text AS dmin, max(biz_date)::text AS dmax
+FROM tk.fact_ads_campaign_daily;
+
+SELECT shop_external_id, max(shop_name) AS shop_name, count(*) AS n
+FROM tk.fact_ads_campaign_daily
+GROUP BY 1
+ORDER BY 1;
+
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema='tk' AND table_name='fact_ads_campaign_daily'
+ORDER BY ordinal_position;
+
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_schema='public' AND table_name='sync_feishu_map'
+ORDER BY ordinal_position;
+
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema='tk' AND table_name LIKE '%shop%'
+ORDER BY 1;
+
+SELECT table_name
+FROM information_schema.tables
+WHERE table_schema='tk' AND (table_name LIKE '%health%' OR table_name LIKE '%finance%' OR table_name LIKE '%kpi%')
+ORDER BY 1;
+SQL

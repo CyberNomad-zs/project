@@ -1,0 +1,49 @@
+﻿$ErrorActionPreference = "Stop"
+. ".\scripts\qingquan-client.ps1"
+$dbgPath = ".\logs\scrape-debug-last.json"
+$bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $dbgPath))
+if ($bytes.Length -ge 3 -and $bytes[0]-eq 0xEF -and $bytes[1]-eq 0xBB -and $bytes[2]-eq 0xBF) {
+  $raw = [System.Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length-3)
+} else {
+  $raw = [System.Text.Encoding]::UTF8.GetString($bytes)
+}
+$d = $raw | ConvertFrom-Json
+$pay = $d.payload
+$rows = @()
+foreach ($r in @($pay.rows)) {
+  $rows += [pscustomobject]@{
+    date = "2026-07-29"
+    store = [string]$d.displayName
+    storeId = [string]$d.storeId
+    campaign = [string]$r.campaign
+    spend = $r.spend
+    orders = $r.orders
+    roi = $r.roi
+    revenue = $r.revenue
+    dailyBudget = $r.dailyBudget
+    targetRoi = $r.targetRoi
+    netCost = $r.netCost
+    avgOrderCost = $r.avgOrderCost
+    deliveryStatus = [string]$r.deliveryStatus
+    planStatus = [string]$r.planStatus
+    currency = "USD"
+    sourceUrl = [string]$pay.url
+    status = "success"
+  }
+}
+$cfg = @{
+  qingquan = @{
+    enabled = $true
+    baseUrl = "http://127.0.0.1:8000"
+    apiKey = "dev-ingest-key"
+    source = "tiktok_ads"
+    failOpen = $false
+    timeoutSec = 60
+  }
+}
+$items = ConvertTo-QingquanIngestItems -Rows $rows -CollectedAt ((Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ss+00:00")) -Currency "USD"
+Write-Host "items=$($items.Count) store=$($d.storeId)"
+$r = Send-QingquanIngest -Config $cfg -Items $items
+Write-Host ("ok={0} accepted={1} dup={2} failed={3}" -f $r.ok, $r.accepted, $r.duplicated, $r.failed)
+if ($r.error) { Write-Host "err=$($r.error)" }
+if ($r.resp) { $r.resp | ConvertTo-Json -Compress -Depth 4 }

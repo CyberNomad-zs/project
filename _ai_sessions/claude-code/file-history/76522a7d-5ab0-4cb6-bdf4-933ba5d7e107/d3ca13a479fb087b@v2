@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# 本机执行：同步代码到 qingquan-sg 并拉起生产栈
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HOST="${QINGQUAN_HOST:-qingquan-sg}"
+REMOTE_DIR=/opt/qingquan
+SECRETS="${ROOT}/secrets/ops.env"
+
+if [[ -f "$SECRETS" ]]; then
+  # shellcheck disable=SC1090
+  set -a; source "$SECRETS"; set +a
+fi
+
+echo "==> rsync → ${HOST}:${REMOTE_DIR}"
+ssh "$HOST" "sudo mkdir -p ${REMOTE_DIR} && sudo chown -R ubuntu:ubuntu ${REMOTE_DIR}"
+rsync -az --delete \
+  --exclude '.git' \
+  --exclude 'node_modules' \
+  --exclude '.venv' \
+  --exclude 'venv' \
+  --exclude '__pycache__' \
+  --exclude 'secrets/' \
+  --exclude '.env' \
+  --exclude 'ai-dev-sop-v2.3.1' \
+  --exclude '*.xmind' \
+  --exclude '*.png' \
+  --exclude '*.jpg' \
+  --exclude '归档' \
+  "${ROOT}/" "${HOST}:${REMOTE_DIR}/"
+
+if [[ -f "$SECRETS" ]]; then
+  echo "==> upload .env (from secrets/ops.env filtered)"
+  # 只上传应用相关变量
+  ssh "$HOST" "cat > ${REMOTE_DIR}/.env" <<EOF
+APP_ENV=prod
+APP_SECRET_KEY=${APP_SECRET_KEY}
+APP_NAME=${APP_NAME:-清泉跨境系统}
+API_PORT=8000
+POSTGRES_USER=${POSTGRES_USER:-qingquan}
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+POSTGRES_DB=${POSTGRES_DB:-qingquan}
+DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-qingquan}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-qingquan}
+REDIS_URL=redis://redis:6379/0
+JWT_EXPIRE_MINUTES=${JWT_EXPIRE_MINUTES:-1440}
+INGEST_DEFAULT_API_KEY=${INGEST_DEFAULT_API_KEY}
+ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+DEFAULT_TASK_DUE_DAYS=${DEFAULT_TASK_DUE_DAYS:-3}
+TZ=Asia/Shanghai
+EOF
+  ssh "$HOST" "chmod 600 ${REMOTE_DIR}/.env"
+fi
+
+echo "==> remote build web + compose up"
+ssh "$HOST" bash -s <<'REMOTE'
+set -euo pipefail
+cd /opt/qingquan
+
+# Node for web build (install if missing)
+if ! command -v npm >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
+fi
+
+cd web
+npm ci || npm install
+npm run build
+cd ..
+
+cd deploy
+docker compose -f docker-compose.prod.yml --env-file ../.env up -d --build api worker
+
+# wait health
+for i in $(seq 1 30); do
+  if curl -fsS http://127.0.0.1:8000/health >/dev/null; then
+    echo "API healthy"
+    break
+  fi
+  sleep 2
+done
+curl -fsS http://127.0.0.1:8000/health
+
+# seed admin：不存在则创建；存在则以 .env ADMIN_PASSWORD 对齐哈希
+docker compose -f docker-compose.prod.yml --env-file ../.env exec -T api \
+  python -m app.scripts.seed || true
+
+docker compose -f docker-compose.prod.yml --env-file ../.env ps
+
+# nginx site
+sudo mkdir -p /var/www/certbot
+sudo cp /opt/qingquan/deploy/nginx-qingquan.jmzlai.com.conf \
+  /etc/nginx/sites-available/qingquan.jmzlai.com
+sudo ln -sfn /etc/nginx/sites-available/qingquan.jmzlai.com \
+  /etc/nginx/sites-enabled/qingquan.jmzlai.com
+
+# 若证书尚不存在，先用仅 HTTP 临时配置让 certbot 能签
+if [[ ! -f /etc/letsencrypt/live/qingquan.jmzlai.com/fullchain.pem ]]; then
+  sudo tee /etc/nginx/sites-available/qingquan.jmzlai.com >/dev/null <<'NGX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name qingquan.jmzlai.com;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /health {
+        proxy_pass http://127.0.0.1:8000/health;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /docs { proxy_pass http://127.0.0.1:8000/docs; }
+    location /openapi.json { proxy_pass http://127.0.0.1:8000/openapi.json; }
+    root /opt/qingquan/web/dist;
+    index index.html;
+    location / { try_files $uri $uri/ /index.html; }
+}
+NGX
+fi
+
+sudo nginx -t
+sudo systemctl reload nginx
+
+if [[ ! -f /etc/letsencrypt/live/qingquan.jmzlai.com/fullchain.pem ]]; then
+  if command -v certbot >/dev/null 2>&1; then
+    sudo certbot --nginx -d qingquan.jmzlai.com --non-interactive --agree-tos \
+      -m admin@jmzlai.com --redirect || \
+    sudo certbot certonly --webroot -w /var/www/certbot -d qingquan.jmzlai.com \
+      --non-interactive --agree-tos -m admin@jmzlai.com || true
+  fi
+  # 签完后装回完整 HTTPS 配置
+  if [[ -f /etc/letsencrypt/live/qingquan.jmzlai.com/fullchain.pem ]]; then
+    sudo cp /opt/qingquan/deploy/nginx-qingquan.jmzlai.com.conf \
+      /etc/nginx/sites-available/qingquan.jmzlai.com
+    sudo nginx -t && sudo systemctl reload nginx
+  fi
+fi
+
+echo "REMOTE_DONE"
+REMOTE
+
+echo "==> public check"
+dig +short qingquan.jmzlai.com || true
+curl -fsS -o /dev/null -w "http:%{http_code}\n" "http://qingquan.jmzlai.com/health" || true
+curl -fsS -o /dev/null -w "https:%{http_code}\n" "https://qingquan.jmzlai.com/health" || true
+echo "OK"

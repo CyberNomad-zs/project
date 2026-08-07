@@ -1,0 +1,53 @@
+(function () {
+  function t(el) {
+    return (el && el.textContent ? el.textContent : '').replace(/\s+/g, ' ').trim();
+  }
+  var tables = Array.from(document.querySelectorAll('table'));
+  var best = null;
+  var bestN = 0;
+  tables.forEach(function (tb) {
+    var n = tb.querySelectorAll('tr').length;
+    if (n > bestN) {
+      bestN = n;
+      best = tb;
+    }
+  });
+  if (!best) {
+    return JSON.stringify({ error: 'no table', tables: tables.length });
+  }
+  var trs = Array.from(best.querySelectorAll('tr')).slice(0, 5);
+  var sample = trs.map(function (tr, i) {
+    var cells = Array.from(tr.querySelectorAll('th,td')).map(function (td, j) {
+      return {
+        j: j,
+        text: t(td).slice(0, 150),
+        cls: (td.className || '').toString().slice(0, 80)
+      };
+    });
+    return { i: i, cellCount: cells.length, cells: cells };
+  });
+  var dataTr = best.querySelectorAll('tr')[1];
+  var deep = [];
+  if (dataTr) {
+    dataTr.querySelectorAll('div,span,a,img').forEach(function (el) {
+      var s = t(el);
+      var cls = (el.className || '').toString().slice(0, 80);
+      if (el.tagName === 'IMG') {
+        if (deep.length < 40) {
+          deep.push({ tag: 'IMG', cls: cls, text: (el.getAttribute('alt') || '').slice(0, 60) });
+        }
+        return;
+      }
+      if (!s || s.length > 100) return;
+      if (deep.length < 40) {
+        deep.push({ tag: el.tagName, cls: cls, text: s });
+      }
+    });
+  }
+  return JSON.stringify({
+    tableRows: bestN,
+    sample: sample,
+    deep: deep,
+    url: location.href
+  });
+})();

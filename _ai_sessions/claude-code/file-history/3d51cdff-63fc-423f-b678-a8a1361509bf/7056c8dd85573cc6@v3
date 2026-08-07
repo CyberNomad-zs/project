@@ -1,0 +1,25 @@
+@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+title TK Ad Monitor - install deps
+echo.
+echo ============================================================
+echo   Install Node.js LTS + ziniao-cli
+echo   Ziniao desktop client is NOT installed by this script
+echo ============================================================
+echo.
+echo   If this fails, open: docs\手动安装环境.md
+echo   Optional: paste Ziniao API Key, or just press Enter to skip.
+echo.
+set "APIKEY="
+set /p APIKEY=API Key (optional): 
+
+if "%APIKEY%"=="" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-deps.ps1"
+) else (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\install-deps.ps1" -ApiKey "%APIKEY%"
+)
+
+echo.
+echo ---------- done ----------
+pause

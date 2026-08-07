@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /opt/qingquan/deploy
+
+echo "== compose config services =="
+docker compose -f docker-compose.prod.yml --env-file ../.env config --services
+
+echo "== build/up api worker =="
+docker compose -f docker-compose.prod.yml --env-file ../.env up -d --build api worker
+
+echo "== wait health =="
+for i in $(seq 1 40); do
+  if curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1; then
+    echo "API healthy (try $i)"
+    break
+  fi
+  sleep 2
+done
+curl -fsS --max-time 5 http://127.0.0.1:8000/health || true
+echo
+
+echo "== ps =="
+docker compose -f docker-compose.prod.yml --env-file ../.env ps
+
+echo "== seed admin =="
+docker compose -f docker-compose.prod.yml --env-file ../.env exec -T api \
+  python -m app.scripts.seed
+
+echo "== login test =="
+USER=$(grep -E '^ADMIN_USERNAME=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+PASS=$(grep -E '^ADMIN_PASSWORD=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+USER=${USER:-admin}
+code=$(curl -sS -o /tmp/login_out.json -w '%{http_code}' -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" || true)
+echo "login_http=$code"
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/tmp/login_out.json')
+try:
+    d=json.loads(p.read_text(encoding='utf-8'))
+except Exception as e:
+    print('body_raw', p.read_text(encoding='utf-8')[:300] if p.exists() else e)
+    raise SystemExit(1)
+tok=d.get('access_token') or ''
+print('token_len', len(tok))
+print('token_type', d.get('token_type'))
+if not tok:
+    print('LOGIN_BODY', d)
+    raise SystemExit(2)
+Path('/tmp/qq_token.txt').write_text(tok, encoding='utf-8')
+PY
+
+TOKEN=$(cat /tmp/qq_token.txt)
+echo "== export dry via HTTP (run_inline) =="
+for KEY in tk_ads_campaign tk_shop_daily; do
+  echo "-- $KEY"
+  curl -fsS -X POST http://127.0.0.1:8000/api/v1/export/feishu \
+    -H "Authorization: Bearer $TOKEN" \
+    -H 'Content-Type: application/json' \
+    -d "{\"table_key\":\"$KEY\",\"mode\":\"incremental\",\"lookback_days\":7,\"limit\":5,\"dry_run\":true,\"run_inline\":true}" \
+    | python3 -m json.tool
+done
+
+echo "== worker logs =="
+docker logs --tail 40 qingquan-worker-1 2>&1 || docker compose -f docker-compose.prod.yml --env-file ../.env logs --tail 40 worker
+
+echo "== pending outbox/jobs snapshot =="
+docker exec -i qingquan-db-1 psql -U qingquan -d qingquan <<'SQL'
+SELECT status, count(*) FROM outbox_event GROUP BY 1 ORDER BY 1;
+SELECT status, count(*) FROM sync_feishu_job GROUP BY 1 ORDER BY 1;
+SELECT left(id::text,8) id, table_key, status, created_at AT TIME ZONE 'Asia/Shanghai' AS cst
+FROM sync_feishu_job ORDER BY created_at DESC LIMIT 6;
+SQL
+
+rm -f /tmp/login_out.json /tmp/qq_token.txt
+echo DONE

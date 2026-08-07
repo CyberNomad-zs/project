@@ -1,0 +1,287 @@
+/* TikTok Shop orders list scraper — calibrated against seller-uk order list DOM (2026-07-30). */
+(function () {
+  function cleanText(t) {
+    return String(t ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function detectCurrency(text) {
+    const s = String(text ?? '');
+    if (/[£]|GBP|英镑/i.test(s)) return 'GBP';
+    if (/[€]|EUR|欧元/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB|元/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD|美金|美元/i.test(s)) return 'USD';
+    return null;
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    let s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s
+      .replace(/[,\s]/g, '')
+      .replace(/[¥$€£￥]/g, '')
+      .replace(/USD|GBP|EUR|CNY|RMB|美金|美元|英镑|欧元/gi, '')
+      .replace(/%/g, '');
+    const paren = s.match(/^\((.+)\)$/);
+    if (paren) s = `-${paren[1]}`;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function extractOrderId(text) {
+    const s = cleanText(text);
+    if (!s) return '';
+    // TK order ids are long numeric (15-20 digits) e.g. 576930217269172876
+    const m =
+      s.match(/\b(57\d{15,20})\b/) ||
+      s.match(/\b(\d{15,22})\b/) ||
+      s.match(/订单号\s*[:：]?\s*([A-Za-z0-9_-]{8,})/i);
+    return m ? m[1] : '';
+  }
+
+  const HEADER_ALIASES = {
+    orderId: ['订单号', '订单编号', '订单', 'order id', 'order no', 'order number', 'order'],
+    orderStatus: ['订单状态', 'order status', 'status'],
+    payTime: ['支付时间', '付款时间', 'pay time', 'paid time', 'payment time'],
+    createTime: ['下单时间', '创建时间', 'order time', 'created time', 'create time'],
+    productName: ['商品信息', '商品', '产品名称', '品名', 'product', 'product name', 'item'],
+    sellerSku: ['商家sku', 'seller sku', 'sku', '商家编码'],
+    skuId: ['skuid', 'sku id', '平台sku'],
+    quantity: ['数量', '件数', 'qty', 'quantity', 'units'],
+    payAmount: ['合计', '实付', '订单金额', '应付', '金额', 'total', 'pay amount', 'order amount'],
+    shippingStatus: ['物流状态', '发货状态', 'shipping status', 'fulfillment'],
+    shippingMethod: ['物流方式', '物流选项', 'shipping', 'delivery'],
+    buyer: ['客户', '买家', 'customer', 'buyer']
+  };
+
+  function normHeader(h) {
+    return cleanText(h).toLowerCase();
+  }
+
+  function matchField(header) {
+    const h = normHeader(header);
+    if (!h) return null;
+    // exact-ish longer alias wins
+    let best = null;
+    let bestLen = 0;
+    for (const [field, aliases] of Object.entries(HEADER_ALIASES)) {
+      for (const a of aliases) {
+        const al = a.toLowerCase();
+        if (h === al || h.includes(al) || al.includes(h)) {
+          // avoid bare "status" stealing 订单状态 if both match — longer wins
+          if (al.length >= bestLen) {
+            best = field;
+            bestLen = al.length;
+          }
+        }
+      }
+    }
+    // 单独「状态」且不是订单状态
+    if (best === 'orderStatus' && h === '状态') return 'orderStatus';
+    return best;
+  }
+
+  function scoreTable(table) {
+    const trs = Array.from(table.querySelectorAll('tr'));
+    if (trs.length < 2) return 0;
+    const headCells = Array.from(trs[0].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+    let hits = 0;
+    const fields = {};
+    for (const h of headCells) {
+      const f = matchField(h);
+      if (f) {
+        hits++;
+        fields[f] = true;
+      }
+    }
+    // require order-ish signal
+    if (!fields.orderId && !fields.orderStatus && !fields.payAmount) return 0;
+    return hits * 10 + Math.min(trs.length, 80);
+  }
+
+  function pickBestTable() {
+    const tables = Array.from(document.querySelectorAll('table'));
+    let best = null;
+    let bestScore = 0;
+    for (const t of tables) {
+      const s = scoreTable(t);
+      if (s > bestScore) {
+        bestScore = s;
+        best = t;
+      }
+    }
+    return bestScore >= 10 ? best : null;
+  }
+
+  function parseHtmlTable(table) {
+    const trs = Array.from(table.querySelectorAll('tr'));
+    if (trs.length < 2) return { rows: [], headers: [], colMap: {} };
+    // header may be first row with th
+    let headIdx = 0;
+    for (let i = 0; i < Math.min(3, trs.length); i++) {
+      const cells = Array.from(trs[i].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+      const hits = cells.filter((h) => matchField(h)).length;
+      if (hits >= 2) {
+        headIdx = i;
+        break;
+      }
+    }
+    const headCells = Array.from(trs[headIdx].querySelectorAll('th,td')).map((c) => cleanText(c.textContent));
+    const colMap = {};
+    headCells.forEach((h, i) => {
+      const f = matchField(h);
+      if (f && colMap[f] == null) colMap[f] = i;
+    });
+    const rows = [];
+    for (let r = headIdx + 1; r < trs.length; r++) {
+      const cellEls = Array.from(trs[r].querySelectorAll('td,th'));
+      if (!cellEls.length) continue;
+      const cells = cellEls.map((c) => cleanText(c.textContent));
+      const get = (f) => (colMap[f] != null ? cells[colMap[f]] || '' : '');
+      // order id: dedicated col, or scan row / .order_id_number
+      let orderId = extractOrderId(get('orderId'));
+      if (!orderId) {
+        const oidEl = trs[r].querySelector('.order_id_number, [class*="order_id"]');
+        if (oidEl) orderId = extractOrderId(oidEl.textContent);
+      }
+      if (!orderId) orderId = extractOrderId(cells.join(' '));
+      if (!orderId) continue;
+
+      const payRaw = get('payAmount') || cells[cells.length - 1] || '';
+      const payAmount = parseNumber(payRaw);
+      let quantity = parseNumber(get('quantity'));
+      if (quantity == null) {
+        const qm = (get('productName') || cells.join(' ')).match(/(\d+)\s*件商品/);
+        if (qm) quantity = Number(qm[1]);
+      }
+      const blob = cells.join(' ');
+      rows.push({
+        orderId: orderId,
+        orderStatus: get('orderStatus') || '',
+        payTime: get('payTime') || '',
+        createTime: get('createTime') || '',
+        productName: get('productName') || '',
+        sellerSku: get('sellerSku') || '',
+        skuId: get('skuId') || '',
+        quantity: quantity != null ? quantity : 0,
+        payAmount: payAmount != null ? payAmount : 0,
+        shippingStatus: get('shippingStatus') || get('shippingMethod') || '',
+        buyerRegion: '',
+        buyer: get('buyer') || '',
+        currencyHint: detectCurrency(blob) || detectCurrency(payRaw),
+        rawCells: cells.slice(0, 12)
+      });
+    }
+    return { colMap: colMap, rows: rows, headers: headCells };
+  }
+
+  /** Fallback: collect order id nodes then walk up to row-like container */
+  function parseOrderIdNodes() {
+    const nodes = Array.from(document.querySelectorAll('.order_id_number, [class*="order_id"]'));
+    if (!nodes.length) return null;
+    const rows = [];
+    const seen = {};
+    for (const n of nodes) {
+      const orderId = extractOrderId(n.textContent);
+      if (!orderId || seen[orderId]) continue;
+      seen[orderId] = true;
+      let rowEl = n.closest('tr') || n.closest('[class*="row"]') || n.parentElement;
+      for (let i = 0; i < 6 && rowEl && (!rowEl.textContent || rowEl.textContent.length < 20); i++) {
+        rowEl = rowEl.parentElement;
+      }
+      const text = rowEl ? cleanText(rowEl.textContent).slice(0, 500) : cleanText(n.textContent);
+      const payM = text.match(/[£$€]\s*([0-9]+(?:\.[0-9]+)?)/);
+      // 避免 "Gant968"+"1 件商品" 粘成 9681：要求件数前非数字，且 1–3 位
+      let quantity = 0;
+      const qtyM = text.match(/(?:^|[^\d])(\d{1,3})\s*件商品/);
+      if (qtyM) quantity = Number(qtyM[1]);
+      let status = '';
+      const sm = text.match(
+        /(等待中|等待打包|待揽收|已发货|已完成|已取消|待发货|运输中|Delivered|Cancelled|To ship|Shipped)/i
+      );
+      if (sm) status = sm[1];
+      rows.push({
+        orderId: orderId,
+        orderStatus: status,
+        payTime: '',
+        createTime: '',
+        productName: '',
+        sellerSku: '',
+        skuId: '',
+        quantity: quantity,
+        payAmount: payM ? parseNumber(payM[0]) : 0,
+        shippingStatus: '',
+        buyerRegion: '',
+        buyer: '',
+        currencyHint: detectCurrency(text),
+        rawCells: [text.slice(0, 200)]
+      });
+    }
+    return rows.length ? { rows: rows, headers: ['order_id_number'], colMap: {}, source: 'order-id-nodes' } : null;
+  }
+
+  try {
+    const url = location.href || '';
+    const title = document.title || '';
+    let parsed = null;
+    let source = 'none';
+    const table = pickBestTable();
+    if (table) {
+      parsed = parseHtmlTable(table);
+      source = 'html-table';
+    }
+    if (!parsed || !parsed.rows || parsed.rows.length === 0) {
+      const fb = parseOrderIdNodes();
+      if (fb) {
+        parsed = fb;
+        source = fb.source || 'order-id-nodes';
+      }
+    }
+
+    const rows = parsed && parsed.rows ? parsed.rows : [];
+    const currencyHits = { USD: 0, GBP: 0, EUR: 0, CNY: 0 };
+    for (const r of rows) {
+      const c = r.currencyHint;
+      if (c && currencyHits[c] != null) currencyHits[c]++;
+    }
+    let currency = 'GBP';
+    let max = -1;
+    for (const [k, v] of Object.entries(currencyHits)) {
+      if (v > max) {
+        max = v;
+        currency = k;
+      }
+    }
+    if (max <= 0) currency = 'GBP';
+
+    const ok = rows.length > 0;
+    return JSON.stringify({
+      ok: ok,
+      source: source,
+      module: 'orders',
+      url: url,
+      title: title,
+      currency: currency,
+      currencyHits: currencyHits,
+      headers: parsed && parsed.headers ? parsed.headers : [],
+      colMap: parsed && parsed.colMap ? parsed.colMap : {},
+      rows: rows,
+      rowCount: rows.length,
+      error: ok
+        ? null
+        : '未识别到订单表格（请确认已打开订单列表页；表头需含订单/订单状态/合计）。url=' + url
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false,
+      source: 'none',
+      module: 'orders',
+      url: location.href || '',
+      rows: [],
+      error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

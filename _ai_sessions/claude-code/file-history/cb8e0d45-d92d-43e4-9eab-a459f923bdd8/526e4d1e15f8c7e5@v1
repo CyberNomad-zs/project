@@ -1,0 +1,68 @@
+# -*- coding: utf-8 -*-
+"""
+主流程编排：ERP 会话校验 + 阶段统计 + 获取跟踪单号；WMS 逐店铺按快递方优先级发货。
+安全：由 config.DRY_RUN 控制是否真正执行变更类动作。首次务必 DRY_RUN=True 空跑核对日志。
+
+用法：
+    1) 先手动登录一次 ERP： python capture/erp_manual_login.py
+    2) 空跑：              python run_shipping.py         （config.DRY_RUN=True）
+    3) 核对无误后改 config.DRY_RUN=False 再跑真实发货。
+"""
+import time
+import config, core, secrets, erp, wms
+from core import log
+from playwright.sync_api import sync_playwright
+
+# ---- 本次要执行的环节开关（按需开启）----
+DO_ERP_REPORT = True         # 只读：ERP 各阶段数量
+DO_ERP_PLACE_ORDER = True    # 【第一步】ERP 物流下单（待处理 -> 全选 -> 物流下单，视频前50秒）
+DO_ERP_TRACKING = False      # ERP 获取跟踪单号（建议 WMS 发货后再开）
+DO_ERP_CONFIRM_SHIP = False  # ERP 确认发货（高风险，需业务确认阶段后再开）
+DO_WMS_SHIP = False          # WMS 改快递方 + 批量发货（第二步，暂缓）
+
+# 物流下单时可选的渠道过滤关键字（None=不筛选，全选待处理）。例如 "RM" / "BLACKCAT" / "异新海外仓"
+ERP_CHANNEL_KEYWORD = None
+
+
+def main():
+    log("=" * 60)
+    log(f"开始运行  DRY_RUN={config.DRY_RUN}  MAX/次={config.MAX_ORDERS_PER_RUN}")
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+        # ---------- ERP ----------
+        erp_ok = core.ensure_erp(page)
+        if erp_ok:
+            erp.open_order_ship(page)
+            if DO_ERP_REPORT:
+                erp.report_counts(page)
+            if DO_ERP_PLACE_ORDER:
+                erp.place_logistics_orders(page, channel_keyword=ERP_CHANNEL_KEYWORD)
+            if DO_ERP_CONFIRM_SHIP:
+                erp.confirm_shipping(page)
+            if DO_ERP_TRACKING:
+                erp.get_tracking(page)
+        else:
+            log("[ERP] 未登录，跳过 ERP 环节（WMS 仍可继续）")
+
+        # ---------- WMS ----------
+        if DO_WMS_SHIP:
+            for account in secrets.WMS_ACCOUNTS:
+                try:
+                    wms.process_shop(page, account)
+                except Exception as e:
+                    log(f"[WMS] 店铺 {account['shop']} 处理异常: {e}")
+
+        # ---------- ERP 发货后获取单号 ----------
+        if erp_ok and DO_ERP_TRACKING:
+            erp.open_order_ship(page)
+            erp.get_tracking(page)
+
+        log("运行结束。")
+        time.sleep(2)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

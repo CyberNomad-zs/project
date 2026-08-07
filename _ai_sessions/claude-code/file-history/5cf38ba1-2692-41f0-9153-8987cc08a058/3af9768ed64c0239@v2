@@ -1,0 +1,348 @@
+# 清泉跨境系统 · 数据库现状说明
+
+> 快照日期：**2026-07-31**  
+> 环境：**本机开发库** `qingquan @ 127.0.0.1:5432`（PostgreSQL 16）  
+> 来源：`information_schema` / `pg_stat_user_tables` 实查 + `backend/migrations/*`  
+> 相关文档：[schema-tk-temu.md](./schema-tk-temu.md) · [字段映射字典.md](./字段映射字典.md) · [架构方案.md](./架构方案.md)
+
+---
+
+## 1. 一句话结论
+
+| 项 | 现状 |
+|----|------|
+| 引擎 | PostgreSQL **16**（Windows 服务 `postgresql-x64-16` Running） |
+| 库名 / 用户 | `qingquan` / `qingquan` |
+| 库体积 | **约 10 MB**（开发/样板数据量级） |
+| Schema | 已有 **`public`** + **`tk`**；**尚无 `temu` schema**（同事侧可选同库） |
+| 迁移 | **001–008 均已落地**（含 008 把 TK 事实表迁入 `tk`，public 留兼容视图） |
+| SoT 原则 | PostgreSQL 为 Source of Truth；飞书为同步出口（本库飞书映射表仍为空） |
+| 连接 search_path | 应用默认 `public, tk, temu`（见 `backend/app/infra/db.py`） |
+
+**本机连接串（开发）：**
+
+```text
+postgresql+asyncpg://qingquan:qingquan@127.0.0.1:5432/qingquan
+```
+
+```powershell
+$env:PGPASSWORD='qingquan'
+& 'C:\Program Files\PostgreSQL\16\bin\psql.exe' -U qingquan -d qingquan -h 127.0.0.1
+```
+
+---
+
+## 2. Schema 分区
+
+```text
+database: qingquan
+├── public   中心 / 三平台共用 + AMZ 事实 + 知识库 + 任务引擎
+│            （TK 事实名在 public 上仅为 VIEW → tk.*）
+├── tk       TikTok 平台事实（广告 / 订单 / 商品 / 店级 KPI / 健康 / 财务）
+└── temu     （本库尚未创建；生产/同事库可按约定同库共存）
+```
+
+| Schema | 角色 | 本库状态 |
+|--------|------|----------|
+| **public** | 组织、店铺主数据、采集原始、任务/异常、飞书同步、AMZ、知识库 | **19 基表** + **6 兼容视图** |
+| **tk** | TikTok 事实 | **6 基表**（已从 public 迁入） |
+| **temu** | Temu 监测（同事） | **不存在** |
+
+设计说明见 [schema-tk-temu.md](./schema-tk-temu.md)。
+
+---
+
+## 3. 迁移执行情况
+
+| 文件 | 内容 | 本库 |
+|------|------|------|
+| `001_init.sql` | 组织/店铺/ingest/广告事实/任务/飞书/outbox/节点/审计 | ✅ |
+| `002_amz_mom_tasks.sql` | AMZ 链接日事实、环比规则、跑批、listing_owner、task 扩展 | ✅ |
+| `003_tiktok_ads_p1_fields.sql` | 广告表 P1 字段（预算/ROI/状态/CPA…） | ✅（列已在 `tk.fact_ads_campaign_daily`） |
+| `004_ops_knowledge.sql` | 动作/效果字典 + kb_playbook + task 结构化字段 | ✅ |
+| `005_tiktok_orders.sql` | `fact_tiktok_order` | ✅（现位于 `tk`） |
+| `006_tiktok_products.sql` | `fact_tiktok_product` | ✅（现位于 `tk`） |
+| `007_tiktok_shop_kpi_health_finance.sql` | 店级 KPI / 健康 / 财务日表 | ✅（现位于 `tk`） |
+| `008_tk_schema.sql` | 建 `tk` schema，搬迁 6 张 TK 表，public 建兼容视图 | ✅ |
+
+> **注意**  
+> - 本地 `deploy/docker-compose.yml` 仅自动挂载 **001**；002–008 需手动 `psql -f`。  
+> - 生产 `docker-compose.prod.yml` 首次建库会挂 001–003、005–008（**缺 004** ops_knowledge，已有库需补跑）。  
+> - 已有 volume 不会因改挂载自动重跑 init；增量靠手动执行 SQL。
+
+---
+
+## 4. 对象清单与行数（实查）
+
+### 4.1 public 基表
+
+| 表 | 行数 | 用途 |
+|----|------|------|
+| `org_user` | **1** | 用户（`admin` 管理员） |
+| `org_dept` | 0 | 部门树 |
+| `shop` | **7** | 三平台店铺主数据 |
+| `ingest_raw` | **54** | 采集原始 + 幂等 |
+| `anomaly_event` | **101** | 异常事件 |
+| `task` | **100** | 人维任务 |
+| `task_progress` | **172** | 任务进度（含结构化 action/effect） |
+| `sync_feishu_map` | 0 | 本地 ↔ 飞书 record 映射 |
+| `sync_feishu_job` | 0 | 飞书同步作业 |
+| `outbox_event` | **159**（全 `pending`） | 出站事件（飞书/通知等） |
+| `collector_node` | **2** | 采集节点心跳 |
+| `audit_log` | 0 | 审计 |
+| `fact_amz_link_daily` | **48** | Amazon 链接日指标 |
+| `amz_mom_rule` | **4** | 环比规则种子 |
+| `amz_mom_eval_run` | 0 | 环比跑批记录 |
+| `listing_owner` | 0 | ASIN 级负责人 |
+| `ops_action_dict` | **7** | 运营动作码 |
+| `ops_effect_dict` | **5** | 闭环效果标签 |
+| `kb_playbook` | **13** | 知识剧本 |
+
+### 4.2 public 兼容视图（→ tk）
+
+| 视图 | 定义 |
+|------|------|
+| `fact_ads_campaign_daily` | `SELECT * FROM tk.fact_ads_campaign_daily` |
+| `fact_tiktok_order` | → `tk.fact_tiktok_order` |
+| `fact_tiktok_product` | → `tk.fact_tiktok_product` |
+| `fact_tiktok_shop_daily` | → `tk.fact_tiktok_shop_daily` |
+| `fact_tiktok_health_daily` | → `tk.fact_tiktok_health_daily` |
+| `fact_tiktok_finance_daily` | → `tk.fact_tiktok_finance_daily` |
+
+旧 SQL 读 `public.fact_*` 仍可走视图；**写入请用 `tk.表名`**（ingest 已显式写 `tk.`）。
+
+### 4.3 tk 基表
+
+| 表 | 行数 | 业务粒度 / 幂等 | 采集成熟度 |
+|----|------|-----------------|------------|
+| `fact_ads_campaign_daily` | **26** | 店 × 系列名 × 业务日 | ✅ 已通（含 P1 字段） |
+| `fact_tiktok_order` | **1** | 店 × order_id | ⚠️ 本库仅测试单；生产另有更多 |
+| `fact_tiktok_product` | **0** | 店 × product_id | 🟡 表+ingest 就绪，本库无数据 |
+| `fact_tiktok_shop_daily` | **0** | 店 × 业务日 | 骨架（scrape 未接） |
+| `fact_tiktok_health_daily` | **0** | 店 × 业务日 | 骨架 |
+| `fact_tiktok_finance_daily` | **0** | 店 × 业务日 | 骨架 |
+
+---
+
+## 5. 业务数据快照
+
+### 5.1 店铺 `public.shop`（7）
+
+| platform | external_shop_id | name | currency |
+|----------|------------------|------|----------|
+| temu | 396706 | Agnis | GBP |
+| temu | 398202 | HomeCove | GBP |
+| temu | 398203 | Twilight Cove | GBP |
+| tiktok | 27501502216807 | Deal to deal | GBP |
+| tiktok | 27328767468273 | Gardena | GBP |
+| tiktok | 27758103898326 | TikTok - Pop | GBP |
+| amazon | AMZ-DEMO-001 | Amazon Demo UK | GBP |
+
+### 5.2 采集入库 `ingest_raw`
+
+| source | process_status | count |
+|--------|----------------|-------|
+| `tiktok_ads` | processed | 26 |
+| `amz_link_daily` | processed | 28 |
+
+本库尚未出现：`tiktok_orders` / `tiktok_products` / `tiktok_shop_daily` / `tiktok_health_daily` / `tiktok_finance_daily` 的 ingest 记录（订单表 1 行可能来自直接/早期写入或测试路径）。
+
+**Ingest 已支持的 source（代码）：**
+
+| source | 目标表 |
+|--------|--------|
+| `tiktok_ads` | `tk.fact_ads_campaign_daily` |
+| `tiktok_orders` | `tk.fact_tiktok_order` |
+| `tiktok_products` | `tk.fact_tiktok_product` |
+| `tiktok_shop_daily` | `tk.fact_tiktok_shop_daily` |
+| `tiktok_health_daily` | `tk.fact_tiktok_health_daily` |
+| `tiktok_finance_daily` | `tk.fact_tiktok_finance_daily` |
+| `amz_link_daily` / `sellfox_link_daily` / `amazon_link_daily` | `public.fact_amz_link_daily` |
+
+### 5.3 TK 广告事实
+
+- 行数 **26**；业务日 **2026-07-26 ~ 2026-07-29**
+- 店铺分布：`27328767468273`（SHOP INOUT 名）20 行 · `27501502216807`（Deal to deal）5 行 · `smoke-resident` 1 行
+- 系列数约 15；含 P1 列：`plan_status` / `delivery_status` / `daily_budget` / `target_roi` / `net_cost` / `avg_order_cost`
+
+### 5.4 任务与异常
+
+**task 按平台 × 状态：**
+
+| platform | open | in_progress | resolved | cancelled |
+|----------|------|-------------|----------|-----------|
+| amazon | 14 | 3 | 39 | — |
+| tiktok | 12 | 3 | 10 | — |
+| temu | 5 | 2 | 11 | 1 |
+
+**anomaly_event 类型 Top：**
+
+| anomaly_type | count |
+|--------------|-------|
+| link_wow_units_drop | 38 |
+| low_roi | 22 |
+| listing_off | 12 |
+| account_health | 9 |
+| … | … |
+
+多为 **demo/种子任务**（运营知识库与环比样板联调），非全量现网扫描结果。
+
+### 5.5 AMZ 环比
+
+- 规则种子 4 条：日/周/月 units 跌 + 周 sales 跌（阈值见 `amz_mom_rule`）
+- `fact_amz_link_daily` = 48 行样板事实
+- `amz_mom_eval_run` = 0（本库未留下跑批记录，或跑批未写此表）
+
+### 5.6 知识库
+
+- 动作 7 / 效果 5 / 剧本 13（含 004 种子 + 后续草稿/发布）
+- 任务进度 172 条，支撑 action/effect 结构化闭环
+
+### 5.7 飞书 / Outbox
+
+| 对象 | 状态 |
+|------|------|
+| `sync_feishu_map` / `sync_feishu_job` | 空（未接通或未配 token） |
+| `outbox_event` | **159 全部 pending**（下游 worker/飞书未消费） |
+
+### 5.8 组织与节点
+
+- 用户：仅 `admin`（is_admin）
+- 部门：空
+- 采集节点：`mock-node-dev`、`mock-node-amz`（mock 心跳）
+
+---
+
+## 6. 数据流（当前）
+
+```text
+边缘采集（紫鸟/赛狐/插件）
+        │  HTTPS + Ingest API Key
+        ▼
+  POST /api/v1/ingest/{source}
+        │
+        ├─► public.ingest_raw     （幂等 idempotency_key）
+        │
+        └─► 分发
+              ├─ tiktok_*  ──► tk.fact_*
+              └─ amz_*     ──► public.fact_amz_link_daily
+
+规则 / 任务引擎 ──► anomaly_event + task + task_progress
+                 └─► outbox_event ─(待)─► 飞书 / 通知
+```
+
+原则：**采集端不直连库**；中心 API 写库。
+
+---
+
+## 7. 与生产的差异（参考）
+
+PROGRESS 记载生产侧（新加坡轻量，见 [ops/SERVER.md](./ops/SERVER.md)）曾有：
+
+| 项 | 生产（文档口径） | 本机开发库（本快照） |
+|----|------------------|----------------------|
+| ads | ≈12+ | 26 |
+| orders | ≈351 | 1（测试单） |
+| products | ≥1 | 0 |
+| migrations 005–007 | 已执行 | 已执行 + **008 已迁 tk** |
+| 004 ops_knowledge | 视部署是否补跑 | 已有 |
+
+生产 compose 首次 init **未挂 004**；已有库改挂载不会自动补迁移，运维需显式：
+
+```bash
+docker exec -i <db容器> psql -U qingquan -d qingquan < backend/migrations/004_ops_knowledge.sql
+# 以及按需 002–008
+```
+
+---
+
+## 8. 缺口与风险（现状视角）
+
+| 优先级 | 项 | 说明 |
+|--------|----|------|
+| P0 | 生产/本机迁移清单不一致 | 本地 compose 只挂 001；prod 缺 004；已有 volume 需运维清单 |
+| P1 | TK 订单/商品本库几乎空 | 采集通路在生产更完整；本机需再跑 `run-orders` / `run-products` |
+| P1 | KPI/健康/财务仅表结构 | scrape 未写；ingest 接口已预留 |
+| P1 | outbox 全 pending | 飞书/通知 worker 未消费，任务闭环到飞书未通 |
+| P2 | `temu` schema 未建 | 同事监测表未并入本库；search_path 已预留 |
+| P2 | 无迁移版本表 | 靠人工记 001–008，无 `schema_migrations` |
+| P2 | org_dept / listing_owner / audit 空 | 组织与细粒度负责人未用起来 |
+| 注意 | shop 名与广告 shop_name 不完全一致 | 例：Gardena vs SHOP INOUT（别名/配置需对齐） |
+
+---
+
+## 9. 常用核对 SQL
+
+```sql
+-- Schema 与对象
+SELECT table_schema, table_type, table_name
+FROM information_schema.tables
+WHERE table_schema IN ('public', 'tk', 'temu')
+ORDER BY 1, 2, 3;
+
+-- 行数
+SELECT schemaname || '.' || relname AS tbl, n_live_tup
+FROM pg_stat_user_tables
+ORDER BY 1;
+
+-- 采集源
+SELECT source, process_status, count(*)
+FROM ingest_raw GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- TK 广告窗口
+SELECT min(biz_date), max(biz_date), count(*), count(DISTINCT shop_external_id)
+FROM tk.fact_ads_campaign_daily;
+
+-- 任务堆积
+SELECT platform, status, count(*) FROM task GROUP BY 1, 2 ORDER BY 1, 2;
+
+-- Outbox 积压
+SELECT status, count(*) FROM outbox_event GROUP BY 1;
+```
+
+**手动补迁移示例：**
+
+```powershell
+$env:PGPASSWORD='qingquan'
+$psql = 'C:\Program Files\PostgreSQL\16\bin\psql.exe'
+$m = 'E:\project\清泉跨境系统（企业级）\backend\migrations'
+foreach ($f in 001,002,003,004,005,006,007,008) {
+  # 按实际文件名执行；已执行的 CREATE IF NOT EXISTS / 008 可重复
+}
+& $psql -U qingquan -d qingquan -h 127.0.0.1 -v ON_ERROR_STOP=1 -f "$m\008_tk_schema.sql"
+```
+
+---
+
+## 10. 对象关系简图
+
+```text
+org_user ◄──── shop.primary_owner_user_id
+   ▲              │
+   │              ▼
+   │         ingest_raw ──► tk.fact_ads_campaign_daily
+   │              │         tk.fact_tiktok_order
+   │              │         tk.fact_tiktok_product
+   │              │         tk.fact_tiktok_*_daily
+   │              └──► public.fact_amz_link_daily
+   │
+   ├── task ◄── anomaly_event
+   │     └── task_progress
+   ├── listing_owner
+   ├── kb_playbook / ops_*_dict
+   ├── outbox_event
+   ├── sync_feishu_*
+   ├── collector_node
+   └── audit_log
+```
+
+---
+
+## 11. 修订记录
+
+| 日期 | 说明 |
+|------|------|
+| 2026-07-31 | 初版：本机 `qingquan` 实查；001–008 已落地；tk 分区生效；行数与缺口如上 |
+
+> 本文件描述的是 **文档编写当日的本机开发库**。生产库行数/是否已跑 004·008 请以目标环境实查为准，可用 §9 SQL 刷新本节数字。
+```

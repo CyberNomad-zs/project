@@ -1,0 +1,100 @@
+// 纯逻辑单测：限流基线 / productId 冷却 / 切店不应重复告警
+// 运行：node test_traffic_dedupe.js
+
+const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+function pruneAlertedMap(map, now) {
+  const out = {};
+  const keepFor = ALERT_COOLDOWN_MS * 4;
+  for (const id of Object.keys(map || {})) {
+    const ts = map[id];
+    if (typeof ts === 'number' && now - ts < keepFor) out[id] = ts;
+  }
+  return out;
+}
+function pickFreshItems(items, alertedMap, now) {
+  const fresh = [];
+  const seen = {};
+  for (const it of items || []) {
+    if (!it || !it.productId) continue;
+    const pid = String(it.productId);
+    if (seen[pid]) continue;
+    seen[pid] = true;
+    const last = alertedMap && alertedMap[pid];
+    if (typeof last === 'number' && now - last < ALERT_COOLDOWN_MS) continue;
+    fresh.push(it);
+  }
+  return fresh;
+}
+function markAlerted(alertedMap, items, now) {
+  const out = Object.assign({}, alertedMap || {});
+  for (const it of items || []) {
+    if (it && it.productId) out[String(it.productId)] = now;
+  }
+  return out;
+}
+function alertedMapSize(map) {
+  return map && typeof map === 'object' ? Object.keys(map).length : 0;
+}
+function hasTrafficBaseline(snap) {
+  if (!snap || typeof snap !== 'object') return false;
+  if (snap.trafficBaselineAt) return true;
+  return alertedMapSize(snap.alertedTrafficIds)
+    + alertedMapSize(snap.alertedWatchIds)
+    + alertedMapSize(snap.alertedDeclineIds) > 0;
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error('FAIL: ' + msg);
+  console.log('OK  ' + msg);
+}
+
+const now = Date.now();
+const items = [
+  { productId: '111', name: 'A', severity: 'general' },
+  { productId: '222', name: 'B', severity: 'general' },
+  { productId: '333', name: 'C', severity: 'severe' },
+];
+
+// 1) 空 snapshot / 空 {} 不算基线
+assert(!hasTrafficBaseline({}), 'empty snap no baseline');
+assert(!hasTrafficBaseline({ alertedTrafficIds: {} }), 'empty alerted map no baseline');
+assert(!hasTrafficBaseline({ trafficWatch: 4 }), 'chip count alone no baseline');
+assert(hasTrafficBaseline({ trafficBaselineAt: now }), 'trafficBaselineAt counts');
+assert(hasTrafficBaseline({ alertedTrafficIds: { '111': now } }), 'nonempty alerted counts');
+
+// 2) 首次 seed 后，同批再扫 → fresh 为空（模拟切店）
+let alerted = markAlerted({}, items, now);
+assert(Object.keys(alerted).length === 3, 'seed marks 3 ids');
+let fresh = pickFreshItems(items, alerted, now + 1000);
+assert(fresh.length === 0, 'same items within cooldown → no fresh (switch store)');
+
+// 3) 冷却过期后可再报
+fresh = pickFreshItems(items, alerted, now + ALERT_COOLDOWN_MS + 1);
+assert(fresh.length === 3, 'after cooldown all fresh again');
+
+// 4) 新 productId 可报，旧的不报
+fresh = pickFreshItems(
+  items.concat([{ productId: '999', name: 'New' }]),
+  alerted,
+  now + 60 * 1000
+);
+assert(fresh.length === 1 && fresh[0].productId === '999', 'only brand-new id is fresh');
+
+// 5) 模拟「并发写覆盖」旧 bug：alerted 被写成 {} 后，若错误地 baselineReady=true 会全量误报
+//    v17：空 map 不算 ready → 应重新 seed 而不是告警
+{
+  const wiped = { alertedTrafficIds: {} }; // 竞态盖掉后的状态
+  assert(!hasTrafficBaseline(wiped), 'wiped empty map must NOT be baseline-ready');
+  // 正确行为：seed，fresh 保持空
+  const reseed = markAlerted({}, items, now);
+  const f2 = pickFreshItems(items, reseed, now + 1);
+  assert(f2.length === 0, 'after reseed no alert on same pool');
+}
+
+// 6) prune 保留 24h 内
+const old = markAlerted({}, items, now - ALERT_COOLDOWN_MS * 5);
+const pruned = pruneAlertedMap(old, now);
+assert(Object.keys(pruned).length === 0, 'very old alerted entries pruned');
+
+console.log('\nAll traffic dedupe tests passed.');

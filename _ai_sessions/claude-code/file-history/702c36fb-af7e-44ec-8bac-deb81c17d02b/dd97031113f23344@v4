@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from app.notify.owner_push import build_owner_messages
+from app.sync.feishu_schema import task_to_fields
+from app.sync.writer import HUMAN_ACTION_FIELD_NAMES
+
+
+def test_task_to_fields_includes_action_fields():
+    """合并后 task_to_fields 应包含运营动作字段（映射层可见）。"""
+    task = {
+        "task_id": "T20260721-abc",
+        "biz_date": "2026-07-21",
+        "shop_name": "特米-UK",
+        "asin": "B0TEST",
+        "product_title": "English Title",
+        "product_title_cn": "G4 20W",
+        "anomaly_type": "sales_drop",
+        "level": "red",
+        "owner": "潘启豪",
+        "status": "open",
+        "closure_status": "处理中",
+        "reason": "人为补货延迟",
+    }
+    fields = task_to_fields(task)
+    assert fields["主键"] == "T20260721-abc"
+    assert fields["店铺"] == "特米-UK"
+    assert fields["ASIN"] == "B0TEST"
+    assert fields["中文名称"] == "G4 20W"
+    assert fields["负责人"] == "潘启豪"
+    # 运营动作字段存在
+    assert "是否属实" in fields
+    assert "原因" in fields
+    assert fields["原因"] == "人为补货延迟"
+    assert "采取动作" in fields
+    assert fields["闭环状态"] == "处理中"
+    assert fields["执行人"] == "潘启豪"  # 默认回落到 owner
+    assert "复查日期" in fields
+    assert "执行日期" in fields
+    # 系统日批写入必须剥离人工动作列
+    assert "闭环状态" in HUMAN_ACTION_FIELD_NAMES
+    assert "原因" in HUMAN_ACTION_FIELD_NAMES
+
+
+def test_build_owner_messages_groups_by_owner():
+    tasks = [
+        {
+            "task_id": "T1",
+            "shop_name": "特米-UK",
+            "asin": "A1",
+            "level": "red",
+            "anomaly_type": "sales_drop",
+            "owner": "潘启豪",
+            "status": "open",
+            "product_title_cn": "灯珠",
+            "value_summary": "当日销售额 7000 · 销售额环比 -30%",
+        },
+        {
+            "task_id": "T2",
+            "shop_name": "字同道合",
+            "asin": "A2",
+            "level": "orange",
+            "anomaly_type": "inventory_low",
+            "owner": "梦晴",
+            "status": "open",
+        },
+        {
+            "task_id": "T3",
+            "shop_name": "x",
+            "asin": "A3",
+            "level": "yellow",
+            "anomaly_type": "sales_drop",
+            "owner": "梦晴",
+            "status": "open",
+        },
+    ]
+    msgs = build_owner_messages(tasks, biz_date="2026-07-21")
+    owners = {m["owner"] for m in msgs}
+    assert owners == {"潘启豪", "梦晴"}
+    pan = next(m for m in msgs if m["owner"] == "潘启豪")
+    assert pan["red"] == 1 and pan["orange"] == 0
+    assert "T1" in pan["text"]
+    assert "任务表" in pan["text"]
+    assert "当日销售额" in pan["text"]

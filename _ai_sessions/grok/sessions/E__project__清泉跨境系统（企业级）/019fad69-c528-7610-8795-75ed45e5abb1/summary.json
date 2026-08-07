@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fad69-c528-7610-8795-75ed45e5abb1",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "基于异常类型与运营动作构建预测知识库",
+  "created_at": "2026-07-29T10:26:57.975148700Z",
+  "updated_at": "2026-07-30T01:12:03.137821800Z",
+  "num_messages": 606,
+  "num_chat_messages": 235,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 12,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "f785fdfd17c283e06404f34b3ce250506a7ea2cb",
+  "head_branch": "main",
+  "request_id": "1b02bca4-d865-45b7-93b8-f784c6958329",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T01:12:03.025145500Z",
+  "generated_title": "基于异常类型与运营动作构建预测知识库",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

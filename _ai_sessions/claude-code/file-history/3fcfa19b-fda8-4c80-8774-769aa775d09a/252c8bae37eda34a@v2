@@ -1,0 +1,60 @@
+# sellfox-bridge 赛狐 ↔ WMS 发货桥接程序
+
+独立运行的本地常驻程序，用官方 API 替换网页自动化，打通赛狐 ERP 与 WMS 的发货闭环。
+服务对象：同时使用赛狐 ERP 和 WMS 仓储的客户（当前：经贸商贸，1 个赛狐账号 ↔ 1 个 WMS 客户）。
+
+## 职责
+
+本程序不参与货流，只做三件事：
+
+1. **决策**：为赛狐"待处理"包裹选择最优 WMS 物流渠道（性价比 + 可用性，价卡在本地配置维护）
+2. **触发**：调赛狐 API 指派仓库/渠道并"物流下单"——赛狐经由已有三方仓通道把包裹推给 WMS
+3. **闭环**：轮询 WMS 出库状态，出库后调赛狐"称重发货"，赛狐标记已发货并回传平台（Temu 等）
+
+```
+包裹生命周期（本地状态机）：
+NEW → CHANNEL_ASSIGNED → ORDERED → WMS_SHIPPED → CLOSED
+                └──────────── 任一步失败 → FAILED（重试队列/告警）
+```
+
+## 双边 API 摘要
+
+### 赛狐（https://openapi.sellfox.com）
+- token：`GET /api/oauth/v2/token.json`（24h 有效，需缓存，失效重取）
+- 签名：`HMAC-SHA256(client_secret, sorted("access_token=..&client_id=..&method=post&nonce=..&timestamp=..&url=.."))`
+- 拉包裹：`POST /api/packageShip/v1/getPackagePage.json`（packageStatus=to_process）
+- 渠道列表：`POST /api/packageShip/queryShipChannel.json`（logisticsType=1 三方仓物流）
+- 指派仓库/渠道：`POST /api/packageShip/updatePackageDetail.json`
+- 物流下单：`POST /api/packageShip/applyTrackNo.json`
+- 称重发货：`POST /api/packageShip/weighingShipment.json`
+- 快速出库（备用，无需重量）：`POST /api/packageShip/quickOutbound.json`
+
+### WMS（对客户开放接口，POST JSON）
+- 签名：`key`(账号id) + `timestamp`(秒) + `sign = md5(key + api_secret + timestamp)`，±300s
+- **双客户**：昇新渠道用金猫 key，BLACKCAT 用黑猫 key（`config.wms.profiles` + `channels[].wms_profile`）
+- 查订单状态：`/orderInfo/remote/queryOrderStatus.html`（platformOrderNo）
+- 查运单号：`/orderInfo/remote/queryTrackingNumber.html`
+- 查库存：`/customer/remoteQueryInventory.html`
+
+## 已知缺口（第一期的取舍）
+
+| 缺口 | 第一期方案 | 长期方案 |
+|---|---|---|
+| WMS 无价卡/渠道可用性接口 | 价卡和渠道规则写在 `config.yaml` 本地维护 | WMS 增加价卡查询接口 |
+| WMS 不返回实际称重重量 | 称重发货用 SKU 档案预估重量（config 维护），或改用"快速出库"（不需要重量） | WMS 增加出库单实际重量接口 |
+
+## 运行
+
+```bash
+pip install -r requirements.txt
+cp config/config.example.yaml config/config.yaml   # 填入双边凭证
+python main.py                    # 常驻运行
+python main.py --once             # 只跑一轮（调试）
+python main.py --dry-run          # 只读不写：拉单+选渠道，打印决策，不调任何写接口
+```
+
+## 灰度上线建议
+
+1. `--dry-run` 跑几天，对比网页自动化的实际选择
+2. 白名单店铺（config `shop_whitelist`）先切 1 个店
+3. 全量后保留网页自动化脚本一周作回退

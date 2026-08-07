@@ -1,0 +1,7 @@
+# Memory Index
+
+- [主图精确还原决定](main-image-fidelity-decision.md) — 1688主图必须保真，核心白底主图走非生成式(抠图铺白)而非AI重画
+- [主图管线方案](main-image-pipeline.md) — M1每商品出5张主图：2白底(非生成)+2场景(grok)+1纯白底(强制)
+- [zapi生视频契约](zapi-video-api-contract.md) — 生视频image传字符串/seconds传字符串/仅i2v，与交接文档§7-A3不同
+- [源文件夹是变体合集](source-folders-are-variant-collections.md) — 图源文件夹混多型号，上架前必须OCR型号核对防货不对板
+- [M4浏览器环境](m4-browser-env.md) — M4用.venv-m4(Py3.12)；cookie半自动刷新；需企业卖家号；SDK混合模式(见docs/m4_findings.md)

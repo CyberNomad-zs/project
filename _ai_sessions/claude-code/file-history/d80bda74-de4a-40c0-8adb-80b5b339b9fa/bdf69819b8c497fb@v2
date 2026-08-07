@@ -1,0 +1,190 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def _num(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_str(v: Any) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, list):
+        if not v:
+            return None
+        return str(v[0])
+    return str(v)
+
+
+def _pct_change(current: Any, baseline: Any) -> float | None:
+    """Relative change (current - baseline) / abs(baseline)."""
+    c, b = _num(current), _num(baseline)
+    if c is None or b is None or b == 0:
+        return None
+    return (c - b) / abs(b)
+
+
+def _pp_change(current: Any, baseline: Any) -> float | None:
+    """Absolute percentage-point change; inputs may be 0-1 or 0-100."""
+    c, b = _num(current), _num(baseline)
+    if c is None or b is None:
+        return None
+    # normalize if looks like ratio
+    if abs(c) <= 1.5 and abs(b) <= 1.5:
+        return (c - b) * 100.0
+    return c - b
+
+
+def map_product_analyze_row(
+    raw: dict[str, Any],
+    *,
+    biz_date: str,
+    owner: str | None = None,
+    product_grade: str | None = None,
+) -> dict[str, Any]:
+    """Map Sellfox productAnalyze V2 row -> asin_daily columns."""
+
+    # compare fields: API often nests compare objects; support flat *Compare / *Qoq variants
+    def pick(*keys: str) -> Any:
+        for k in keys:
+            if k in raw and raw[k] is not None:
+                return raw[k]
+        return None
+
+    sale_price = pick("salePrice", "sale_price")
+    sale_price_base = pick(
+        "salePriceCompare",
+        "salePriceQoq",
+        "salePriceLast",
+        "preSalePrice",
+    )
+    # sometimes compare is dict {value, rate}
+    if isinstance(sale_price_base, dict):
+        sale_price_base = sale_price_base.get("value") or sale_price_base.get("compareValue")
+
+    order_num = pick("orderNum", "order_num")
+    order_base = pick("orderNumCompare", "orderNumQoq", "preOrderNum")
+    if isinstance(order_base, dict):
+        order_base = order_base.get("value") or order_base.get("compareValue")
+
+    sessions = pick("sessions", "session", "sessionTotal")
+    sessions_base = pick("sessionsCompare", "sessionsQoq", "preSessions")
+    if isinstance(sessions_base, dict):
+        sessions_base = sessions_base.get("value") or sessions_base.get("compareValue")
+
+    cvr = pick("conversionRate", "unitSessionPercentage", "cvr")
+    cvr_base = pick("conversionRateCompare", "conversionRateQoq", "preConversionRate")
+    if isinstance(cvr_base, dict):
+        cvr_base = cvr_base.get("value") or cvr_base.get("compareValue")
+
+    ad_cost = pick("adTotalCost", "adCost", "ad_cost")
+    ad_cost_base = pick("adTotalCostCompare", "adCostCompare", "preAdTotalCost")
+    if isinstance(ad_cost_base, dict):
+        ad_cost_base = ad_cost_base.get("value") or ad_cost_base.get("compareValue")
+
+    rating = pick("rating", "star", "stars")
+    rating_base = pick("ratingCompare", "preRating")
+    if isinstance(rating_base, dict):
+        rating_base = rating_base.get("value") or rating_base.get("compareValue")
+
+    brand = pick("brandNameList", "brandName", "brand")
+    brand_s = _first_str(brand) if not isinstance(brand, str) else brand
+
+    shop_name = str(pick("shopName", "shop_name") or "")
+    marketplace = str(pick("marketplaceName", "marketplace", "site") or "")
+    asin = str(pick("asin", "ASIN") or "")
+
+    # explicit rate fields from API if present
+    sale_change = pick("salePriceChangeRate", "salePriceRate", "salePriceQoqRate")
+    if sale_change is None:
+        sale_change = _pct_change(sale_price, sale_price_base)
+    else:
+        sale_change = _num(sale_change)
+
+    order_change = pick("orderNumChangeRate", "orderNumRate")
+    if order_change is None:
+        order_change = _pct_change(order_num, order_base)
+    else:
+        order_change = _num(order_change)
+
+    sessions_change = pick("sessionsChangeRate", "sessionsRate")
+    if sessions_change is None:
+        sessions_change = _pct_change(sessions, sessions_base)
+    else:
+        sessions_change = _num(sessions_change)
+
+    cvr_pp = pick("conversionRateChange", "conversionRateDiff")
+    if cvr_pp is None:
+        cvr_pp = _pp_change(cvr, cvr_base)
+    else:
+        cvr_pp = _num(cvr_pp)
+
+    ad_cost_change = pick("adTotalCostChangeRate", "adCostRate")
+    if ad_cost_change is None:
+        ad_cost_change = _pct_change(ad_cost, ad_cost_base)
+    else:
+        ad_cost_change = _num(ad_cost_change)
+
+    rating_change = None
+    if rating is not None and rating_base is not None:
+        rating_change = _num(rating) - _num(rating_base) if _num(rating) is not None and _num(rating_base) is not None else None
+
+    return {
+        "biz_date": biz_date,
+        "marketplace": marketplace,
+        "shop_name": shop_name,
+        "shop_id": str(pick("shopId", "shop_id") or ""),
+        "asin": asin,
+        "parent_asin": pick("parentAsin", "parent_asin"),
+        "sku": pick("sku", "SKU"),
+        "msku": pick("msku", "MSKU"),
+        "title": pick("title", "commodityName", "productName"),
+        "brand": brand_s,
+        "open_date": pick("openDate", "open_date"),
+        "product_grade": product_grade,
+        "owner": owner,
+        "sale_price": _num(sale_price),
+        "sale_num": _num(pick("saleNum", "sale_num")),
+        "order_num": _num(order_num),
+        "avg_sale_price": _num(pick("avgSalePrice", "avg_sale_price")),
+        "sale_price_change_pct": sale_change,
+        "order_num_change_pct": order_change,
+        # baselines stored in raw; also attach for rules via extra keys
+        "sale_price_baseline": _num(sale_price_base),
+        "order_num_baseline": _num(order_base),
+        "sessions": _num(sessions),
+        "sessions_baseline": _num(sessions_base),
+        "sessions_change_pct": sessions_change,
+        "page_view": _num(pick("pageView", "pageViews", "pv")),
+        "conversion_rate": _num(cvr),
+        "conversion_rate_change_pp": cvr_pp,
+        "buy_box_percent": _num(pick("buyBoxPercent", "buyBoxPercentage", "buyBox")),
+        "ad_impression": _num(pick("adTotalImpression", "adImpression", "impressions")),
+        "ad_clicks": _num(pick("adClicks", "clicks")),
+        "ad_ctr": _num(pick("adClickRate", "ctr", "CTR")),
+        "ad_cost": _num(ad_cost),
+        "ad_cost_change_pct": ad_cost_change,
+        "cpc": _num(pick("cpc", "CPC")),
+        "acos": _num(pick("acos", "ACoS", "ACoS")),
+        "ad_sales": _num(pick("adTotalSales", "adSales", "adSalePrice")),
+        "available": _num(pick("available", "fbaAvailable", "fbaInventory")),
+        "in_transit": _num(pick("inTransit", "inboundShipped")),
+        "available_days": _num(pick("availableDays", "fbaAvailableDays")),
+        "inv_age_365_plus": _num(pick("invAge365PlusDays", "invAge365Plus")),
+        "rating": _num(rating),
+        "rating_change": rating_change,
+        "rating_count": _num(pick("ratingCount", "rating_count")),
+        "low_review_num": _num(pick("lowReviewNum", "low_review_num")),
+        "review_num": _num(pick("reviewNum", "review_num")),
+        "raw_json": raw,
+        # helper for rules (7d style if API provides)
+        "seven_sale_num": _num(pick("sevenSaleNum", "saleNum7d")),
+        "seven_sale_price": _num(pick("sevenSalePrice")),
+        "zero_order_streak": _num(pick("zeroOrderDays", "continuousNoOrderDays")),
+    }

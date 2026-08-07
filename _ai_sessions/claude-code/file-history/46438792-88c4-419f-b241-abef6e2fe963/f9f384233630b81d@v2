@@ -1,0 +1,229 @@
+"""店铺名称规范化与按店飞书子表注册表。
+
+规范名（canonical）用于：
+  - 子表命名：ASIN每日数据__Ledvia-UK
+  - 写入路由：raw shop_name → canonicalize → 子表 table_id
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Iterable
+
+from app.config import ROOT_DIR, get_app_config, get_settings
+
+logger = logging.getLogger(__name__)
+
+# 默认别名 → 规范店名
+DEFAULT_SHOP_ALIASES: dict[str, str] = {
+    "LEDVIE": "Ledvia-UK",
+    "Ledvia": "Ledvia-UK",
+    "Ledvia-UK": "Ledvia-UK",
+    "ledvia": "Ledvia-UK",
+    "ledvie": "Ledvia-UK",
+    "NOTTAC": "Nottac-UK",
+    "Nottac": "Nottac-UK",
+    "Nottac-UK": "Nottac-UK",
+    "nottac": "Nottac-UK",
+    "特米": "特米-UK",
+    "特米-UK": "特米-UK",
+    "昇新": "昇新-UK",
+    "昇新-UK": "昇新-UK",
+    "SHENGXIN": "昇新-UK",
+    "起的快": "起的快-UK",
+    "起的快-UK": "起的快-UK",
+    "字同": "字同道合",
+    "字同道合": "字同道合",
+}
+
+# 逻辑表 kind → 母表中文名（与 TABLE_SPECS 一致）
+KIND_TO_MOTHER_NAME: dict[str, str] = {
+    "asin_daily": "ASIN每日数据",
+    "tasks": "异常任务",
+    "actions": "运营动作记录",
+    "config": "配置表",
+    "daily_summary": "每日汇总",
+    "product_master": "产品主档案",
+}
+
+TABLE_KINDS: tuple[str, ...] = tuple(KIND_TO_MOTHER_NAME.keys())
+
+
+def load_alias_map() -> dict[str, str]:
+    m = dict(DEFAULT_SHOP_ALIASES)
+    cfg = get_app_config()
+    extra = cfg.get("shop_aliases") or {}
+    if isinstance(extra, dict):
+        for k, v in extra.items():
+            if k and v:
+                m[str(k).strip()] = str(v).strip()
+    return m
+
+
+def canonicalize_shop(name: str | None, aliases: dict[str, str] | None = None) -> str:
+    """原始店名 → 规范名；空串返回空串。"""
+    if not name:
+        return ""
+    name = str(name).strip()
+    if not name:
+        return ""
+    aliases = aliases if aliases is not None else load_alias_map()
+    if name in aliases:
+        return aliases[name]
+    lower = {k.lower(): v for k, v in aliases.items()}
+    return lower.get(name.lower(), name)
+
+
+def shop_match_variants(
+    canonical: str, aliases: dict[str, str] | None = None
+) -> list[str]:
+    """规范名对应的全部写法（含自身），规范名在前。"""
+    aliases = aliases if aliases is not None else load_alias_map()
+    names = {canonical}
+    for alias, can in aliases.items():
+        if can == canonical:
+            names.add(alias)
+    rest = sorted(n for n in names if n != canonical)
+    return [canonical] + rest
+
+
+def list_canonical_shops_from_names(names: Iterable[str]) -> list[str]:
+    aliases = load_alias_map()
+    seen: set[str] = set()
+    out: list[str] = []
+    for n in names:
+        can = canonicalize_shop(n, aliases)
+        if can and can not in seen:
+            seen.add(can)
+            out.append(can)
+    return sorted(out)
+
+
+def list_canonical_shops_from_db(db_path: Path | None = None) -> list[str]:
+    from app.store.db import Database
+
+    settings = get_settings()
+    path = Path(db_path or settings.db_path)
+    if not path.exists():
+        return list_canonical_shops_from_names(load_alias_map().values())
+    db = Database(path)
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT shop_name FROM asin_daily "
+            "WHERE shop_name IS NOT NULL AND shop_name != ''"
+        ).fetchall()
+    raw = [str(r["shop_name"]) for r in rows]
+    cans = list_canonical_shops_from_names(raw)
+    if not cans:
+        cans = list_canonical_shops_from_names(load_alias_map().values())
+    return cans
+
+
+def child_table_name(mother_name: str, canonical_shop: str) -> str:
+    """子表命名：ASIN每日数据__Ledvia-UK"""
+    return f"{mother_name}__{canonical_shop}"
+
+
+def parse_child_table_name(name: str) -> tuple[str, str] | None:
+    """解析 母表名__店名 → (mother, shop)；非分表名返回 None。"""
+    if "__" not in name:
+        return None
+    mother, shop = name.rsplit("__", 1)
+    if not mother or not shop:
+        return None
+    return mother, shop
+
+
+@dataclass
+class ShopTableRegistry:
+    """shop → {kind: table_id}"""
+
+    data: dict[str, dict[str, str]] = field(default_factory=dict)
+    path: Path | None = None
+
+    def get(self, canonical_shop: str, kind: str) -> str | None:
+        shop = self.data.get(canonical_shop) or {}
+        tid = shop.get(kind)
+        return tid if tid else None
+
+    def set(self, canonical_shop: str, kind: str, table_id: str) -> None:
+        self.data.setdefault(canonical_shop, {})[kind] = table_id
+
+    def shops(self) -> list[str]:
+        return sorted(self.data.keys())
+
+    def all_table_ids(self, kind: str) -> list[tuple[str, str]]:
+        """[(shop, table_id), ...]"""
+        out = []
+        for shop, kinds in sorted(self.data.items()):
+            tid = kinds.get(kind)
+            if tid:
+                out.append((shop, tid))
+        return out
+
+    def save(self, path: Path | None = None) -> Path:
+        p = Path(path or self.path or default_registry_path())
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w", encoding="utf-8") as f:
+            json.dump(self.data, f, ensure_ascii=False, indent=2)
+        self.path = p
+        return p
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> ShopTableRegistry:
+        p = Path(path or default_registry_path())
+        if not p.exists():
+            return cls(data={}, path=p)
+        try:
+            with p.open("r", encoding="utf-8") as f:
+                raw = json.load(f) or {}
+            if not isinstance(raw, dict):
+                return cls(data={}, path=p)
+            data: dict[str, dict[str, str]] = {}
+            for shop, kinds in raw.items():
+                if isinstance(kinds, dict):
+                    data[str(shop)] = {
+                        str(k): str(v) for k, v in kinds.items() if k and v
+                    }
+            return cls(data=data, path=p)
+        except Exception:
+            logger.exception("加载 shop table registry 失败: %s", p)
+            return cls(data={}, path=p)
+
+
+def default_registry_path() -> Path:
+    settings = get_settings()
+    # 允许 env / 配置覆盖
+    cfg = get_app_config()
+    sync = cfg.get("sync") or {}
+    custom = sync.get("shop_tables_path") or ""
+    if custom:
+        p = Path(custom)
+        if not p.is_absolute():
+            p = ROOT_DIR / p
+        return p
+    return Path(settings.data_dir) / "feishu_shop_tables.json"
+
+
+def dual_write_enabled() -> bool:
+    cfg = get_app_config()
+    sync = cfg.get("sync") or {}
+    return bool(sync.get("dual_write_shop_tables", True))
+
+
+def group_rows_by_canonical_shop(
+    rows: list[dict[str, Any]],
+    *,
+    shop_key: str = "shop_name",
+) -> dict[str, list[dict[str, Any]]]:
+    """按规范店名分组；无法解析的进 key ''。"""
+    aliases = load_alias_map()
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        raw = r.get(shop_key) or r.get("店铺") or ""
+        can = canonicalize_shop(str(raw) if raw else "", aliases)
+        groups.setdefault(can, []).append(r)
+    return groups

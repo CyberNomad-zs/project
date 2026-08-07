@@ -1,0 +1,89 @@
+# -*- coding: utf-8 -*-
+"""
+实时探针：诊断【待处理】视图切换 + 订单总数读取为何得到 0。
+复用已登录的持久化 profile（无需重新登录）。只读，不做任何变更。
+输出：待处理 tab 定位、点击后等待列表、可见行数、所有 el-pagination__total 文本、
+      当前可见 el-table 的行数，以及疑似“共 N 条”文字。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+import re
+
+
+def scan_frame(fr, tag):
+    """在单个 frame 里统计表格/分页/总数文字。"""
+    try:
+        rows = fr.query_selector_all(".el-table__row")
+        totals = fr.query_selector_all(".el-pagination__total")
+        body = ""
+        try:
+            body = fr.inner_text("body")
+        except Exception:
+            pass
+        gongs = re.findall(r"共\s*\d+\s*条", body)
+        tot_txt = [ (t.inner_text() or "").strip() for t in totals ]
+        print(f"  [{tag}] url={fr.url}")
+        print(f"      el-table__row={len(rows)}  pagination__total={len(totals)} {tot_txt}  共N条={gongs[:5]}")
+        return len(rows), tot_txt, gongs
+    except Exception as ex:
+        print(f"  [{tag}] frame scan err: {ex}")
+        return 0, [], []
+
+
+def dump_totals(page, tag):
+    print(f"\n===== [{tag}]  frames={len(page.frames)} =====")
+    for i, fr in enumerate(page.frames):
+        scan_frame(fr, f"frame{i}")
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        for _ in range(30):
+            time.sleep(1)
+            if page.query_selector(".el-table"):
+                break
+        time.sleep(3)
+        dump_totals(page, "落地页(默认视图)")
+
+        # 找“待处理”可点击元素并打印其外层结构
+        print("\n----- 定位『待处理』候选 -----")
+        cands = page.query_selector_all("text=待处理")
+        print("匹配 text=待处理 的元素数:", len(cands))
+        for i, c in enumerate(cands):
+            try:
+                cls = c.get_attribute("class")
+                outer = page.evaluate("e=>e.outerHTML.slice(0,160)", c)
+                print(f"  [{i}] class={cls}\n       {outer}")
+            except Exception as ex:
+                print(f"  [{i}] err {ex}")
+
+        # 点第一个待处理，等待网络空闲再读
+        try:
+            page.click("text=待处理", timeout=6000)
+            print("\n已点击『待处理』，等待列表刷新...")
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except Exception:
+                pass
+            time.sleep(3)
+        except Exception as ex:
+            print("点击待处理失败:", ex)
+        dump_totals(page, "点击待处理后")
+
+        print("\nDONE，浏览器保持 20 秒。")
+        time.sleep(20)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+"""M4 · 浏览器会话：加载 1688 登录 cookie，用 Playwright 承载页面(后续注入 JS SDK)。
+
+第一步只做：验证 config/1688_cookies.json 的登录态是否还有效（文档风险点#3 cookie过期）。
+"""
+import json
+from pathlib import Path
+from contextlib import contextmanager
+
+from playwright.sync_api import sync_playwright
+
+ROOT = Path(__file__).resolve().parents[2]
+COOKIE_PATH = ROOT / "config" / "1688_cookies.json"
+
+UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
+
+
+def load_cookies(path: Path = COOKIE_PATH) -> list:
+    """把浏览器扩展导出的 cookie 转成 Playwright 格式。"""
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    out = []
+    for c in raw:
+        pc = {
+            "name": c["name"],
+            "value": c["value"],
+            "domain": c.get("domain", ".1688.com"),
+            "path": c.get("path", "/"),
+            "secure": True,
+        }
+        exp = c.get("expirationDate") or c.get("expires")
+        if isinstance(exp, (int, float)) and exp > 0:
+            pc["expires"] = float(exp)
+        out.append(pc)
+    return out
+
+
+@contextmanager
+def browser_session(headless: bool = True, cookies: bool = True):
+    """开一个带 1688 登录态的浏览器页面。用法: with browser_session() as page: ..."""
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=headless, args=["--disable-blink-features=AutomationControlled"])
+        ctx = browser.new_context(user_agent=UA, locale="zh-CN",
+                                  viewport={"width": 1440, "height": 900})
+        if cookies:
+            ctx.add_cookies(load_cookies())
+        page = ctx.new_page()
+        try:
+            yield page
+        finally:
+            ctx.close()
+            browser.close()
+
+
+def check_login(url: str = "https://work.1688.com/", shot: Path = None) -> dict:
+    """打开卖家工作台，判断登录态是否有效。"""
+    result = {}
+    with browser_session() as page:
+        page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(3000)
+        final_url = page.url
+        title = page.title()
+        # 落到 login 域名/路径 => 未登录
+        logged_in = ("login" not in final_url.lower()) and ("login" not in title.lower())
+        result = {"start_url": url, "final_url": final_url, "title": title, "logged_in": logged_in}
+        if shot:
+            shot = Path(shot); shot.parent.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=str(shot), full_page=False)
+            result["screenshot"] = str(shot)
+    return result

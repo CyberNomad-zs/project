@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.config import Settings, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+# Columns that belong to system sync (never "human" fields in local schema)
+SYSTEM_COLUMNS = {
+    "biz_date",
+    "marketplace",
+    "shop_name",
+    "shop_id",
+    "asin",
+    "parent_asin",
+    "sku",
+    "msku",
+    "title",
+    "brand",
+    "open_date",
+    "product_grade",
+    "owner",
+    "sale_price",
+    "sale_num",
+    "order_num",
+    "avg_sale_price",
+    "sale_price_change_pct",
+    "order_num_change_pct",
+    "sessions",
+    "sessions_change_pct",
+    "page_view",
+    "conversion_rate",
+    "conversion_rate_change_pp",
+    "buy_box_percent",
+    "ad_impression",
+    "ad_clicks",
+    "ad_ctr",
+    "ad_cost",
+    "ad_cost_change_pct",
+    "cpc",
+    "acos",
+    "ad_sales",
+    "available",
+    "in_transit",
+    "available_days",
+    "inv_age_365_plus",
+    "rating",
+    "rating_change",
+    "rating_count",
+    "low_review_num",
+    "review_num",
+    "raw_json",
+}
+
+
+def write_rows(
+    rows: list[dict[str, Any]],
+    *,
+    db: Database,
+    sync_run_id: int,
+    sink: str = "sqlite",
+    settings: Settings | None = None,
+) -> int:
+    """Write mapped ASIN daily rows to configured sinks.
+
+    sink: sqlite | feishu | both
+    Feishu credentials optional; missing creds only logs warning when requested.
+    """
+    settings = settings or get_settings()
+    # strip helper keys not in DB before upsert
+    db_rows = []
+    for r in rows:
+        db_rows.append({k: v for k, v in r.items() if k in SYSTEM_COLUMNS or k == "raw_json"})
+
+    n = 0
+    if sink in ("sqlite", "both"):
+        n = db.upsert_asin_rows(db_rows, sync_run_id)
+        logger.info("SQLite upserted %s asin_daily rows", n)
+
+    if sink in ("feishu", "both"):
+        if not settings.has_feishu:
+            logger.warning("sink 需要飞书但凭证未配置，已跳过飞书写入")
+        else:
+            n_feishu = _write_feishu(db_rows, settings)
+            logger.info("Feishu wrote %s rows", n_feishu)
+            n = max(n, n_feishu)
+
+    return n
+
+
+def _write_feishu(rows: list[dict[str, Any]], settings: Settings) -> int:
+    """Batch write to Feishu bitable (system fields only)."""
+    from app.clients.feishu import FeishuClient
+
+    app_token = settings.feishu_bitable_app_token
+    table_id = settings.feishu_table_asin_daily
+    if not app_token or not table_id:
+        logger.warning("FEISHU_BITABLE_APP_TOKEN / FEISHU_TABLE_ASIN_DAILY 未配置")
+        return 0
+
+    # Field name mapping: local key -> 飞书列名（需与多维表列名一致）
+    field_map = {
+        "biz_date": "日期",
+        "marketplace": "站点",
+        "shop_name": "店铺",
+        "asin": "ASIN",
+        "parent_asin": "父ASIN",
+        "sku": "SKU",
+        "msku": "MSKU",
+        "title": "产品名称",
+        "brand": "品牌",
+        "open_date": "上架时间",
+        "product_grade": "产品等级",
+        "owner": "负责人",
+        "sale_price": "销售额",
+        "sale_num": "销量",
+        "order_num": "订单量",
+        "avg_sale_price": "平均售价",
+        "sale_price_change_pct": "销售额变化",
+        "order_num_change_pct": "订单量变化",
+        "sessions": "Sessions",
+        "sessions_change_pct": "Sessions变化",
+        "page_view": "PageViews",
+        "conversion_rate": "转化率",
+        "conversion_rate_change_pp": "转化率变化pp",
+        "buy_box_percent": "BuyBox",
+        "ad_impression": "广告曝光",
+        "ad_clicks": "广告点击",
+        "ad_ctr": "CTR",
+        "ad_cost": "广告花费",
+        "ad_cost_change_pct": "广告花费变化",
+        "cpc": "CPC",
+        "acos": "ACOS",
+        "ad_sales": "广告销售额",
+        "available": "FBA可售",
+        "in_transit": "在途库存",
+        "available_days": "可售天数",
+        "inv_age_365_plus": "365+库龄",
+        "rating": "星级",
+        "rating_change": "星级变化",
+        "rating_count": "评分数",
+        "low_review_num": "中差评数",
+        "review_num": "Review数",
+    }
+
+    records = []
+    for r in rows:
+        fields = {}
+        for k, title in field_map.items():
+            if k in r and r[k] is not None:
+                fields[title] = r[k]
+        if fields:
+            records.append({"fields": fields})
+
+    if not records:
+        return 0
+
+    with FeishuClient(settings) as client:
+        # Feishu batch limit 500; use 100 for safety
+        written = 0
+        batch = 100
+        for i in range(0, len(records), batch):
+            chunk = records[i : i + batch]
+            client.bitable_batch_create(app_token, table_id, chunk)
+            written += len(chunk)
+    return written

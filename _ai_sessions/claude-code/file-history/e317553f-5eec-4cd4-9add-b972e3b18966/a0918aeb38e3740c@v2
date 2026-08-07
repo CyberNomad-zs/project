@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 300px; font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; color: #1f2329; }
+    h1 { font-size: 14px; margin: 0 0 10px; }
+    .row { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f0f0f0; }
+    .row b { font-weight: 600; }
+    .muted { color: #8a9099; font-size: 12px; }
+    .big { font-size: 20px; font-weight: 700; color: #1456f0; }
+    .btns { display: flex; gap: 8px; margin-top: 12px; }
+    button { flex: 1; padding: 7px 0; border: 1px solid #dcdfe6; background: #fff; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    button.primary { background: #1456f0; color: #fff; border-color: #1456f0; }
+    #msg { margin-top: 8px; font-size: 12px; min-height: 16px; }
+    .ok { color: #16a34a; } .err { color: #d92d20; }
+    a { color: #1456f0; text-decoration: none; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Temu 店铺监测</h1>
+  <div class="row"><span>在售中</span><span class="big" id="onSale">—</span></div>
+  <div class="row"><span>商品总数</span><b id="total">—</b></div>
+  <div class="row"><span>未发布 / 已下架</span><b id="others">—</b></div>
+  <div class="row"><span>上次数据时间</span><span class="muted" id="ts">—</span></div>
+  <div class="row"><span>飞书配置</span><b id="cfg">—</b></div>
+  <div class="btns">
+    <button class="primary" id="check">立即检查</button>
+    <button id="test">测试飞书</button>
+  </div>
+  <div id="msg"></div>
+  <div style="margin-top:10px;"><a href="#" id="opt">⚙ 打开设置</a></div>
+  <script src="popup.js"></script>
+</body>
+</html>

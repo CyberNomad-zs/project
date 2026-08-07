@@ -1,0 +1,73 @@
+---
+name: feishu-caiwu-zhongtai
+description: 财务中台项目——把三张财务 Excel 接入飞书多维表格的第一版范围与关键决策
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 0b48b053-41a9-44e9-8975-0789562c48b3
+---
+
+项目在 `E:\project\财务中台`（非代码仓库，是需求 `要求.txt` + 两套脱敏 Excel）。目标：把 **3 张表接入现有飞书财务看板**（第一版）。
+
+**三张表：**
+- 边际利润表（`2026年边界利润表-模板.xlsx`）：4 平台明细页 AMAZON/TK/SHEIN/TEMU + `合计`页；科目大类 10（…边界利润率）×科目明细~26×店铺×站点(UK/DE)×12月。**平台明细页约 42% 公式被脱敏删列打断成 `#REF!`（占比分母、毛利率口径），需按业务重建；`合计`页公式完好。**
+- 现金流月报（`现金流月报表-2026.06.xlsx`）：隐藏日记账(按账户/币种) → `账户汇总`(6 币种 CNY/EUR/GBP/USD/JPY/HKD，汇率行折算) → `报表-5`(~22 账户余额 + 资产负债块)；两表间勾稽 `K42`。
+- 财务岗任务流：主表 21 任务 + 14 分解子表。**当前无「状态/负责人/计划完成日/进度」列，需新增**（未开始/进行中/已完成/延期）。
+
+**关键决策（2026-07-07）：**
+- 目标平台：飞书多维表格 + 仪表盘 + 自动化；策略=「记录表 + 视图/仪表盘」重建，不照搬 Excel 矩阵版式。
+- **利润表第一版粒度 = 店铺×站点，预留 SKU 字段**（后续可下钻，不返工）。
+- 第一版工期估计 ≈ 2.5–3.5 周（单人，12–18 工作日）；边际利润表最耗时。
+
+**现有飞书中台结构（2026-07-07 截图盘点）：** Base「财务中台」@ 清泉数字科技(南京)/董谨瑜，URL dn86p8pyqr.feishu.cn/base/Fm75bsdF2awKa3skNZ1cJ2qynzb。已有表：
+- 财务收支概览看板（指标卡+头寸表 公司×CNY/CNH/USD/EUR/GBP/HKD）
+- 日记账汇总表（公司×6币种余额）、汇总(汇率)（账户×币种矩阵，18账户）、月度可用资金存量趋势图
+- 日记账（分组，各主体各一张：现金备用金[日期/摘要/费用类型/收付款方/收支金额/备用金余额/自动编号]、微信、清泉、金猫澜航、金猫商贸、六个牛、特米、知盐、各乒乓、汇丰HKD/GBP/USD…）
+- 每月1号汇率记录（=现有汇率表，字段未见）、合同表（字段未见）、未开发票[日期/名称/摘要/对方账户/收支金额/发票/发票类型/负责人/创建时间/创建人]
+- 进出口数据表[出口年度/申报日期/出口日期/入账月份/报关单序号/报关单号/合同协议号]（对接任务流「报关进项」+ 利润表头程）
+- 用章用印用卡申请[申请编号/状态/审批流程/发起时间/完成时间/发起人/部门]（105条）、开票工作流
+
+**新旧映射结论：** 现金流「汇率表/账户流水/账户余额」→ 复用现有 每月1号汇率记录 / 日记账 / 日记账汇总表+汇总(汇率)+头寸表，不新建；只需补「月度资金报表右侧资产负债块 + 勾稽」。边际利润表、任务流 = 新建（现有无对应）。合同表→未来应收应付→现金缺口；未开发票→应收。
+
+**已确认字段（截图）：** 合同表[合同编号/名称/金额/签订日期/状态/负责人/签订双方/开始日期/结束日期/附件——缺收付方向&到期计划]；每月1号汇率记录[日期/美元/英镑/欧元/港元汇率——缺JPY/CNH]；日记账[日期/摘要/费用类型/对方账户/收支金额/账户余额(滚动公式)/货币类型/发票类型/负责人/开票状态/自动编号]。
+
+**4 项确认已锁定（2026-07-07）：** ①汇率维持美元/英镑/欧元/港元4币种，CNH按1:1，无日元 ②合同表补「收付方向」单选+「合同收付计划」子表 ③利润「其他项目」=其他收入+退税收入+税金收入+情趣利润+黑猫利润−其他支出−提款手续费−中转费−操作费−快递罚款 ④主数据映射按草稿（仅昇新法人待补）。
+
+**关键前置——主数据映射表：** 同一实体三套名（店铺/法人/账户）须统一。已推断：特米=南京特米电子商务/特米乒乓；英茂=呼和浩特英茂商贸；字同=字同道合传媒(杭州)；起的快=呼和浩特起的快商贸；NOTTAC=南京六个牛商贸(Nottac_uk@)；Ledvia=枣庄全杰电子商务(Ledvia_uk@)；昇新法人待确认。
+
+**已产出：** 4 份 artifact（评估报告/施工图v1/集成蓝图v2/建表交底单v1）；种子文件 `E:\project\财务中台\飞书建表\`（01主数据映射~10全年任务实例，10个xlsx+建表交底单.html+README；05月度实例15固定任务、10全年193条实例、09日历矩阵）。
+
+**飞书 CLI（2026-07-07 装）：** `@larksuite/cli` v1.0.65（官方字节跳动，全局装，`lark-cli` 41MB二进制可用）；另用 `npx skills add https://open.feishu.cn` 装了 27 个 Lark agent skills 到 `E:\project\财务中台\.agents\skills\`（含 **lark-base**=多维表格、lark-sheets、lark-doc 等，以完整agent权限运行）。CLI 有 `base` 域可程序化建表/字段/记录/视图。**状态=not_configured，待认证**：需 `lark-cli config init --new`（浏览器出验证URL）→ `lark-cli auth login --recommend`（Device Flow，可 `--no-wait --json` 拿URL让用户授权再 `--device-code` 完成）→ `lark-cli auth status`。认证账号需能访问 董谨瑜 的「财务中台」Base（当前张帅账号显示"外部"，注意跨租户权限）。
+
+**CLI 认证已完成（2026-07-07，用户张帅 ou_32b139d04dfc17b7b4ba48e7be177786）**，拿到全套 base 读写权限；财务中台 Base token=`Fm75bsdF2awKa3skNZ1cJ2qynzb`（is_advanced=true，40张表）。关键表ID：合同表 tblD0A1COSwXxIqg、每月1号汇率记录 tblOCis9wd6RU2Tm、进出口数据表 tblyv5FY2WuZYm2p、主数据映射表 tbl5YnupCUR2VT1y、任务目录表 tbl7sM45eJWtM318、月度任务实例表 tbl6pjrDQHbjJs7Z。
+
+**任务流已在飞书跑通（用户手工导入+我CLI补数据）：** 任务目录表19条、主数据映射表19条；月度任务实例表已用 lark-cli +record-batch-create 灌入**全年2026共193条**（每月15固定+季度/年度轮值，6月17条），任务字段关联到目录，展示状态/逾期天数公式自动算（计划完成日留空则不判延期）。状态字段选项含未开始/进行中/已完成。
+
+**任务流视图已建：** 月度任务实例表加了「⚠️延期预警」(vewHy2Xfzy,筛选展示状态=延期)、「📊按状态分组」(vewfyFr1Pm,按展示状态分组)。行标红是飞书UI-only，需用户手点（视图→填色→展示状态=延期→红）。
+
+**现金流结构已建（CLI，2026-07-07）：** ①合同表(tblD0A1COSwXxIqg)加了 收付方向(fldvgedfTT,单选应收/应付)+币种(fld87dmKb4)；②新建「合同收付计划」表 tblbphNHqAWkEm4w（计划项/关联合同双向/期数/收付方向/金额/币种/到期日/状态/备注，合同表自动多出"收付计划"字段fld8u1kSWI）；③新建「月度资金报表」表 tblkzftOwOQAKmnl（项目/所属月份/区块/金额/责任方/备注，已灌7月16项资产负债块，金额留空手填）。账户余额/折算复用现有日记账+每月1号汇率记录（未再建）。
+
+**月度资金报表金额改自动汇总换汇（2026-07-08）：** `月度资金报表`(tblkzftOwOQAKmnl)的`金额`字段(flddpymeGW)已从 number **就地转为 formula**（number→formula 在 CLI 白名单内可行，`+field-update --i-have-read-guide --yes`，字段ID不变故下游`资金缺口.现金合计`不断链）。公式=`IF([项目]="银行存款", 各公司CNY+CNH+USD/EUR/GBP/HKD×月度汇率 求和, [手工金额])`，汇率按 `TEXT([所属月份],"YYYY-MM-DD")` 匹配`每日汇率记录.日期`(文本)。新增`手工金额`字段(fldOxARI4f)承接其余15行手工值，银行存款行的手工金额已清空(空=自动行)。**仅银行存款走自动，其余15行=手工金额**（用户2026-07-08确认）。验证：银行存款自动算出=2,824,700(=5家公司余额×7月汇率)，现金合计3,891,810.5，缺口3,301,810.5✅。**源表原本几乎为空、已填占位数据**：`每日汇率记录`(tblOCis9wd6RU2Tm，实际表名非"每月1号"，字段美元/英镑/欧元/港元汇率+日期(文本)+附件)原0条→填7月1行(USD7.2/GBP9.1/EUR7.8/HKD0.92)；`日记账汇总表`(tblG2zd66fcfgk7t，字段公司名称(select)+CNY/CNH/USD/EUR/GBP/HKD)原2条→5家公司余额(清泉数科/金猫商贸/六个牛/特米/澜航)。**采购部李瑾5行库存商品**(备注="后期关联采购数据")仍为手工值，待建`采购数据`表后再 link（用户明确"后期"，未提前建）。
+
+**任务到期自动提醒已建（2026-07-08，#5）：** 用 CLI `+workflow-create` 建了 Base 自动化「财务任务到期自动提醒」workflow_id=`wkfZUnIQnJTVd7Oe`，用 **ReminderTrigger**（按记录日期字段触发，比 Timer+Find+Loop 简洁）：表`月度任务实例表`、日期字段`计划完成日`、offset 0/unit DAY/hour 9（当天9点触发）、condition_list 筛选`状态`isNot`已完成` → `LarkMessageAction` 发卡片给负责人(receiver ref `$.trigger.fld2iglpUQ`，内容 ref 任务名`fldTmhF34W`/计划完成日`fld4vEmI9o`，带"查看任务"openLink=recordLink)。**⚠️ 状态=disabled 且无法用 CLI 启用**：`+workflow-enable` 报 `800004011 cross tenant forbidden`——张帅是该 Base 的外部/跨租户账号，记录/字段可写但工作流启用属高权限更新操作被禁（现有全部5个 workflow 都是 disabled 同因）。**需 Base 所属租户内用户（董谨瑜）在飞书UI手动启用**：自动化→财务任务到期自动提醒→开启。ReminderTrigger/AddRecordTrigger 等记录触发器输出记录字段用 `$.{stepId}.{fieldId}`；select 筛选值 value_type=option 只需 name；trigger condition_list=[AndCondition]（元素间OR，内部conjunction只支持and，多值用 containsAny）。
+
+**#1 明细账→汇总表 仍待评估**（下一步）：各公司明细日记账最新滚动余额→日记账汇总表 目前手工，未自动。约20张明细账需逐个映射。
+
+**CLI 经验补充（2026-07-08）：** field/record 命令用 `--base-token`（非 --app-token）；record-list 输出用 `--format json`（非 --json）；**record-batch-create 结构=`{"fields":["列名"...],"rows":[[值...]]}`**（非 records/fields对象）；batch-update 一次一个 patch 应用到 record_id_list，逐行不同值须逐条调用；**--json 内联双引号会被 PowerShell 吞→必须 @file，且文件要 UTF-8 无 BOM**（用 `[System.IO.File]::WriteAllText($p,$json,(New-Object System.Text.UTF8Encoding($false)))`）；方法级限流 code 800004135 "limited" + 瞬时网络 EOF 都常见，全部 CLI 调用套 4–5 次重试；field-create 不接受 `property` 键，数字字段只传 `{"name","type":"number"}`；公式日期格式化用 `TEXT(date,"YYYY-MM-DD")`（非 DATETIME_FORMAT），`SUM(FILTER(...))` 不算 FILTER 嵌套、合法。
+
+**利润表已建（CLI，2026-07-07）：** 新建「边际利润明细表」tblACRMfGnO6ThAF，44字段=6维度(标识/月份/平台/店铺link→主数据映射/站点/SKU)+28输入数字+10公式(净销售量/经营销售/经营退款/平台费用/成本合计/其他项目/经营收入/毛利率/边界利润/边界利润率)。公式用[字段名]引用(lark-cli自动转bitable::$table[].$field[])，创建加--i-have-read-guide，按依赖顺序。测试记录验证全部公式正确(边界利润率=边界利润/经营收入等)，已删测试记录，表空待真实数据。注意：公式计算异步，写入后等几秒再读。
+
+**假数据已灌满（2026-07-07，用户要"随便垫数字让系统完整"）：** 边际利润明细表84条(4平台×多店铺×1-6月,2条故意亏损)、月度任务实例193条(负责人全张帅/计划完成日/状态,14条延期红)、月度资金报表16项金额、合同表6份(应付5应收1)、合同收付计划16期(10未收付)、月度资金趋势7月、清泉数字科技日记账32笔(含今日4笔收支,驱动概览看板"当日收入/支出"；因会话末网络限流42中成功32,剩10非必要)。踩坑：飞书select字段批量写**不接受null**(要给有效选项或整列省略)；PowerShell Out-File utf8带BOM会让CLI解析失败(用Write工具或Python写)；scratchpad里勿建与stdlib同名的.py(如bisect.py会遮蔽random依赖)；会话请求过多会触发限流EOF,大批次拆小块+重试。
+
+**第一版收尾已补完（2026-07-07）：**
+- 筛选视图：利润表加「📊按平台分组/🏪按店铺分组(link可分组)/🔴亏损预警(边界利润率<0,2条)」；任务表加「📅按月份分组」；合同收付计划加「💰未收付款项(10条)」。
+- 现金缺口计算：新建「资金缺口测算」表 tblneoX9cboH1xIB，跨表公式聚合成功——现金合计=SUM(月度资金报表.FILTER(区块=货币资金).金额)=323.6万，未来应付=SUM(合同收付计划.FILTER(应付&未收付).金额)=69万，未来应收=10万，现金缺口=264.6万，缺口状态=IF(缺口<0,⚠️现金缺口,✅现金充足)。跨表FILTER语法 [表].FILTER(AND(CurrentValue.[字段]="值",...)).[列] 可用。
+- 财务看板：现有「财务收支概览看板」dashboard_id=blkVzICQtsnVzXJt，用 +dashboard-block-create 加了5个组件（现金缺口/全年边界利润 指标卡、各平台边界利润 柱状图、任务状态分布 饼图、延期任务数 指标卡），data-config格式 {"table_name","series":[{"field_name","rollup":"SUM"}]或"count_all":true,"group_by":[{"field_name","mode":"integrated"}],"filter":{"conjunction","conditions":[{"field_name","operator":"is","value":[".."]}]}}。共9组件(原4+新5)。
+
+**仅剩唯一未完成项：行条件着色(延期红/亏损红)是飞书UI-only，API不开放，需用户手点视图→填色。其余第一版要求均已达成。**
+
+**任务目录表结构已变(2026-07-07修误操作)：** 用户曾误把任务项名称覆盖成序号。已修复+清理。现9字段：任务编号(number,新id fldUiYF3QF,值1-19)、**任务名称(text,主字段primary_field=fld5QHKzFw,存任务名——月度实例link显示它)**、频次/类别/月度发生量/交付时间点/默认负责人/分解|任务流/月度任务实例表(link)。已删：任务项名称(原fld6uJPbYo)、任务名称主键、同步任务名称(2个冗余formula)。教训：飞书link列显示目标表的primary_field(用+table-get查primary_field)；改link显示内容要改primary字段的值，不能改哪个是primary；batch-update是同patch,逐记录不同值需逐条调用。
+
+**CLI 写入经验：** --json/--fields @file 必须 cwd(E:\project\财务中台) 内相对路径(如 @./飞书建表/x.json)，双引号内联会被PowerShell吞；record-list --limit≤200，多用分页 record_id_list.Count 核数（PowerShell管道解析CLI输出易误判）；删除high-risk需--yes；建表用+table-create --name+--fields，link字段用{"type":"link","link_table":"tbl..","bidirectional":true,"bidirectional_link_field_name":".."}；公式字段引用语法 bitable::$table[tbl].$field[fld]。
+
+可行性评估报告 artifact: https://claude.ai/code/artifact/52ffa286-f54f-43f4-8959-32fb8ad7990c

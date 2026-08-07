@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb1d4-6165-7e42-90da-fd2a90c465b3",
+    "cwd": "E:\\project\\海外仓"
+  },
+  "session_summary": "Browser Close Recovery Auto Relaunch Feishu",
+  "created_at": "2026-07-30T07:01:53.644372800Z",
+  "updated_at": "2026-07-30T07:28:03.171627900Z",
+  "num_messages": 185,
+  "num_chat_messages": 48,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 4,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外仓/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/haiwaicang.git"
+  ],
+  "head_commit": "d9274d094da2705da6e87d53eb8fe29eed1fe013",
+  "head_branch": "master",
+  "request_id": "02628567-3eea-4f36-a438-adf7f8628325",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T07:26:26.588885400Z",
+  "generated_title": "Browser Close Recovery Auto Relaunch Feishu",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

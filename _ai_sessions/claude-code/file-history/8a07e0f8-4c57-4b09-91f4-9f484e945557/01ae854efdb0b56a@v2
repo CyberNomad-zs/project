@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<style>
+  body { width: 360px; font: 13px/1.5 "Microsoft YaHei", system-ui, sans-serif; margin: 0; padding: 12px; }
+  h1 { font-size: 14px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 12px; margin: 0 0 10px; }
+  .dry { display: inline-block; background: #fff3cd; color: #8a6d00; border: 1px solid #ffe08a;
+         border-radius: 4px; padding: 1px 6px; font-size: 11px; margin-left: 6px; }
+  button { width: 100%; padding: 9px; font-size: 13px; border: 0; border-radius: 6px;
+           background: #2f6fed; color: #fff; cursor: pointer; }
+  button:disabled { background: #9db8ee; cursor: default; }
+  pre { background: #0f1420; color: #d6e2ff; border-radius: 6px; padding: 10px; margin: 10px 0 0;
+        white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow: auto; font-size: 12px; }
+  .ok { color: #7ee787; } .bad { color: #ff9d9d; } .warn { color: #ffd479; }
+</style>
+</head>
+<body>
+  <h1>海外仓发货助手 <span class="dry">排雷 · DRY</span></h1>
+  <p class="sub">验证合成点击能否驱动 ERP 的 vxe-table。<br>
+     <b>只全选（可逆）+ 定位物流下单按钮，绝不真下单。</b></p>
+  <button id="run">在当前 ERP 页面排雷</button>
+  <pre id="out">请先在浏览器打开并登录赛狐 ERP 的【待处理】订单页，再点上面按钮。</pre>
+  <script src="popup.js"></script>
+</body>
+</html>

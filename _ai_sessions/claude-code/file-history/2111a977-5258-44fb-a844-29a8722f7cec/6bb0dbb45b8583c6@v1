@@ -1,0 +1,15 @@
+.env
+config/config.yaml
+data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+.mypy_cache/
+~$*
+.playwright-mcp/
+_api_docs/
+_api_index.tsv
+_llms_raw.txt

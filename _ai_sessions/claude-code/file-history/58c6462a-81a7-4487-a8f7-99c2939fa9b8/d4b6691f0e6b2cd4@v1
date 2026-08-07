@@ -1,0 +1,18 @@
+---
+name: temu-monitor-project
+description: Temu 多店铺自动化监测项目的背景与关键约束
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 1b77f1dc-3064-4ec9-a485-16b918ac2c52
+---
+
+在 `E:\project\temu` 构建 Temu Seller Central 多店铺监测工具（`temu-monitor/`，Node + Playwright + 飞书告警）。
+
+监测两件事：① 各店铺「在售中 N」数量下降；② 出现「商品流量待关注」/「商品流量近期有下降」的流量异常商品。切换店铺后自动关闭推广弹窗。决策：账号下全部店铺、15 分钟轮询、飞书 webhook 告警。
+
+关键非显然点：
+- 真实后台是 `https://agentseller.temu.com/goods/list`，`账号.txt` 里给的 `agentseller-eu.../mmsos/orders.html` 会跳转过去。
+- 店铺切换器 DOM、商品列表接口字段、部分选择器**需真实登录态下 `npm run calibrate` 校准**后才确定；当前代码用文本/结构容错选择器占位。
+- 首次登录可能需手机短信验证码 → 无法完全自主跑通，需用户手动 `npm run login` 一次。
+- 详细录屏分析见 `E:\project\temu\录屏分析.md`。

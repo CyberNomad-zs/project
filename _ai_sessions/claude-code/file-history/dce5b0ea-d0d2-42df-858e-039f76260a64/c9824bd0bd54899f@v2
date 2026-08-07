@@ -1,0 +1,57 @@
+# -*- coding: utf-8 -*-
+"""诊断 ERP(Sellfox) SPA 是否能渲染：长等待 + 记录控制台错误/失败请求，dump 结果。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    failed = []
+    console = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+        page.on("requestfailed", lambda r: failed.append(f"{r.failure} {r.url}"))
+        page.on("console", lambda m: console.append(f"[{m.type}] {m.text}"[:200]))
+
+        try:
+            page.goto(secrets.ERP["url"], wait_until="domcontentloaded", timeout=45000)
+        except Exception as e:
+            print("goto:", e)
+
+        # 最多等 30s，看 #app 是否渲染出内容 / 是否出现登录输入框
+        rendered = False
+        for i in range(30):
+            time.sleep(1)
+            try:
+                n = page.eval_on_selector("#app", "el => el.children.length")
+            except Exception:
+                n = -1
+            has_pwd = page.query_selector("input[type=password]") is not None
+            if (n and n > 0) or has_pwd:
+                rendered = True
+                print(f"  rendered at {i+1}s: #app.children={n}, has_pwd={has_pwd}, url={page.url}")
+                break
+        if not rendered:
+            print(f"  NOT rendered after 30s. url={page.url}")
+
+        time.sleep(2)
+        html = page.content()
+        with open(os.path.join(config.DUMP_DIR, "erp_after_wait.html"), "w", encoding="utf-8") as f:
+            f.write(html)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_after_wait.png"), full_page=True)
+        print(f"  dump erp_after_wait: {len(html)} bytes, final url={page.url}")
+
+        print("---- failed requests (up to 20) ----")
+        for x in failed[:20]:
+            print("  ", x)
+        print("---- console (last 15) ----")
+        for x in console[-15:]:
+            print("  ", x)
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

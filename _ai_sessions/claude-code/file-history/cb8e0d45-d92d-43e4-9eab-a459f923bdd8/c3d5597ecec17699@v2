@@ -1,0 +1,91 @@
+# -*- coding: utf-8 -*-
+"""
+把 orderShip 主 frame 的真实 DOM 存盘，并打印订单表格关键结构：
+- “共 N 条”所在元素及其祖先链（定位分页/总数容器）
+- 疑似行容器的 class 直方图（找真实“行”的 class）
+- 表头/行里的复选框候选
+- 工具栏按钮文字（确认 物流下单 等）
+只读，不做变更。
+"""
+import sys, os, time, re, collections
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(6)
+        fr = page.main_frame
+
+        # 存 frame DOM
+        html = fr.content()
+        out = os.path.join(config.DUMP_DIR, "erp_grid_frame0.html")
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(html)
+        print("saved:", out, len(html), "bytes")
+
+        # 1) “共 N 条”所在元素 + 祖先链
+        print("\n===== 『共 N 条』祖先链 =====")
+        info = fr.evaluate(r"""() => {
+            const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            let node, hit=null;
+            while(node=w.nextNode()){ if(/共\s*\d+\s*条/.test(node.nodeValue)){ hit=node; break; } }
+            if(!hit) return "未找到共N条文本";
+            let el = hit.parentElement, chain=[];
+            for(let i=0;i<6 && el;i++){ chain.push(el.tagName+'.'+([...el.classList].join('.')||'(no-class)')); el=el.parentElement; }
+            return chain.join('  <  ');
+        }""")
+        print(info)
+
+        # 2) 行容器 class 直方图：找出现次数≈订单数(12±) 的可点击/带复选框行 class
+        print("\n===== class 直方图（出现 8~40 次的候选“行”）=====")
+        hist = fr.evaluate(r"""() => {
+            const m={};
+            document.querySelectorAll('*').forEach(e=>{
+                (e.className && typeof e.className==='string'? e.className.split(/\s+/):[]).forEach(c=>{ if(c) m[c]=(m[c]||0)+1; });
+            });
+            return m;
+        }""")
+        for c, n in sorted(hist.items(), key=lambda kv: -kv[1]):
+            if 8 <= n <= 40:
+                print(f"  {n:>3}  .{c}")
+
+        # 3) 复选框候选
+        print("\n===== 复选框候选 =====")
+        cbs = fr.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll("input[type=checkbox], [class*=checkbox]").forEach(e=>{
+                out.push((e.tagName+'.'+((typeof e.className==='string'&&e.className)||'')).slice(0,80));
+            });
+            const m={}; out.forEach(s=>m[s]=(m[s]||0)+1);
+            return m;
+        }""")
+        for s, n in sorted(cbs.items(), key=lambda kv: -kv[1])[:20]:
+            print(f"  {n:>3}  {s}")
+
+        # 4) 工具栏按钮文字
+        print("\n===== 按钮文字 =====")
+        btns = fr.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll("button, .el-button, [class*=btn]").forEach(e=>{
+                const t=(e.innerText||'').trim().replace(/\s+/g,' ');
+                if(t && t.length<=12) out.push(t);
+            });
+            return [...new Set(out)];
+        }""")
+        print(btns)
+
+        print("\nDONE，浏览器保持 15 秒。")
+        time.sleep(15)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

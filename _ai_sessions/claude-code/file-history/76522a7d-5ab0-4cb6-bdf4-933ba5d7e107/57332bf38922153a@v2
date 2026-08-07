@@ -1,0 +1,444 @@
+"""TK 广告异常规则：从 fact_ads_campaign_daily 生成 anomaly task。
+
+规则（对齐 dim_tk_anomaly_type）：
+  - ads_spend_no_sale  广告空耗：spend >= min_spend 且 orders<=0（或 revenue<=0）
+  - ads_roi_low        广告ROI过低：有花费且有单，ROI 低于目标ROI（若有）或全局阈值
+  - ads_budget_burn    广告预算将尽：daily_budget>0 且 spend/budget >= 消耗率阈值
+  - ads_cpa_high       广告下单成本高：CPA 超绝对阈值，或相对客单 AOV 占比过高
+
+互斥：空耗与低 ROI 互斥（无单只打空耗）。
+可叠加：预算将尽 / 高 CPA 可与空耗或低 ROI 同行列出（各自 dedupe）。
+
+幂等：走 tk_anomaly.create_anomaly_task 的 open dedupe_key
+  dedupe = tiktok:{shop_ext}|{campaign}:{code}
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings, get_settings
+from app.domain import tk_anomaly
+
+
+def _f(v: Any) -> float:
+    if v is None:
+        return 0.0
+    if isinstance(v, Decimal):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _optional_f(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, Decimal):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _effective_roi(row: dict[str, Any]) -> float | None:
+    """优先用库内 roi；缺失时用 revenue/spend 回算。"""
+    roi = row.get("roi")
+    if roi is not None:
+        try:
+            return float(roi)
+        except (TypeError, ValueError):
+            pass
+    spend = _f(row.get("spend"))
+    revenue = _f(row.get("revenue"))
+    if spend > 0:
+        return revenue / spend
+    return None
+
+
+def _effective_cpa(row: dict[str, Any], *, spend: float, orders: float) -> float | None:
+    """优先 avg_order_cost；否则 spend/orders。"""
+    cpa = _optional_f(row.get("avg_order_cost"))
+    if cpa is not None and cpa > 0:
+        return cpa
+    if orders > 0 and spend > 0:
+        return spend / orders
+    return None
+
+
+def classify_ads_row(
+    row: dict[str, Any],
+    *,
+    min_spend: float,
+    global_min_roi: float,
+    target_ratio: float,
+    target_slack: float,
+    budget_burn_ratio: float = 0.8,
+    budget_min: float = 1.0,
+    max_cpa: float = 15.0,
+    cpa_aov_ratio: float = 0.4,
+) -> list[dict[str, Any]]:
+    """对单行广告日数据返回命中的异常列表。
+
+    空耗与低 ROI 互斥；预算将尽 / 高 CPA 可叠加。
+    """
+    spend = _f(row.get("spend"))
+    orders = _f(row.get("orders"))
+    revenue = _f(row.get("revenue"))
+    if spend < min_spend:
+        return []
+
+    campaign = str(row.get("campaign_name") or "").strip()
+    if not campaign:
+        return []
+    # 跳过明显测试/烟测系列
+    low = campaign.lower()
+    if "schema-tk-smoke" in low or low.startswith("[test]"):
+        return []
+
+    hits: list[dict[str, Any]] = []
+    currency = row.get("currency") or "GBP"
+    target = row.get("target_roi")
+    target_f = _optional_f(target)
+    roi = _effective_roi(row)
+    plan = row.get("plan_status") or ""
+    delivery = row.get("delivery_status") or ""
+    budget = _optional_f(row.get("daily_budget"))
+
+    # 1) 空耗优先（有花费无成交）——与 ROI 互斥
+    no_sale = orders <= 0 and revenue <= 0
+    if no_sale:
+        metric = (
+            f"spend={spend:.2f}{currency} orders={orders:.0f} revenue={revenue:.2f}"
+            f" roi={roi if roi is not None else 'n/a'}"
+            f" plan={plan or '-'} delivery={delivery or '-'}"
+        )
+        hits.append(
+            {
+                "anomaly_code": "ads_spend_no_sale",
+                "priority": "P1",
+                "summary": f"广告空耗 · {campaign}",
+                "metric_snapshot": metric,
+                "detail": (
+                    f"{row.get('biz_date')} 花费 {spend:.2f} 无订单/无收入"
+                    + (f"；计划状态 {plan}" if plan else "")
+                ),
+            }
+        )
+    else:
+        # 2) ROI 过低（有单才评）
+        if roi is not None:
+            reason = None
+            threshold_used = None
+            if target_f is not None and target_f > 0:
+                bar = target_f * target_ratio - target_slack
+                if roi < bar:
+                    reason = "below_target"
+                    threshold_used = bar
+            else:
+                if roi < global_min_roi:
+                    reason = "below_global"
+                    threshold_used = global_min_roi
+
+            if reason:
+                pri = "P1"
+                if threshold_used and threshold_used > 0:
+                    gap = (threshold_used - roi) / threshold_used
+                    if gap >= 0.5:
+                        pri = "P0"
+                    elif gap < 0.15:
+                        pri = "P2"
+                metric = (
+                    f"roi={roi:.2f} target={target_f if target_f is not None else '-'} "
+                    f"threshold={threshold_used:.2f} spend={spend:.2f}{currency} "
+                    f"orders={orders:.0f} revenue={revenue:.2f} reason={reason}"
+                )
+                hits.append(
+                    {
+                        "anomaly_code": "ads_roi_low",
+                        "priority": pri,
+                        "summary": f"广告ROI过低 · {campaign}",
+                        "metric_snapshot": metric,
+                        "detail": (
+                            f"{row.get('biz_date')} ROI {roi:.2f} < 阈值 {threshold_used:.2f}"
+                            + (
+                                f"（目标 {target_f:.2f}）"
+                                if target_f
+                                else f"（全局 {global_min_roi:.2f}）"
+                            )
+                        ),
+                    }
+                )
+
+        # 3) 高 CPA（有单才评；可与 ROI 叠加）
+        cpa = _effective_cpa(row, spend=spend, orders=orders)
+        if cpa is not None and cpa > 0:
+            aov = (revenue / orders) if orders > 0 and revenue > 0 else None
+            hit_abs = max_cpa > 0 and cpa >= max_cpa
+            hit_rel = (
+                aov is not None
+                and cpa_aov_ratio > 0
+                and aov > 0
+                and (cpa / aov) >= cpa_aov_ratio
+            )
+            if hit_abs or hit_rel:
+                reasons = []
+                if hit_abs:
+                    reasons.append(f"abs>={max_cpa:.2f}")
+                if hit_rel and aov is not None:
+                    reasons.append(f"cpa/aov={(cpa / aov):.2f}>={cpa_aov_ratio:.2f}")
+                pri = "P2"
+                if hit_abs and max_cpa > 0 and cpa >= max_cpa * 2:
+                    pri = "P1"
+                elif hit_rel and aov and (cpa / aov) >= max(cpa_aov_ratio * 1.5, 0.6):
+                    pri = "P1"
+                aov_s = f"{aov:.2f}" if aov is not None else "-"
+                metric = (
+                    f"cpa={cpa:.2f}{currency} aov={aov_s} "
+                    f"max_cpa={max_cpa:.2f} cpa_aov_ratio={cpa_aov_ratio:.2f} "
+                    f"spend={spend:.2f} orders={orders:.0f} reason={'+'.join(reasons)}"
+                )
+                hits.append(
+                    {
+                        "anomaly_code": "ads_cpa_high",
+                        "priority": pri,
+                        "summary": f"广告下单成本高 · {campaign}",
+                        "metric_snapshot": metric,
+                        "detail": (
+                            f"{row.get('biz_date')} CPA {cpa:.2f}{currency}"
+                            + (f"；客单 {aov_s}" if aov is not None else "")
+                            + f"；触发 {'+'.join(reasons)}"
+                        ),
+                    }
+                )
+
+    # 4) 预算将尽（与空耗/ROI/CPA 均可叠加；缺预算列则跳过）
+    if (
+        budget is not None
+        and budget >= budget_min
+        and budget_burn_ratio > 0
+        and spend > 0
+    ):
+        burn = spend / budget
+        if burn >= budget_burn_ratio:
+            pri = "P2"
+            if burn >= 0.95:
+                pri = "P1"
+            if burn >= 1.0:
+                pri = "P0"
+            metric = (
+                f"spend={spend:.2f}{currency} budget={budget:.2f}{currency} "
+                f"burn={burn:.2%} threshold={budget_burn_ratio:.0%} "
+                f"plan={plan or '-'} delivery={delivery or '-'}"
+            )
+            hits.append(
+                {
+                    "anomaly_code": "ads_budget_burn",
+                    "priority": pri,
+                    "summary": f"广告预算将尽 · {campaign}",
+                    "metric_snapshot": metric,
+                    "detail": (
+                        f"{row.get('biz_date')} 花费 {spend:.2f}/{budget:.2f}"
+                        f"（{burn:.0%} ≥ {budget_burn_ratio:.0%}）"
+                    ),
+                }
+            )
+
+    return hits
+
+
+@dataclass
+class EvalStats:
+    biz_date: str
+    scanned: int = 0
+    hit_roi_low: int = 0
+    hit_spend_no_sale: int = 0
+    hit_budget_burn: int = 0
+    hit_cpa_high: int = 0
+    created_or_updated: int = 0
+    skipped: int = 0
+    errors: list[str] = field(default_factory=list)
+    samples: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "biz_date": self.biz_date,
+            "scanned": self.scanned,
+            "hit_roi_low": self.hit_roi_low,
+            "hit_spend_no_sale": self.hit_spend_no_sale,
+            "hit_budget_burn": self.hit_budget_burn,
+            "hit_cpa_high": self.hit_cpa_high,
+            "created_or_updated": self.created_or_updated,
+            "skipped": self.skipped,
+            "errors": self.errors[:20],
+            "samples": self.samples[:10],
+        }
+
+
+async def resolve_biz_date(db: AsyncSession, biz_date: date | None) -> date:
+    if biz_date:
+        return biz_date
+    row = (
+        await db.execute(
+            text("SELECT MAX(biz_date) FROM tk.fact_ads_campaign_daily")
+        )
+    ).first()
+    if row and row[0]:
+        return row[0]
+    return datetime.now(timezone.utc).date()
+
+
+async def fetch_ads_rows(
+    db: AsyncSession,
+    *,
+    biz_date: date,
+    shop_external_id: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["biz_date = :biz_date"]
+    params: dict[str, Any] = {"biz_date": biz_date}
+    if shop_external_id:
+        clauses.append("shop_external_id = :shop_external_id")
+        params["shop_external_id"] = shop_external_id
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    id::text,
+                    shop_id::text,
+                    shop_external_id,
+                    shop_name,
+                    biz_date,
+                    campaign_name,
+                    spend, orders, roi, revenue, currency,
+                    plan_status, delivery_status, daily_budget, target_roi,
+                    net_cost, avg_order_cost, source_url
+                FROM tk.fact_ads_campaign_daily
+                WHERE {' AND '.join(clauses)}
+                ORDER BY spend DESC NULLS LAST, campaign_name
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def evaluate_ads_anomalies(
+    db: AsyncSession,
+    *,
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    project_center_task: bool = True,
+    dry_run: bool = False,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """扫描广告日事实并写入/更新 TK 异常任务。"""
+    cfg = settings or get_settings()
+    day = await resolve_biz_date(db, biz_date)
+    stats = EvalStats(biz_date=day.isoformat())
+    rows = await fetch_ads_rows(db, biz_date=day, shop_external_id=shop_external_id)
+    stats.scanned = len(rows)
+
+    min_spend = float(cfg.tk_ads_min_spend)
+    global_min_roi = float(cfg.tk_ads_global_min_roi)
+    target_ratio = float(cfg.tk_ads_roi_target_ratio)
+    target_slack = float(cfg.tk_ads_roi_target_slack)
+    budget_burn_ratio = float(cfg.tk_ads_budget_burn_ratio)
+    budget_min = float(cfg.tk_ads_budget_min)
+    max_cpa = float(cfg.tk_ads_max_cpa)
+    cpa_aov_ratio = float(cfg.tk_ads_cpa_aov_ratio)
+
+    for row in rows:
+        hits = classify_ads_row(
+            row,
+            min_spend=min_spend,
+            global_min_roi=global_min_roi,
+            target_ratio=target_ratio,
+            target_slack=target_slack,
+            budget_burn_ratio=budget_burn_ratio,
+            budget_min=budget_min,
+            max_cpa=max_cpa,
+            cpa_aov_ratio=cpa_aov_ratio,
+        )
+        if not hits:
+            stats.skipped += 1
+            continue
+
+        shop_ext = row.get("shop_external_id")
+        campaign = str(row.get("campaign_name") or "").strip()
+        # 对象键带店，避免跨店同名系列撞 dedupe
+        object_ref = f"{shop_ext}|{campaign}" if shop_ext else campaign
+
+        for hit in hits:
+            code = hit["anomaly_code"]
+            if code == "ads_roi_low":
+                stats.hit_roi_low += 1
+            elif code == "ads_spend_no_sale":
+                stats.hit_spend_no_sale += 1
+            elif code == "ads_budget_burn":
+                stats.hit_budget_burn += 1
+            elif code == "ads_cpa_high":
+                stats.hit_cpa_high += 1
+
+            sample = {
+                "campaign_name": campaign,
+                "shop_external_id": shop_ext,
+                "anomaly_code": code,
+                "priority": hit["priority"],
+                "metric_snapshot": hit["metric_snapshot"],
+            }
+            if dry_run:
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+                continue
+
+            try:
+                task = await tk_anomaly.create_anomaly_task(
+                    db,
+                    anomaly_code=code,
+                    summary=hit["summary"],
+                    shop_id=row.get("shop_id"),
+                    shop_external_id=shop_ext,
+                    shop_name=row.get("shop_name"),
+                    object_ref=object_ref,
+                    object_type="campaign",
+                    product_name=campaign,
+                    priority=hit["priority"],
+                    progress_note=hit["detail"],
+                    metric_snapshot=hit["metric_snapshot"],
+                    biz_date=day,
+                    dedupe_key=f"tiktok:{object_ref}:{code}",
+                    source_url=row.get("source_url"),
+                    project_center_task=project_center_task,
+                )
+                sample["task_id"] = task.get("id")
+                sample["task_key"] = task.get("task_key")
+                sample["status"] = task.get("status")
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+            except Exception as exc:  # noqa: BLE001 — 单行失败不中断整批
+                stats.errors.append(f"{campaign}/{code}: {exc}")
+
+    return {
+        **stats.as_dict(),
+        "thresholds": {
+            "min_spend": min_spend,
+            "global_min_roi": global_min_roi,
+            "roi_target_ratio": target_ratio,
+            "roi_target_slack": target_slack,
+            "budget_burn_ratio": budget_burn_ratio,
+            "budget_min": budget_min,
+            "max_cpa": max_cpa,
+            "cpa_aov_ratio": cpa_aov_ratio,
+        },
+        "dry_run": dry_run,
+    }

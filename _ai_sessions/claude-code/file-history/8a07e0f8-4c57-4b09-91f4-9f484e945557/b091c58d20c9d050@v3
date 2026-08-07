@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "海外仓发货助手",
+  "version": "0.1.0",
+  "description": "在真实浏览器里自动完成 赛狐ERP 物流下单 + 海外仓WMS 批量发货（按渠道串行闭环，默认 DRY 空跑）。",
+  "permissions": ["scripting", "tabs", "storage"],
+  "host_permissions": [
+    "https://www.sellfox.com/*",
+    "http://193.112.93.60:9999/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "海外仓发货助手"
+  }
+}

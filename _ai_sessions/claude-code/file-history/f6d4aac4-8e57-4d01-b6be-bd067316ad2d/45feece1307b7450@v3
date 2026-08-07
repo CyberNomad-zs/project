@@ -1,0 +1,64 @@
+# 本项目飞书多维表配置
+
+## 你提供的表格
+
+| 项 | 值 |
+|----|-----|
+| 链接 | https://dcnkj1up67d5.feishu.cn/base/NnpObOqZSa5EjCsQjnqcfVgOnFc?table=tblLPhqUkpWxKT9n&view=vewEWZN2VX |
+| **App Token** | `NnpObOqZSa5EjCsQjnqcfVgOnFc` |
+| **Table ID** | `tblLPhqUkpWxKT9n` |
+| View ID | `vewEWZN2VX`（插件写入不依赖 view） |
+
+把上面 **App Token / Table ID** 填进插件「设置」即可。
+
+## 需要创建的字段（名称必须一字不差）
+
+在表 `tblLPhqUkpWxKT9n` 中新增列：
+
+| 字段名 | 类型建议 | 对应业务 |
+|--------|----------|----------|
+| 日期 | 日期 | 业务日期 |
+| 店铺 | 文本 | 店铺名 |
+| 店铺ID | 文本 | 可选 |
+| 品名 | 文本 | 日报「品名」= 广告系列/活动名 |
+| 广告花费 | 数字（2 位小数） | Spend/成本 |
+| 销量 | 数字 | Orders |
+| ROI | 数字（2 位小数） | ROI |
+| 销售额 | 数字（2 位小数） | 日报「销售额」/ GMV |
+| 抓取时间 | 日期时间 | 写入时刻 |
+| 数据源URL | 文本 | 排障 |
+| 状态 | 单选：success / partial / error | 质量标记 |
+
+表里若已有「多维表格标题」默认列可保留，不影响写入。
+
+## 方式一：脚本自动建字段（推荐）
+
+1. [飞书开放平台](https://open.feishu.cn/) 创建**企业自建应用**，拿到 `App ID`、`App Secret`。
+2. 权限：开通多维表格读写（如 `bitable:app`），**创建版本并发布**。
+3. 打开你的多维表格 → 右上角「…」→ **添加文档应用 / 添加应用** → 选中该应用（必须，否则 API 无权限）。
+4. 本机 PowerShell：
+
+```powershell
+cd "E:\project\海外TK店铺广告投流数据自动化监测"
+$env:FEISHU_APP_ID="cli_xxxxxxxx"
+$env:FEISHU_APP_SECRET="你的密钥"
+# 以下两项已默认写好你的表，可不改
+$env:FEISHU_APP_TOKEN="NnpObOqZSa5EjCsQjnqcfVgOnFc"
+$env:FEISHU_TABLE_ID="tblLPhqUkpWxKT9n"
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-create-fields.ps1
+```
+
+## 方式二：手动建字段
+
+在飞书网页打开该 base → 点表头「+」按上表逐个加列，**字段名复制粘贴**，避免多空格。
+
+## 插件里填写
+
+| 设置项 | 值 |
+|--------|-----|
+| App ID | 自建应用 cli_... |
+| App Secret | 应用密钥 |
+| App Token | `NnpObOqZSa5EjCsQjnqcfVgOnFc` |
+| Table ID | `tblLPhqUkpWxKT9n` |
+
+保存 →「测试连接」→ 广告页取消干跑后「立即抓取」。

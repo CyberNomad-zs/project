@@ -1,0 +1,200 @@
+var LOG = TemuLogger.createLogger('popup');
+
+function send(type, extra) {
+  return new Promise((res) => chrome.runtime.sendMessage(Object.assign({ type }, extra), res));
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function setMsg(text, cls) {
+  const el = document.getElementById('msg');
+  el.textContent = text || '';
+  el.className = cls || '';
+}
+function fmtTs(ts) {
+  return ts ? new Date(ts).toLocaleString('zh-CN') : '—';
+}
+function num(v) { return v != null ? v : '—'; }
+function editLink(productId) { return 'https://agentseller.temu.com/goods/edit?from=productList&productId=' + productId; }
+function itemsHtml(items, label, color) {
+  if (!Array.isArray(items) || !items.length) return '';
+  return `<div class="items">${esc(label)}${items.map((it) =>
+    `<a href="${esc(editLink(it.productId))}" target="_blank" style="color:${color}" title="SKC ${esc(it.skc || '-')}">• ${esc((it.name || '商品').slice(0, 22))}</a>`
+  ).join('')}</div>`;
+}
+function skuSpecsHtml(specs) {
+  if (!Array.isArray(specs) || !specs.length) return '';
+  const names = specs.map((s) => esc((s.name || 'SKU').slice(0, 20))).join('、');
+  return `<div class="items" style="color:#1f2329">SKU规格（${specs.length}个）：${names}</div>`;
+}
+
+async function refresh() {
+  const s = await send('getStatus');
+  const cfg = (s && s.config) || {};
+  const stores = (s && s.stores) || {};
+
+  document.getElementById('cfg').textContent =
+    '飞书：' + (cfg.webhook ? (cfg.enabled ? '已启用' : '已停用') : '未配置')
+    + '　后台：' + (s && s.bgVersion ? s.bgVersion : '旧版·需强制刷新');
+
+  const lc = s && s.lastCycle;
+  const mr = s && s.lastMustRemind;
+  const ci = document.getElementById('cycleInfo');
+  const parts = [];
+  let bad = false;
+  if (lc && lc.ts) {
+    const failed = /失败|没找到|打不开/.test(lc.summary || '');
+    if (failed) bad = true;
+    parts.push('上次轮巡：' + fmtTs(lc.ts) + (failed ? '（有异常，点轮巡重试）' : ''));
+  }
+  if (mr && mr.ts) {
+    if (mr.ok === false) bad = true;
+    parts.push('上次必提醒：' + fmtTs(mr.ts) + (mr.ok === false ? '（发送失败）' : ''));
+  }
+  const times = cfg.mustRemindEnabled === false
+    ? '已关'
+    : (Array.isArray(cfg.mustRemindTimes) && cfg.mustRemindTimes.length
+      ? cfg.mustRemindTimes.join('/')
+      : '09:30/16:30');
+  parts.push('必提醒：' + times);
+  ci.textContent = parts.join(' · ');
+  ci.className = bad ? 'sub err' : 'sub';
+
+  const names = Object.keys(stores).sort();
+  const box = document.getElementById('stores');
+  if (names.length === 0) {
+    box.innerHTML = '<div class="empty">还没有数据。切到某个店的商品列表页（并点“立即检查”）即可开始监测该店。</div>';
+    return;
+  }
+  box.innerHTML = names.map((name) => {
+    const L = (stores[name] && stores[name].latest) || {};
+    return `<div class="store">
+      <div class="name"><span>🏬 ${esc(name)}</span><span class="r"><span class="t">${fmtTs(L.ts)}</span><span class="del" data-name="${esc(name)}" title="删除该店">✕</span></span></div>
+      <div class="kv">
+        <span>在售 <b>${num(L.onSale)}</b></span>
+        <span>流量待关注 <b>${num(L.trafficWatch)}</b></span>
+        <span>流量下降 <b style="${typeof L.trafficDecline === 'number' && L.trafficDecline > 0 ? 'color:#d92d20' : ''}">${typeof L.trafficDecline === 'number' ? L.trafficDecline : '—'}</b></span>
+        <span>总数 ${num(L.total)}</span>
+        <span>未发布/已下架 ${num(L.unpublished)}/${num(L.removed)}</span>
+      </div>
+      ${itemsHtml(L.watchItems, '限流商品：', '#d97706')}
+      ${itemsHtml(L.declineItems, '流量下降：', '#d92d20')}
+      ${skuSpecsHtml(L.skuSpecs)}
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.del').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const name = el.getAttribute('data-name');
+      if (!confirm('确定删除「' + name + '」的监测数据？')) return;
+      const r = await send('deleteStore', { name });
+      setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+      refresh();
+    });
+  });
+}
+
+async function addStore() {
+  const input = document.getElementById('newStore');
+  const name = input.value.trim();
+  if (!name) { setMsg('请输入店铺名', 'err'); return; }
+  const r = await send('addStore', { name });
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  if (r && r.ok) { input.value = ''; refresh(); }
+}
+
+document.getElementById('add').addEventListener('click', addStore);
+document.getElementById('newStore').addEventListener('keydown', (e) => { if (e.key === 'Enter') addStore(); });
+
+document.getElementById('cycle').addEventListener('click', async () => {
+  setMsg('正在轮巡所有店（会切店，约 1-2 分钟，请勿操作页面）…');
+  const r = await send('cycleNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 1500);
+});
+document.getElementById('check').addEventListener('click', async () => {
+  setMsg('正在刷新后台页…');
+  const r = await send('checkNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 4000);
+});
+document.getElementById('test').addEventListener('click', async () => {
+  setMsg('正在发送测试…');
+  const r = await send('testFeishu');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+});
+document.getElementById('opt').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+refresh();
+
+// ---- Log viewer ----
+var logVisible = false;
+var logTimer = null;
+
+function fetchAndRenderLogs() {
+  chrome.storage.local.get('logs', function (r) {
+    var logs = r.logs || [];
+    var recent = logs.slice(-100).reverse();
+    var listEl = document.getElementById('logList');
+    var countEl = document.getElementById('logCount');
+    countEl.textContent = logs.length + ' 条';
+
+    var html = '';
+    for (var i = 0; i < recent.length; i++) {
+      var e = recent[i];
+      var color = '#1f2329';
+      if (e.level === 'WARN')  color = '#d97706';
+      if (e.level === 'ERROR') color = '#d92d20';
+      html += '<div style="color:' + color + '">[' + esc(e.ts) + '] [' + esc(e.level) + '] ' + esc(e.msg) + '</div>';
+    }
+    if (!recent.length) {
+      html = '<div style="color:#8a9099">（暂无日志）</div>';
+    }
+    listEl.innerHTML = html;
+    if (logVisible) listEl.scrollTop = 0;
+  });
+}
+
+function toggleLogs() {
+  logVisible = !logVisible;
+  var listEl = document.getElementById('logList');
+  var exportBtn = document.getElementById('logExport');
+  var toggleBtn = document.getElementById('logToggle');
+
+  if (logVisible) {
+    listEl.style.display = 'block';
+    exportBtn.style.display = '';
+    toggleBtn.textContent = '📋 隐藏日志';
+    fetchAndRenderLogs();
+    logTimer = setInterval(fetchAndRenderLogs, 3000);
+  } else {
+    listEl.style.display = 'none';
+    exportBtn.style.display = 'none';
+    toggleBtn.textContent = '📋 日志';
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  }
+}
+
+function exportLogs() {
+  chrome.storage.local.get('logs', function (r) {
+    var logs = r.logs || [];
+    var text = '';
+    for (var i = 0; i < logs.length; i++) {
+      text += '[' + logs[i].ts + '] [' + logs[i].level + '] ' + logs[i].msg + '\n';
+    }
+    if (!text) text = '(no logs)\n';
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'temu-monitor-' + new Date().toISOString().slice(0, 10) + '.log';
+    a.click();
+    URL.revokeObjectURL(url);
+    LOG.info('Logs exported: ' + logs.length + ' entries');
+  });
+}
+
+document.getElementById('logToggle').addEventListener('click', toggleLogs);
+document.getElementById('logExport').addEventListener('click', exportLogs);

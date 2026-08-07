@@ -1,0 +1,21 @@
+---
+name: temu-plugin-versions
+description: Temu Chrome 插件各版本修复的 bug 与版本号对照
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: f4fcb23a-058a-4bde-8966-06d03d25c649
+  modified: 2026-07-23T03:53:54.095Z
+---
+
+Temu 监测 Chrome 插件版本历史：
+
+- **v5-修下架误报** (2026-07-17)：待关注筛选与在售扫描的并发竞态导致**误报**下架。修复：content.js 加 `withLock` 互斥锁串行化所有页面操作；scanOnSaleList 扫描前先复位干净再读 onSaleTabCount；diffOnSale 护栏改用干净读数。[[temu-monitor-project]]
+- **v6-下架漏报修复** (2026-07-17)：两个根因导致真实下架**漏报**——①`_diffAndAlert` 在 v3 中移除了 inSale 下降检测（"改由 diffOnSale 报"），但 diffOnSale 只在空闲轮巡触发，用户手动刷新/日常浏览时下架完全漏报；②`diffOnSale` 用初始读到的旧对象写 storage，异步的 `_diffAndAlert` 在中间改过 snapshot 的话会被覆盖→基准腐败→"后来不准"。修复：①在 `_diffAndAlert` 恢复 inSale 下降数字告警（`latest.onSale < snap.onSale` 时发飞书）；②`diffOnSale` 在写 storage 前重读 stores（同 `_diffAndAlert` 做法）避免覆盖并发写入。测试：22/22 通过（8 个 diffOnSale 场景 + 5 个被动 onSale 检测场景）。用户需：chrome://extensions 关开插件开关 → popup 显示 `v6-下架漏报修复`。
+- **v7-定时必提醒** (2026-07-20)：新增每天固定时刻**强制飞书状态汇报**（无异常也发，证明插件存活）。默认 **09:30、16:30** 本地时区；`config.mustRemindEnabled`/`mustRemindTimes` 可配；`chrome.alarms` 用一次性 `when`（发完重排下一天）；蓝色卡片列各店在售/待关注/下降/总数+数据是否超 2h 未更新。options 页可改时间；popup 显示「必提醒：09:30/16:30」与上次发送。消息 `mustRemindNow` 可手动触发。用户需 chrome://extensions **关开插件开关** → popup 显示 `v7-定时必提醒`。
+- **v8-下架扫描防污染** (2026-07-22)：修 scanOnSaleList 视图生效验证——点在售 tab 后等 gridTotal===tabCount 才扫，避免视图未生效就扫混入非在售商品污染基准；加扫到行数>tabCount 的保护（视图污染时放弃本轮）；tab 点击失败重试一次。
+- **v9-修复SKU规格解析** (2026-07-22)：parseSkuSpecList 增加多重数据路径尝试（list/skuSpecList/skuSpecs/data 等）+ 失败时保存原始响应到 lastSkuSpecRaw/lastSkuSpecRawFail + 新增 parentSkuId/spec/thumbUrl 等备用字段。页面 flow 从"成功才存 raw"改为"始终存 raw"。
+- **v10-前台变体监测 (MVP)** (2026-07-22)：新增 Temu 前台商品页 (`www.temu.com`) variant 监测——content-front.js 解析产品变体（颜色/尺码），background 存快照+diff（对比可用变体的新增/消失）+飞书告警，popup 展示已配置链接的最新变体数据，options 可配置每个店铺的前台商品链接。
+- **v11-前台定时轮巡** (2026-07-22)：前台变体监测加定时 `frontPoll` alarm（默认每 3h），`cycleFrontProducts` 逐个打开配置 URL（后台 tab）抓变体；options 可配开关/间隔；popup 有「前台变体全查」按钮 + 上次轮巡状态。
+- **v12-清假店名** (2026-07-22)：`readStoreName` 把商品颜色（Black/Beige/Charcoal/Rustic Brown…）误当成店名写进 storage，定时汇报刷一堆假店。修复：content/background 双重 `isFakeStoreName` 黑名单拦截；`resolveStore` 拒绝假名；`cleanupFakeStores` 启动时自动清掉历史污染；`addStore`/`cycleStores`/`frontCapture` 同步过滤。
+- **v13-后台SKU规格** (2026-07-23)：修通后台具体 SKU 抓取。根因不是 `sku/spec/parent/list` 解析（编辑页接口结构漂移且只在打开编辑时触发），而是 **`pageQuery` 每个商品已带 `productSkuSummaries[]`**（`productSkuId` + `productSkuSpecList[].specName`，如肩背包 Khaki/Beige/…）。`parsePageQuery` 抽出本页全部 SKU；`diffProductSkus` 对「本页再次出现的 productId」做 SKU 集合 diff，同商品内规格消失飞书橙卡告警（首轮只建 `snapshot.productSkuMap`，不跨页误判）；popup 展示「多规格商品」；`parseSkuSpecList` 仍保留并加深搜兜底。本地单测 `_test_sku_parse.js` 用 hit-068 验证 20 商品/37 SKU/6 多规格 + Beige 消失场景。用户需 chrome://extensions **关开插件开关** → popup 显示 `v13-后台SKU规格` → 开 goods/list 刷一次。

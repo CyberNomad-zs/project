@@ -1,0 +1,260 @@
+# TK · P2.0 内容分析（视频 + 商品卡）采集 POC 结论
+
+> 日期：2026-08-04（初版）· **2026-08-05 修订**  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · **经营计划 P2**（≠ 采集路线图已完成的 P2a/b/c）  
+> 镜像写法：[P1.7 广告细粒度 POC](./TK-P1-广告细粒度POC结论.md)  
+> **Verdict（门禁）：🟢 采集双侧通过（2026-08-05）** — 商品卡 **P2.1a 生产已闭环**；视频 **P2.1b 生产真采闭环**（Deal+Gardena 各 10 行 `content_id` 与 debug 全匹配；`fact_tiktok_content_daily` / `tiktok_content` / `GET /tk/content`）。**仍不建飞书 T6 / 任务台内容 TAB**，直至连续窗口真数 + 业务批
+
+---
+
+## 0. 命名冻结（本轮即生效，避免与现网飞书冲突）
+
+| 用途 | 建议编号 | 说明 |
+|------|----------|------|
+| 内容/视频日事实 → 飞书多维表 | **T6 内容日** | **不要**用 T4（现网健康日等） |
+| 内容看板 | **D4 视频内容** | **不要**用 D3（建表方案里商品 / 重绑清单里 AI 素材） |
+| 异常 `object_type` | **`content`** | 仅文档预留；**本轮不改** `010` CHECK |
+| 异常域中文 | **视频内容** | 任务台分析域文案；与店铺分析/广告/库存并列 |
+
+**采集门禁（2026-08-05）已过 content_id；P2.1b schema+ingest+生产真采 2026-08-05 已闭环。**  
+**仍禁止：** 飞书建 T6、任务台 `tk-content` 空页、把 7 日窗口均摊成日行、用热卖榜假填；**未业务批准前不把 video_list 挂日更。**  
+**已允许/已落地：** `fact_tiktok_product_traffic_daily`（P2.1a）；`fact_tiktok_content_daily` + ingest `tiktok_content` + `GET /tk/content`（P2.1b，013 本机+生产；Deal+Gardena 真采）。
+
+---
+
+## 1. POC 问题
+
+运营五维 / XMind / 三大块 **② 视频内容分析** 需要：
+
+1. **视频和照片概览**：视频归因 GMV、SKU 订单、曝光/播放、客户、视频排行  
+2. **商品卡 / 商品数据分析**：曝光、点击、CTR、订单、GMV、CVR（多渠道若有则记）  
+3. 可重复紫鸟抓取 → 样例进 `logs/`（可选日后 `ingest_raw` only）  
+4. **字段字典 + 门禁 verdict**，通过后才开 P2.1 schema
+
+---
+
+## 2. 仓库已交付
+
+| 文件 | 作用 |
+|------|------|
+| `collectors/tiktok-ads/scripts/scrape-content-overview-page.js` | 视频概览 KPI + 表行；支持 K/万 单位 |
+| `collectors/tiktok-ads/scripts/scrape-product-traffic-page.js` | 商品卡 KPI + 表行；表头「商品卡名称/曝光用户数/曝光到成交转化率」；K 单位 |
+| `collectors/tiktok-ads/scripts/_probe-content-page.js` | 粗 dump |
+| `collectors/tiktok-ads/scripts/_discover-content-nav.js` / `_discover-content-nav-deep.js` | 导航探路（顶栏为 clickable DIV） |
+| `collectors/tiktok-ads/scripts/_click-compass-nav.js` | 按文案点 Compass 顶栏 |
+| `collectors/tiktok-ads/scripts/run-content-poc.ps1` | 编排；**默认 SkipIngest**；debug JSON |
+| `collectors/tiktok-ads/scripts/run-content-click-poc.ps1` | data-overview → 点击导航 → scrape |
+| `config/stores.config.example.json` + deal/gardena-only | **已写入实页 URL** |
+
+```powershell
+cd collectors\tiktok-ads
+powershell -ExecutionPolicy Bypass -File .\scripts\run-content-poc.ps1 `
+  -ConfigPath .\config\stores.config.deal-only.json `
+  -Modules content_overview,product_traffic
+```
+
+**实页 URL（Deal UK `27501502216807`，2026-08-04 紫鸟实勘）：**
+
+| 模块 | 稳定 URL | 备注 |
+|------|----------|------|
+| 内容/视频 KPI（店级） | `https://seller-uk.tiktok.com/compass/video-analytics?shop_region=GB` | 顶栏「内容分析」落地；左树「视频 → 表现」 |
+| **视频详情（行级）** | `https://seller-uk.tiktok.com/compass/video-analytics/video-details?shop_region=GB` | **2026-08-05 实勘**：点「视频详情」落地；直访可稳（须等 SPA hydrate，bodyLen 壳≈200→表≈3k+） |
+| 商品卡 | `https://seller-uk.tiktok.com/compass/product-card-analytics?shop_region=GB` | 顶栏「商品卡」；**直访可稳** |
+| ❌ 勿用 | `compass/content-analysis/*`、`video-analytics/overview`、`video-analytics/detail`（单数） | 回退 `data-overview` |
+| ❌ 勿当本店视频行 | `compass/video-analytics/video-top-selling` | **平台热卖商品榜**，非本店视频列表 |
+
+---
+
+## 3. 页面实勘（紫鸟 · Deal to deal）
+
+| 项 | 视频 / 内容分析 (A) | 商品卡 (B) |
+|----|---------------------|------------|
+| 实页完整 URL | `…/compass/video-analytics?shop_region=GB` | `…/compass/product-card-analytics?shop_region=GB` |
+| 数字卡 / 表 / 导出 | **数字卡有**：视频归因 GMV / SKU 订单 / 日均客户 / 商品曝光；账号表现；「视频排行榜」区文案有，**本次 DOM 表未解析出本店视频行**；导出未测 | **数字卡有**：曝光用户数 / 日客户数 / GMV / 曝光到成交转化率；**畅销商品表**有；流量来源表有；「导出数据」按钮可见未点 |
+| 日期窗口 | 关键指标区显示 **「今天」**；账号表现区另有 **最近 7 / 28 天** | 页眉 **「最近 7 天」**（GMT+00:00） |
+| 稳定 id | **店级 KPI 无 content_id**；本店视频行未采到 | 标题内 `ID: 1729…` → `product_id` **稳定**；详情链 `product-card-details?id=` |
+| 样例 debug | `logs/content-direct-…video-analytics-shop…-20260804-173501.json`（ok）<br>`logs/content_overview-click-debug-…-172838.json`（曾落 top-selling 失败）<br>`logs/content_overview-debug-…-174720.json`（`about:blank` 抖动失败） | `logs/product_traffic-click-debug-…-172838.json`<br>`logs/content-direct-…product-card…-173501.json`<br>`logs/product_traffic-debug-…-174720.json`（**K 修复后行曝光正确**） |
+| 连跑结构 | KPI 字段名稳定；**窗口复用/Bridge 偶发 `about:blank`**，需 visit 后校验 `location.href` | **稳定**：同表头 + product_id + gmv/cvr/impressions |
+
+**导航结论：**
+
+- Compass 顶栏是 `_navButton_*` **可点 DIV**，不是稳定 `<a href>`；猜 path 易回 `data-overview`。  
+- **商品卡 / 视频 analytics 已证实可直访**（优先写 config，不必每次 click）。  
+- 左树文案是「视频 / 表现 / 视频详情 / 短视频成交榜」，与旧截图「视频和照片概览」不完全同名，**以实页为准**。
+
+---
+
+## 4. 可采字段表
+
+### 4.1 视频 / 内容（→ 未来 `tk.fact_tiktok_content_daily` 或店级旁路）
+
+| 后台文案 | 建议列 | 类型 | 粒度 | 可采? | 证据 |
+|----------|--------|------|------|-------|------|
+| 视频归因 GMV | `attributed_gmv` | numeric | **店×窗口** | ✅ | Deal 直采 `0`（£0.00），label 命中 |
+| 视频归因 SKU 订单数 | `attributed_sku_orders` | int | 店×窗口 | ✅ | `0` |
+| 日均客户数 | `customers` | int | 店×窗口 | ✅ | `0` |
+| 商品曝光数 | `impressions` | int | 店×窗口 | ✅ | `195` |
+| 播放 | `play_count` | int | — | ⬜ 弱 | 流量区有「视频播放量」文案，KPI 卡未稳定抽出 |
+| 点击 / CTR | `clicks` / `ctr` | — | — | ⬜ | 概览主卡无；榜单页字段属平台热卖，**不作本店** |
+| 视频标题 | `content_title` | text | 行 | ✅ | 表头「视频信息」；Deal 10 行样例 |
+| **视频 ID** | `content_id` | text | 行 | ✅ **2026-08-05** | 稳定键 = `…/video-detail-item?id=7667…`（**不要**从标题抽长数字，会误成商品 id） |
+| VV / 播放 | `play_count` | int | 行 | ✅ | 表头 **VV** |
+| 绑定账号视频归因 GMV | `attributed_gmv` | numeric | 行 | ✅ | 样例多为 £0.00（低播期仍可解析） |
+| 归因 SKU 订单数 | `attributed_sku_orders` | int | 行 | ✅ | |
+| 归因成交件数 | `attributed_units` | int | 行 | ✅ | |
+| 点击成交转化率 | `cvr` | numeric | 行 | ✅ | |
+| 商品曝光 / 点击 | `impressions` / `clicks` | int | 行 | ✅ | |
+| 发布时间 | `published_at`（raw） | text | 行 | ✅ | 如 `2026年7月29日 10:21 15s` |
+| 渠道 | `channel` | text | — | 🟡 | 默认 `short_video`；Tab「已绑定的账号 / 联盟账号 / 全部」可作账号维（未入 fact） |
+| 关联商品 | `product_id` | text | 行 | ⬜ | 表有「商品」列，本店样例多为空 |
+| 窗口文案 | `raw_extra.window` | text | — | ✅ | 详情页 **「最近 7 天」**；概览主卡曾见「今天」——须原样保留，**禁均摊** |
+
+### 4.2 商品卡流量（→ 未来 `tk.fact_tiktok_product_traffic_daily`）
+
+| 后台文案 | 建议列 | 类型 | 粒度 | 可采? | 证据 |
+|----------|--------|------|------|-------|------|
+| 曝光用户数（页卡） | `impressions` | int | 店×窗口 | ✅ | 文案 `24.50K`；解析后 **24500**（K 修复后） |
+| 日客户数（页卡） | `customers` | int | 店×窗口 | ✅ | `29`（直采 sample） |
+| GMV（页卡） | `gmv` | numeric | 店×窗口 | ✅ | **£328.37** |
+| 曝光到成交转化率 | `cvr` | numeric | 店×窗口 | ✅ | **0.12%** |
+| 点击 / CTR（页卡） | `clicks` / `ctr` | — | 店 | ⬜ | 主卡无独立点击；流量来源表有观看/曝光，未做结构化 |
+| 商品卡名称 | `title` | text | 行 | ✅ | 含长标题 |
+| 标题内 ID / 详情链 | `product_id` | text | 行 | ✅ | 如 `1729865746588211715` |
+| 行 GMV | `gmv` | numeric | 行 | ✅ | 如 `112.18` |
+| 行 曝光用户数 | `impressions` | int | 行 | ✅ | `11.40K` → **11400**（修 K 后） |
+| 行 曝光到成交转化率 | `cvr` | numeric | 行 | ✅ | 如 `0.09` |
+| 渠道默认 | `channel` | text | 行/店 | ✅ | 固定 `product_card`；页内另有「推荐/搜索/…」流量来源表（P2.1 可选第二维） |
+| 表头 | — | — | — | ✅ | `商品卡名称, GMV, 曝光到成交转化率, 曝光用户数, 操作` |
+
+### 4.3 不可采 / 不稳定
+
+| 项 | 说明 |
+|----|------|
+| ~~本店视频行 / content_id~~ | ✅ **已解（2026-08-05）**：`video-details` 表 + `video-detail-item?id=`；`video-top-selling` 仍 **禁止**当本店内容事实 |
+| 单日 biz_date 选择器 | 未验证 `set-date-range.js`；商品卡/视频详情默认 **最近 7 天** |
+| 窗口复用 `about:blank` / 壳页 | `run-content-poc` 已加 Bridge 探活 + URL gate + **video-details bodyLen&lt;800 等 hydrate**；仍偶发 open 后 Bridge 瞬断，重试可恢复 |
+| Bridge 间歇断连 | open 后首 visit 常报无法连接；`Test-BridgeAlive` + 重试后多可恢复 |
+| 页级 KPI 与行不同窗口 | 概览 vs 详情 vs 商品卡窗口可能不一致——写入须带 `window` / **禁止无标注拆日** |
+| 点击率（商品卡主路径） | 表无独立 CTR 列；有 CVR（曝光→成交）与曝光，**CTR 非本页主指标** |
+| 视频仅 1 店行级 | ✅ Deal+**Gardena** 各 10 行 content_id（2026-08-05 真采入库） |
+| 商品卡 2 店 | ✅ Deal+Gardena；Deal **biz=2026-08-04** 复采 `raw_extra.window=最近 7 天`（08-03 旧行 window 空可忽略） |
+| EU Pop | 仍 `opsExclude*`；POC 未测 |
+| 生产 ingest 500（已修） | 2026-08-05：`Settings` 缺 `tk_rules_project_center_task`（镜像旧）→ 已 scp `config.py` + rebuild api |
+
+---
+
+## 5. biz_date 与关联键
+
+| 议题 | 结论 |
+|------|------|
+| 单日可选？ | **未证实**。视频主卡偏「今天」；商品卡「最近 7 天」。 |
+| 若仅近 7 天 | **禁止**把 7 日窗口均摊成 7 条日事实。P2.1 商品卡建议：`biz_date = 采集日或窗口结束日` + `raw_extra.window='近7天'` + 规则侧暂不做严格日环比，或另建 `window_days=7` 快照语义。 |
+| 视频 KPI | 可先 **店×采集日** 快照（标明 window=今天/近N天），**不要**假造 content 行。 |
+| content ↔ product | 商品侧 `product_id` 可关联；视频行「商品」列常空 → **暂不能**强绑 content↔product。 |
+| content ↔ ads creative | 依赖 P1.7；本轮不 POC 创意页。 |
+| 币种 | 页面 £ → `GBP`（Deal UK）。 |
+
+---
+
+## 6. 门禁 Verdict
+
+**开 P2.1 前清单对照：**
+
+| # | 条件 | 结果 |
+|---|------|------|
+| 1 | ≥1 店视频侧非空核心指标 | ✅ 店级 KPI（08-04）+ **行级 10 content_id**（08-05 `video_list`） |
+| 2 | ≥1 店商品卡非空 + product_id | ✅ Deal+Gardena 各 10 行 |
+| 3 | 同 URL/脚本结构稳定 | ✅ 商品卡稳；视频详情需 hydrate 等待（已写入 gate） |
+| 4 | 字段字典 + biz_date 书面 | ✅ 本节 |
+| 5 | 不用 campaign / 热卖榜假填内容 | ✅；`video-top-selling` 负向对照 |
+
+| Verdict | 含义 | 下一步 |
+|---------|------|--------|
+| **🟢 采集通过** | A+B 均可稳采 | **P2.1a/b 均已生产真采闭环**；下一刀连续窗 / 规则 / T6（业务批） |
+| 🟡 部分通过 | 仅一侧 | （历史 08-04） |
+| ❌ 不通过 | 两侧均无稳数 | 冻结 |
+
+### **当前：🟢 采集双侧通过 + P2.1b 生产真采（2026-08-05 · Deal+Gardena 紫鸟）**
+
+**含义与边界：**
+
+1. **已落地（P2.1a）：**  
+   - `tk.fact_tiktok_product_traffic_daily` + ingest `tiktok_product_traffic` + `GET /tk/product-traffic`  
+   - 粒度：`shop × biz_date(窗口锚点) × product_id × channel=product_card`  
+   - Deal biz=**2026-08-04** 10 行 **window=最近 7 天**（dup 刷新）；Gardena 08-03 window=最近 7 天  
+2. **已落地（P2.1b，2026-08-05）：**  
+   - 行级 content_id 稳定源：`scrape-video-list-page.js` + URL `…/video-analytics/video-details`  
+   - `013_tk_content_daily.sql` → `tk.fact_tiktok_content_daily`（本机+生产）  
+   - ingest `tiktok_content` + `ConvertTo-QingquanContentIngestItems` + `run-content-poc -Modules video_list -SkipIngest:$false -DryRun false`  
+   - 只读 `GET /tk/content`；粒度：`shop × biz_date(窗口锚点) × channel × content_id` + `raw_extra.window`  
+   - **生产真采：** Deal `27501502216807` **10** 行 + Gardena `27328767468273` **10** 行；biz=**2026-08-04**；window=`最近 7 天` / `Last 7 days`；content_id 与 debug **全匹配**；冒烟 `7667000…001` 已删  
+   - Gardena 样例：最高播 4800 / 归因 GMV £44.95（有成交视频，非全 0）  
+   - **尚未：** 连续多日窗口复采 / 飞书 T6 / 任务台内容 TAB / P2.3 规则 / 日更计划任务  
+3. **仍禁止：** 把 7 日窗口拆成 7 条日事实；用 `video-top-selling` 当本店视频；未过 hydrate 的空壳页入库。  
+4. **运维备注：** 生产 api 须含 `Settings.tk_rules_project_center_task`（缺则任意 ingest 批末 500）。
+
+填写人 / 日期：**2026-08-04 Deal 初勘 · 2026-08-05 content_id 门禁 + traffic window + Deal/Gardena video_list 真采**
+
+---
+
+## 7. 过渡期运营用法
+
+- 任务台 / 飞书：**无**内容 TAB；异常筛选仍为 店铺分析 / 广告 / 库存  
+- 内容巡检：人工进商家中心 **内容分析 / 商品卡**  
+- 广告继续系列规则（含 burn/cpa）  
+- 采集日更：**不**把 `run-content-poc` / `video_list` 挂计划任务，直至 content 事实层产品化且业务批准入日更  
+
+---
+
+## 8. 验收勾选（P2.0）
+
+- [x] 探针 + scrape + run 脚本入库  
+- [x] example / deal / gardena config 实页 URL  
+- [x] 本结论文档 + 命名冻结 T6/D4 / object_type=content  
+- [x] 明确不建空 schema（行级 content）  
+- [x] 紫鸟实跑 ≥1 店 debug JSON（商品卡多轮；视频 KPI 直采）  
+- [x] 字段表勾选 + biz_date 策略（窗口快照，禁均摊）  
+- [x] Verdict **🟢 采集双侧通过（2026-08-05）**  
+- [x] Gardena 第二店 product_traffic 入库（2026-08-04）
+- [x] 视频行级 content_id（Deal `video-details`，10/10 与 href id 一致）
+- [x] blank/Bridge/hydrate gate 写入 `run-content-poc.ps1`
+- [x] Deal product_traffic window 复采 → PG `最近 7 天`（biz=2026-08-04）
+- [x] Gardena `video_list` 复跑（第二店，2026-08-05）
+- [x] P2.1b schema + ingest `tiktok_content` + `GET /tk/content`（代码 2026-08-05）
+- [x] 生产 apply `013_tk_content_daily.sql` + api rebuild（2026-08-05；`main.py` 补挂 `tk_ops`/`tk_anomaly_tasks`）
+- [x] Deal/Gardena `video_list` 真采入库（SkipIngest:$false；各 accepted=10；content_id 全匹配）
+
+---
+
+## 9. 门禁通过后 backlog
+
+| # | 项 | 状态建议 |
+|---|-----|----------|
+| P2.1a | `tk.fact_tiktok_product_traffic_daily` + ingest + GET | ✅ 生产闭环；Deal window 08-05 已补 |
+| P2.1b-collect | 视频详情 URL + content_id scrape | ✅ **2026-08-05 Deal+Gardena**；`scrape-video-list-page.js` / `run-content-poc -Modules video_list` |
+| **P2.1b-schema** | `fact_tiktok_content_daily` + ingest + GET | ✅ 代码+生产 apply+真采 **40 行**（2 店×2 窗×10） |
+| P2.1c | 可选店级 content KPI 表/raw | 可选；行级优先 |
+| P2.2 | ingest | ✅ product_traffic + content |
+| P2.3 | rules | ✅ 014 + `tk_content_rules`；生产 imp_no_order=2 |
+| P2.4 | 飞书 **T6 / D4** | 有数；**待业务批再建** |
+| P2.5 | 任务台 | ✅ API；异常筛「视频内容」；完整 TAB 后置 |
+| P2.6 | 关联键 | 商品 id 先；视频 content_id 已有、商品列弱 |
+| 可选 | 广告创意全量（**另过 P1.7**） | 不绑死本结论 |
+
+---
+
+## 10. 关键样例路径（本机 logs）
+
+```text
+collectors/tiktok-ads/logs/
+  # —— 2026-08-05 P2.1b 真采入库 ——
+  video_list-debug-27501502216807-20260805-104328.json     # Deal 真采→PG accepted=10
+  video_list-debug-27328767468273-20260805-104710.json     # Gardena 真采→PG accepted=10（window=Last 7 days）
+  video_list-debug-27501502216807-20260805-092755.json     # 早先 POC content_id×10
+  product_traffic-debug-27501502216807-20260805-093803.json # window=最近 7 天；ingest dup=10
+  video-details-deep-summary-20260805-092034.json
+  video-detail-click-summary-20260805-091434.json
+  # —— 2026-08-04 P2.0 ——
+  content-direct-summary-20260804-173501.json
+  product_traffic-debug-27501502216807-20260804-174720.json
+```

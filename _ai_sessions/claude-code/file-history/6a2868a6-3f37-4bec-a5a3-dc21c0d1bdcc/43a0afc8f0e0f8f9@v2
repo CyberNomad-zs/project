@@ -1,0 +1,60 @@
+# -*- coding: utf-8 -*-
+"""只读：dump 金猫 当前「未发货」列表全部行的关键列，看真实平台订单号格式 + 有无这5个号的痕迹。
+绝不发货。ASCII-only 打印避免 gbk 崩。"""
+import sys, os, time, json
+sys.path.insert(0, r"E:\project\海外仓\automation")
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")
+TARGET = ['P2AL6TCD62970','P2AK6TCD62906','P2AK6TCD62888','P2AK6TCD62896','P2AK6TCD62890']
+OUTDIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def dump(page):
+    return page.evaluate(r"""() => {
+        const hw = document.querySelector('.el-table__header-wrapper');
+        const heads = hw ? [...hw.querySelectorAll('thead th')].map(t=>t.innerText.trim()).filter(Boolean) : [];
+        const bw = document.querySelector('.el-table__body-wrapper');
+        const seen=new Set(); const rows=[];
+        if(bw){ [...bw.querySelectorAll('tr.el-table__row')].forEach(tr=>{
+            const o={}; [...tr.querySelectorAll('td')].forEach((td,i)=>{o[heads[i]||('c'+i)]=td.innerText.replace(/\s+/g,' ').trim();});
+            const key=JSON.stringify(o); if(seen.has(key))return; seen.add(key); rows.push(o);
+        }); }
+        const totalEl = document.querySelector('.el-pagination__total');
+        return {rows, total: totalEl ? totalEl.innerText : ''};
+    }""")
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True); page = ctx.new_page()
+        for _ in range(5):
+            try: page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000); time.sleep(5)
+        # 默认未发货、空搜索、直接查询看全量
+        try:
+            page.click("button:has-text('查询')"); time.sleep(2.5)
+        except Exception:
+            pass
+        d = dump(page)
+        out = {"total": d["total"], "row_count": len(d["rows"]), "rows": d["rows"]}
+        # 目标号是否作为子串出现在任意行任意字段
+        blob = json.dumps(d["rows"], ensure_ascii=False)
+        out["target_hits"] = {t: (t in blob) for t in TARGET}
+        with open(os.path.join(OUTDIR, "wms_dump_unshipped.json"), "w", encoding="utf-8") as f:
+            json.dump(out, f, ensure_ascii=False, indent=2)
+        print("total=", d["total"], "rows=", len(d["rows"]))
+        print("target_hits=", out["target_hits"])
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

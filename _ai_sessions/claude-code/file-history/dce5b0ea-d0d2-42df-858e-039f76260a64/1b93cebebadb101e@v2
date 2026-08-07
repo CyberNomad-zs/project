@@ -1,0 +1,38 @@
+# -*- coding: utf-8 -*-
+"""诊断：定位并保存 ERP 验证码图片，打印其 src / 尺寸，OCR 一次。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+import ddddocr
+
+LOGIN = "https://www.sellfox.com/amzup-web-main/login.html"
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    page = browser.new_context(ignore_https_errors=True).new_page()
+    page.goto(LOGIN, wait_until="domcontentloaded", timeout=45000)
+    page.wait_for_selector("#password", timeout=20000)
+    time.sleep(2)
+
+    cap = page.get_by_placeholder("请输入图形验证码").element_handle()
+    cbox = cap.bounding_box()
+    print("captcha input box:", cbox)
+
+    imgs = page.query_selector_all("img")
+    print("total imgs:", len(imgs))
+    for i, img in enumerate(imgs):
+        b = img.bounding_box()
+        src = (img.get_attribute("src") or "")[:80]
+        vis = bool(b and (b["width"] or b["height"]))
+        print(f"  img#{i} vis={vis} box={b} src={src}")
+        if b and b["width"] > 30 and b["height"] > 15:
+            try:
+                img.screenshot(path=os.path.join(config.DUMP_DIR, f"cap_img_{i}.png"))
+            except Exception as e:
+                print("     shot err", e)
+
+    # 也把整个登录卡片截下来
+    page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_login_full.png"), full_page=True)
+    browser.close()
+print("DONE")

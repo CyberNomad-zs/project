@@ -1,0 +1,49 @@
+# -*- coding: utf-8 -*-
+"""
+只读验证：账号切换 bug 修复后，走新的 wms.ship_shop（每店铺独立干净 context），
+复刻 run_pipeline 的 WMS 顺序「先黑猫、后金猫」，确认金猫读到的是【自己】的未发货，
+而不是黑猫刚发完的 0。
+
+强制 config.DRY_RUN=True —— set_courier/batch_ship 在 DRY 下不真正点击，绝不发货。
+判定：
+  · 金猫 before ≈ 19（自己的未发货）           -> 修复生效，账号不再串
+  · 金猫 before == 0（=黑猫发完的空列表）       -> 仍在串（修复无效）
+用法：python capture/wms_fix_verify.py
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+config.DRY_RUN = True   # 强制空跑，绝不真发货（防环境变量误设 HWC_DRY_RUN=0）
+import core, secrets, wms
+from playwright.sync_api import sync_playwright
+
+JMSM = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")   # 金猫
+JMCAT = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMCAT")  # 黑猫
+
+
+def main():
+    print(f"DRY_RUN = {config.DRY_RUN}（必须 True）")
+    with sync_playwright() as p:
+        wms_browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        try:
+            print("\n===== ① 黑猫 ship_shop（独立 context, RM, DRY）=====")
+            r1 = wms.ship_shop(wms_browser, JMCAT, "RM") or {}
+            print(f"黑猫结果: before={r1.get('before')} left={r1.get('left')} left_orders={len(r1.get('left_orders') or [])}")
+
+            print("\n===== ② 金猫 ship_shop（独立 context, RM, DRY）=====")
+            r2 = wms.ship_shop(wms_browser, JMSM, "RM") or {}
+            print(f"金猫结果: before={r2.get('before')} left={r2.get('left')} left_orders={len(r2.get('left_orders') or [])}")
+        finally:
+            try: wms_browser.close()
+            except Exception: pass
+
+    print("\n" + "=" * 50)
+    jm_before = (r2 or {}).get("before")
+    if jm_before and jm_before > 0:
+        print(f"[OK] 修复生效：金猫 before={jm_before}（读到金猫自己的未发货，不再是黑猫的 0）")
+    else:
+        print(f"[NG] 仍异常：金猫 before={jm_before}（可能仍在串会话，或金猫此刻确实无单）")
+
+
+if __name__ == "__main__":
+    main()

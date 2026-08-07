@@ -1,0 +1,10 @@
+dist/
+_extract/
+*.pem
+.DS_Store
+Thumbs.db
+# 勿提交本地密钥备份
+**/secrets*
+**/*secret*
+.env
+.env.*

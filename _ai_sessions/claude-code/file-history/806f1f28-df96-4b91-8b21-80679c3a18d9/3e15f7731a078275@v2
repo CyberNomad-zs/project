@@ -1,0 +1,421 @@
+<script setup>
+import { computed, onMounted, reactive, ref } from 'vue'
+import { api, getToken, setToken } from './api'
+
+const token = ref(getToken())
+const me = ref(null)
+const loading = ref(false)
+const error = ref('')
+const health = ref(null)
+
+const loginForm = reactive({ username: 'admin', password: 'admin123' })
+const filters = reactive({ status: '', platform: '', page: 1, page_size: 20 })
+const tasks = ref([])
+const total = ref(0)
+const shops = ref([])
+
+const drawer = reactive({
+  open: false,
+  task: null,
+  note: '',
+  mode: 'progress', // progress | resolve | create
+})
+
+const createForm = reactive({
+  platform: 'tiktok',
+  anomaly_type: 'low_roi',
+  biz_id: '',
+  title: '',
+  progress_note: '',
+})
+
+const stats = computed(() => {
+  const items = tasks.value || []
+  return {
+    total: total.value,
+    open: items.filter((t) => t.status === 'open').length,
+    doing: items.filter((t) => t.status === 'in_progress').length,
+    resolved: items.filter((t) => t.status === 'resolved').length,
+  }
+})
+
+function statusLabel(s) {
+  return (
+    {
+      open: '待处理',
+      in_progress: '进行中',
+      resolved: '已闭环',
+      cancelled: '已取消',
+    }[s] || s
+  )
+}
+
+function fmtTime(v) {
+  if (!v) return '—'
+  try {
+    return new Date(v).toLocaleString()
+  } catch {
+    return String(v)
+  }
+}
+
+async function checkHealth() {
+  try {
+    health.value = await api('/health', { auth: false })
+  } catch (e) {
+    health.value = { status: 'down', detail: e.message }
+  }
+}
+
+async function doLogin() {
+  error.value = ''
+  loading.value = true
+  try {
+    const data = await api('/api/v1/auth/login', {
+      method: 'POST',
+      auth: false,
+      body: { username: loginForm.username, password: loginForm.password },
+    })
+    setToken(data.access_token)
+    token.value = data.access_token
+    await bootstrap()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+function logout() {
+  setToken('')
+  token.value = ''
+  me.value = null
+  tasks.value = []
+  shops.value = []
+}
+
+async function bootstrap() {
+  error.value = ''
+  loading.value = true
+  try {
+    me.value = await api('/api/v1/auth/me')
+    await Promise.all([loadTasks(), loadShops(), checkHealth()])
+  } catch (e) {
+    if (e.status === 401) logout()
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function loadTasks() {
+  const q = new URLSearchParams()
+  if (filters.status) q.set('status', filters.status)
+  if (filters.platform) q.set('platform', filters.platform)
+  q.set('page', String(filters.page))
+  q.set('page_size', String(filters.page_size))
+  const data = await api(`/api/v1/tasks?${q.toString()}`)
+  tasks.value = data.items || []
+  total.value = data.total || 0
+}
+
+async function loadShops() {
+  const data = await api('/api/v1/shops')
+  shops.value = data.items || []
+}
+
+function openProgress(task) {
+  drawer.open = true
+  drawer.mode = 'progress'
+  drawer.task = task
+  drawer.note = ''
+}
+
+function openResolve(task) {
+  drawer.open = true
+  drawer.mode = 'resolve'
+  drawer.task = task
+  drawer.note = '已处理完成'
+}
+
+function openCreate() {
+  drawer.open = true
+  drawer.mode = 'create'
+  drawer.task = null
+  drawer.note = ''
+  createForm.biz_id = ''
+  createForm.title = ''
+  createForm.progress_note = ''
+}
+
+function closeDrawer() {
+  drawer.open = false
+}
+
+async function submitDrawer() {
+  error.value = ''
+  loading.value = true
+  try {
+    if (drawer.mode === 'create') {
+      if (!createForm.biz_id || !createForm.title) throw new Error('请填写业务ID与标题')
+      await api('/api/v1/tasks', {
+        method: 'POST',
+        body: {
+          platform: createForm.platform,
+          anomaly_type: createForm.anomaly_type,
+          biz_id: createForm.biz_id,
+          title: createForm.title,
+          progress_note: createForm.progress_note || undefined,
+        },
+      })
+    } else if (drawer.mode === 'progress') {
+      if (!drawer.note.trim()) throw new Error('请填写进度说明')
+      await api(`/api/v1/tasks/${drawer.task.id}/progress`, {
+        method: 'POST',
+        body: { note: drawer.note, status: 'in_progress' },
+      })
+    } else if (drawer.mode === 'resolve') {
+      await api(`/api/v1/tasks/${drawer.task.id}/resolve`, {
+        method: 'POST',
+        body: { note: drawer.note || undefined },
+      })
+    }
+    closeDrawer()
+    await loadTasks()
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function triggerFeishu() {
+  error.value = ''
+  loading.value = true
+  try {
+    const r = await api('/api/v1/export/feishu', {
+      method: 'POST',
+      body: { table_key: 'tasks', mode: 'incremental' },
+    })
+    alert(`已入队飞书同步 job: ${r.job_id}`)
+  } catch (e) {
+    error.value = e.message
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(async () => {
+  await checkHealth()
+  if (token.value) {
+    try {
+      await bootstrap()
+    } catch {
+      logout()
+    }
+  }
+})
+</script>
+
+<template>
+  <div v-if="!token" class="login-wrap">
+    <div class="card login-card">
+      <h1>清泉跨境系统</h1>
+      <div class="sub">运营任务台 · Phase0 演示</div>
+      <div class="stack">
+        <label class="field">
+          用户名
+          <input v-model="loginForm.username" autocomplete="username" />
+        </label>
+        <label class="field">
+          密码
+          <input v-model="loginForm.password" type="password" autocomplete="current-password" @keyup.enter="doLogin" />
+        </label>
+        <div v-if="error" class="error">{{ error }}</div>
+        <button class="btn btn-primary" :disabled="loading" @click="doLogin">
+          {{ loading ? '登录中…' : '登录' }}
+        </button>
+        <div class="muted">
+          默认账号 admin / admin123 · API
+          <span :style="{ color: health?.status === 'ok' ? 'var(--ok)' : 'var(--danger)' }">
+            {{ health?.status === 'ok' ? '在线' : '离线' }}
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div v-else class="app-shell">
+    <div class="topbar">
+      <div class="brand">
+        <h1>清泉跨境 · 任务台</h1>
+        <p>
+          {{ me?.display_name || me?.username || '用户' }}
+          · 对接演示
+          · API
+          <strong :style="{ color: health?.status === 'ok' ? 'var(--ok)' : 'var(--danger)' }">
+            {{ health?.status === 'ok' ? 'OK' : 'DOWN' }}
+          </strong>
+        </p>
+      </div>
+      <div class="actions">
+        <button class="btn btn-ghost" @click="triggerFeishu">同步飞书</button>
+        <button class="btn" @click="logout">退出</button>
+      </div>
+    </div>
+
+    <div class="grid-stats">
+      <div class="stat"><div class="label">任务总数</div><div class="value">{{ stats.total }}</div></div>
+      <div class="stat"><div class="label">本页待处理</div><div class="value">{{ stats.open }}</div></div>
+      <div class="stat"><div class="label">本页进行中</div><div class="value">{{ stats.doing }}</div></div>
+      <div class="stat"><div class="label">本页已闭环</div><div class="value">{{ stats.resolved }}</div></div>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content: space-between; margin-bottom: 12px">
+        <h2 style="margin: 0">任务列表</h2>
+        <div class="actions">
+          <button class="btn btn-primary" @click="openCreate">新建任务</button>
+          <button class="btn" :disabled="loading" @click="loadTasks">刷新</button>
+        </div>
+      </div>
+
+      <div class="row" style="margin-bottom: 12px">
+        <label class="field">
+          状态
+          <select v-model="filters.status" @change="filters.page = 1; loadTasks()">
+            <option value="">全部</option>
+            <option value="open">待处理</option>
+            <option value="in_progress">进行中</option>
+            <option value="resolved">已闭环</option>
+            <option value="cancelled">已取消</option>
+          </select>
+        </label>
+        <label class="field">
+          平台
+          <select v-model="filters.platform" @change="filters.page = 1; loadTasks()">
+            <option value="">全部</option>
+            <option value="amazon">Amazon</option>
+            <option value="tiktok">TikTok</option>
+            <option value="temu">Temu</option>
+          </select>
+        </label>
+        <div class="muted grow">店铺主数据 {{ shops.length }} 个 · 支持去重键闭环重建演示</div>
+      </div>
+
+      <div v-if="error" class="error" style="margin-bottom: 12px">{{ error }}</div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>状态</th>
+              <th>平台</th>
+              <th>异常</th>
+              <th>业务ID</th>
+              <th>标题</th>
+              <th>进度</th>
+              <th>更新时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="!tasks.length">
+              <td colspan="8" class="muted">暂无任务。可点「新建任务」演示去重/闭环，或等采集上报产生异常。</td>
+            </tr>
+            <tr v-for="t in tasks" :key="t.id">
+              <td><span class="badge" :class="t.status">{{ statusLabel(t.status) }}</span></td>
+              <td>{{ t.platform }}</td>
+              <td class="mono">{{ t.anomaly_type }}</td>
+              <td class="mono">{{ t.biz_id }}</td>
+              <td>{{ t.title }}</td>
+              <td>{{ t.progress_note || '—' }}</td>
+              <td class="muted">{{ fmtTime(t.updated_at) }}</td>
+              <td>
+                <div class="actions" v-if="t.status !== 'resolved' && t.status !== 'cancelled'">
+                  <button class="btn btn-ghost" @click="openProgress(t)">进度</button>
+                  <button class="btn btn-danger" @click="openResolve(t)">闭环</button>
+                </div>
+                <span v-else class="muted">—</span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>店铺主数据</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>平台</th>
+              <th>名称</th>
+              <th>外部ID</th>
+              <th>币种</th>
+              <th>状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="s in shops" :key="s.id">
+              <td>{{ s.platform }}</td>
+              <td>{{ s.name }}</td>
+              <td class="mono">{{ s.external_shop_id }}</td>
+              <td>{{ s.currency }}</td>
+              <td>{{ s.status }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div v-if="drawer.open" class="drawer-mask" @click.self="closeDrawer">
+      <div class="drawer">
+        <h2 style="margin-top: 0">
+          <template v-if="drawer.mode === 'create'">新建任务</template>
+          <template v-else-if="drawer.mode === 'progress'">更新进度</template>
+          <template v-else>闭环任务</template>
+        </h2>
+
+        <div v-if="drawer.mode === 'create'" class="stack">
+          <label class="field">平台
+            <select v-model="createForm.platform">
+              <option value="tiktok">tiktok</option>
+              <option value="amazon">amazon</option>
+              <option value="temu">temu</option>
+            </select>
+          </label>
+          <label class="field">异常类型
+            <input v-model="createForm.anomaly_type" placeholder="如 low_roi / listing_prime" />
+          </label>
+          <label class="field">业务ID
+            <input v-model="createForm.biz_id" placeholder="ASIN / 商品ID / 系列名" />
+          </label>
+          <label class="field">标题
+            <input v-model="createForm.title" placeholder="任务标题" />
+          </label>
+          <label class="field">备注
+            <textarea v-model="createForm.progress_note" placeholder="可选" />
+          </label>
+          <div class="muted">同一 平台+业务ID+异常类型 未闭环时再次创建会合并更新进度，不新建。</div>
+        </div>
+
+        <div v-else class="stack">
+          <div class="muted mono">{{ drawer.task?.dedupe_key }}</div>
+          <div><strong>{{ drawer.task?.title }}</strong></div>
+          <label class="field">说明
+            <textarea v-model="drawer.note" :placeholder="drawer.mode === 'resolve' ? '闭环说明' : '今日处理进度'" />
+          </label>
+        </div>
+
+        <div class="actions" style="margin-top: 16px; justify-content: flex-end">
+          <button class="btn" @click="closeDrawer">取消</button>
+          <button class="btn btn-primary" :disabled="loading" @click="submitDrawer">
+            {{ loading ? '提交中…' : '确定' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

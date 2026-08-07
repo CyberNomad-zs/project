@@ -1,0 +1,104 @@
+// 用真实 background.js 的 diffOnSale 跑几个场景，验证「下架误报」已修 + 真下架仍报。
+import fs from 'node:fs';
+import vm from 'node:vm';
+
+const src = fs.readFileSync('E:/project/temu/temu-plugin/background.js', 'utf8');
+
+// ---- 内存版 chrome.storage.local + 各种 no-op 监听器桩 ----
+function makeChrome(store) {
+  const noop = { addListener() {} };
+  return {
+    storage: {
+      local: {
+        async get(keys) {
+          if (typeof keys === 'string') return { [keys]: store[keys] };
+          if (Array.isArray(keys)) { const o = {}; for (const k of keys) o[k] = store[k]; return o; }
+          return { ...store };
+        },
+        async set(obj) { Object.assign(store, obj); },
+        async remove(k) { delete store[k]; },
+      },
+      onChanged: noop,
+    },
+    runtime: { onMessage: noop, onInstalled: noop, onStartup: noop, lastError: null },
+    alarms: { onAlarm: noop, create() {}, clear() {} },
+    idle: { queryState() {} },
+    tabs: { query: async () => [], sendMessage() {}, reload() {}, update() {} },
+  };
+}
+
+let feishuCalls = [];
+function loadBG(store) {
+  feishuCalls = [];
+  const sandbox = {
+    chrome: makeChrome(store),
+    fetch: async (url, opts) => {
+      feishuCalls.push(JSON.parse(opts.body));
+      return { ok: true, json: async () => ({ code: 0 }) };
+    },
+    console, JSON, Date, Object, Array, Promise, Math, setTimeout, Number, String,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(src, sandbox, { filename: 'background.js' });
+  return sandbox;
+}
+
+// 造 N 个在售商品 {productId->{name,skc}}
+function mkMap(n, prefix = 'p') {
+  const m = {};
+  for (let i = 1; i <= n; i++) m[prefix + i] = { name: '商品' + i, skc: 's' + i };
+  return m;
+}
+function mkItems(n, prefix = 'p') {
+  return Object.entries(mkMap(n, prefix)).map(([productId, v]) => ({ productId, ...v }));
+}
+
+let pass = 0, fail = 0;
+function check(label, cond) { if (cond) { pass++; console.log('  ✓', label); } else { fail++; console.log('  ✗ FAIL', label); } }
+
+async function scenario(label, { snapshotIds, latestOnSale, items, tabCount, enabled = true, expectAlert, expectDelist }) {
+  const store = {
+    config: { webhook: 'http://x', enabled, intervalMinutes: 15 },
+    stores: { S: { latest: latestOnSale == null ? {} : { onSale: latestOnSale }, snapshot: snapshotIds ? { onSaleIds: snapshotIds } : {} } },
+  };
+  const bg = loadBG(store);
+  const d = await bg.diffOnSale('S', items, tabCount);
+  console.log('【' + label + '】 下架计数=' + d + ' 告警发出=' + feishuCalls.length);
+  check('下架数=' + expectDelist, d === expectDelist);
+  check('告警' + (expectAlert ? '应发出' : '不应发出'), (feishuCalls.length > 0) === expectAlert);
+  if (expectAlert && feishuCalls.length) {
+    const content = feishuCalls[0].card.elements[0].text.content;
+    console.log('    告警文案含：', content.split('\n').find((l) => /下架/.test(l)));
+  }
+  return store;
+}
+
+(async () => {
+  console.log('== 场景 1：污染扫描但干净 tab 数正常（修复后 scanOnSaleList 复位读到干净 13）==');
+  console.log('   items 只扫到 3（被筛选污染的残缺扫描），但 onSaleTabCount=13（复位后干净读数）→ 应跳过、不误报');
+  await scenario('污染残缺扫描', { snapshotIds: mkMap(13), latestOnSale: 3, items: mkItems(3), tabCount: 13, expectAlert: false, expectDelist: 0 });
+
+  console.log('\n== 场景 2：真实下架 10 个（13→3，干净视图下 tab 也是 3）==');
+  await scenario('真实下架10', { snapshotIds: mkMap(13), latestOnSale: 3, items: mkItems(3), tabCount: 3, expectAlert: true, expectDelist: 10 });
+
+  console.log('\n== 场景 3：分页没扫全（基准25，只扫到首页20，tab 显示25）→ 跳过 ==');
+  await scenario('分页残缺', { snapshotIds: mkMap(25), latestOnSale: 25, items: mkItems(20), tabCount: 25, expectAlert: false, expectDelist: 0 });
+
+  console.log('\n== 场景 4：tabCount 读不到 → 回退 latest.onSale=13 护栏，items=3<13 跳过 ==');
+  await scenario('回退latest', { snapshotIds: mkMap(13), latestOnSale: 13, items: mkItems(3), tabCount: null, expectAlert: false, expectDelist: 0 });
+
+  console.log('\n== 场景 5：首轮无基准 → 只建基准不报 ==');
+  await scenario('首轮建基准', { snapshotIds: null, latestOnSale: 13, items: mkItems(13), tabCount: 13, expectAlert: false, expectDelist: 0 });
+
+  console.log('\n== 场景 6：空扫描（失败/真0）→ 不动基准不报 ==');
+  await scenario('空扫描', { snapshotIds: mkMap(13), latestOnSale: 13, items: [], tabCount: 13, expectAlert: false, expectDelist: 0 });
+
+  console.log('\n== 场景 7：真实少量下架 2 个（13→11，扫到11，tab=11）→ 报 ==');
+  await scenario('真实下架2', { snapshotIds: mkMap(13), latestOnSale: 11, items: mkItems(11), tabCount: 11, expectAlert: true, expectDelist: 2 });
+
+  console.log('\n== 场景 8：禁用告警时不发（delistedCount 在 enabled 块内算，禁用时保持 0）==');
+  await scenario('禁用不发', { snapshotIds: mkMap(13), latestOnSale: 3, items: mkItems(3), tabCount: 3, enabled: false, expectAlert: false, expectDelist: 0 });
+
+  console.log(`\n结果：${pass} 通过，${fail} 失败`);
+  process.exit(fail ? 1 : 0);
+})();

@@ -1,0 +1,115 @@
+/* Click next page on TK order list. Returns JSON string for ziniao page exec. */
+(function () {
+  function clean(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+
+  function isDisabled(el) {
+    if (!el) return true;
+    if (el.disabled) return true;
+    var aria = (el.getAttribute && el.getAttribute('aria-disabled')) || '';
+    if (String(aria).toLowerCase() === 'true') return true;
+    var cls = (el.className || '').toString();
+    if (/disabled|is-disabled|p-disabled|btn-disabled/i.test(cls)) return true;
+    var parent = el.parentElement;
+    if (parent) {
+      var pcls = (parent.className || '').toString();
+      if (/disabled|is-disabled|p-disabled/i.test(pcls)) return true;
+    }
+    return false;
+  }
+
+  try {
+    var candidates = [];
+    var nodes = document.querySelectorAll('button, a, li, div, span');
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      var text = clean(el.textContent);
+      var aria = clean((el.getAttribute && el.getAttribute('aria-label')) || '');
+      var title = clean(el.getAttribute ? el.getAttribute('title') || '' : '');
+      var blob = (text + ' ' + aria + ' ' + title).toLowerCase();
+      // exact-ish next controls; avoid matching long paragraphs
+      if (text.length > 12 && aria.length > 20) continue;
+      if (
+        text === '下一页' ||
+        text === '下页' ||
+        text === '›' ||
+        text === '>' ||
+        text === '»' ||
+        /^next$/i.test(text) ||
+        /下一页|next page|go to next/i.test(aria) ||
+        /下一页|next page/i.test(title)
+      ) {
+        candidates.push(el);
+      } else if (/p-pagination-next|pagination-next|btn-next/i.test((el.className || '').toString())) {
+        candidates.push(el);
+      }
+    }
+
+    // also common icon-only next inside pagination
+    var pag = document.querySelectorAll('.p-pagination li, .p-pagination button, [class*="pagination"] button, [class*="Pagination"] button');
+    for (var j = 0; j < pag.length; j++) {
+      var p = pag[j];
+      var pt = clean(p.textContent);
+      var pc = (p.className || '').toString();
+      if (/next/i.test(pc) || pt === '>' || pt === '›' || pt === '»' || /下一页/.test(pt)) {
+        candidates.push(p);
+      }
+    }
+
+    var clicked = null;
+    for (var k = 0; k < candidates.length; k++) {
+      var c = candidates[k];
+      if (isDisabled(c)) continue;
+      // prefer visible
+      var rect = c.getBoundingClientRect ? c.getBoundingClientRect() : { width: 1, height: 1 };
+      if (rect.width < 1 && rect.height < 1) continue;
+      try {
+        c.click();
+        clicked = {
+          tag: c.tagName,
+          text: clean(c.textContent).slice(0, 40),
+          cls: (c.className || '').toString().slice(0, 80)
+        };
+        break;
+      } catch (e1) {}
+    }
+
+    // read active page number if any
+    var page = null;
+    var active = document.querySelector(
+      '.p-pagination-item-active, .p-pagination li.active, [class*="pagination"] [class*="active"]'
+    );
+    if (active) {
+      var pn = parseInt(clean(active.textContent), 10);
+      if (isFinite(pn)) page = pn;
+    }
+
+    if (!clicked) {
+      return JSON.stringify({
+        ok: false,
+        hasNext: false,
+        clicked: false,
+        page: page,
+        error: 'next button not found or disabled',
+        candidateCount: candidates.length
+      });
+    }
+
+    return JSON.stringify({
+      ok: true,
+      hasNext: true,
+      clicked: true,
+      page: page,
+      control: clicked,
+      error: null
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false,
+      hasNext: false,
+      clicked: false,
+      error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

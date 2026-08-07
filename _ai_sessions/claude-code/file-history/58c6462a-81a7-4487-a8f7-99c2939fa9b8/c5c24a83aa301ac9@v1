@@ -1,0 +1,74 @@
+import { log } from './logger.js';
+
+/**
+ * 通用弹窗关闭策略。切换/加载店铺后会弹出多种不固定的弹窗（推广券、消息通知、
+ * 调价提效、店铺提效、新功能提示等）。这里用「文本按钮 + 关闭图标 + Esc」多轮清扫，
+ * 而不依赖单一选择器。
+ */
+
+// 需要点击的按钮文本（精确/包含匹配）
+const DISMISS_TEXTS = [
+  '稍后再说', '我知道了', '知道了', '暂不领取', '暂不参与',
+  '以后再说', '下次再说', '不再提示', '关闭',
+];
+
+// 关闭图标的候选选择器（Temu / 常见 UI 库）
+const CLOSE_ICON_SELECTORS = [
+  '[aria-label="close"]',
+  '[aria-label="关闭"]',
+  '.ant-modal-close',
+  '.ant-drawer-close',
+  '.ant-notification-notice-close',
+  '[class*="closeIcon"]',
+  '[class*="close-icon"]',
+  '[class*="Close_"]',
+  '[class*="_close"]',
+  'svg[class*="close" i]',
+];
+
+/**
+ * 关闭当前页面上所有可见弹窗。多轮尝试直到无可关闭项或达到上限。
+ * @param {import('playwright').Page} page
+ */
+export async function closePopups(page, { rounds = 4 } = {}) {
+  let totalClosed = 0;
+  for (let r = 0; r < rounds; r++) {
+    let closedThisRound = 0;
+
+    // 1) 文本按钮
+    for (const t of DISMISS_TEXTS) {
+      const btn = page.getByRole('button', { name: t, exact: false }).first();
+      if (await safeClick(btn)) { closedThisRound++; continue; }
+      const el = page.getByText(t, { exact: true }).first();
+      if (await safeClick(el)) closedThisRound++;
+    }
+
+    // 2) 关闭图标
+    for (const sel of CLOSE_ICON_SELECTORS) {
+      const icons = page.locator(sel);
+      const n = Math.min(await icons.count().catch(() => 0), 5);
+      for (let i = 0; i < n; i++) {
+        if (await safeClick(icons.nth(i))) closedThisRound++;
+      }
+    }
+
+    // 3) 兜底 Esc（关闭 modal / drawer）
+    await page.keyboard.press('Escape').catch(() => {});
+
+    totalClosed += closedThisRound;
+    if (closedThisRound === 0) break;
+    await page.waitForTimeout(600);
+  }
+  if (totalClosed > 0) log.info(`关闭弹窗 ${totalClosed} 个`);
+  return totalClosed;
+}
+
+async function safeClick(locator) {
+  try {
+    if (!(await locator.isVisible({ timeout: 400 }))) return false;
+    await locator.click({ timeout: 1200, force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}

@@ -1,0 +1,279 @@
+/* TikTok order detail page scraper → line-level SKU rows.
+ * URL: /order/detail?order_no=...
+ * Calibrated 2026-08-06 seller-uk (DOM text heuristics).
+ */
+(function () {
+  function cleanText(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+
+  function detectCurrency(text) {
+    var s = String(text == null ? '' : text);
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    var money =
+      s.match(/[¥$€£￥]\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/) ||
+      s.match(/([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)\s*(?:USD|GBP|EUR|CNY|RMB)/i);
+    if (money) {
+      var n0 = Number(String(money[1]).replace(/,/g, ''));
+      if (isFinite(n0)) return n0;
+    }
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '');
+    s = s.replace(/USD|GBP|EUR|CNY|RMB/gi, '').replace(/%/g, '');
+    s = s.replace(/[^\d.\-].*$/, '');
+    var n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+
+  function extractOrderIdFromUrl(url) {
+    var s = String(url || '');
+    var m =
+      s.match(/[?&]order_no=(\d{15,22})/i) ||
+      s.match(/[?&]order_id=(\d{15,22})/i) ||
+      s.match(/\/order\/detail\/(\d{15,22})/i);
+    return m ? m[1] : '';
+  }
+
+  function extractOrderId(text) {
+    var s = cleanText(text);
+    var m = s.match(/\b(57\d{16})\b/) || s.match(/\b(\d{18})\b/) || s.match(/\b(\d{15,20})\b/);
+    return m ? m[1] : '';
+  }
+
+  function extractProductId(text) {
+    var s = cleanText(text);
+    var m =
+      s.match(/(?:商品\s*)?ID\s*[:：]\s*(\d{10,22})/i) ||
+      s.match(/\b(17\d{15,20})\b/) ||
+      s.match(/\b(\d{15,22})\b/);
+    return m ? m[1] : '';
+  }
+
+  function extractSellerSku(text) {
+    var s = cleanText(text);
+    var m =
+      s.match(/(?:Seller\s*)?SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-]{1,48})/i) ||
+      s.match(/商家\s*SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-]{1,48})/i) ||
+      s.match(/卖家\s*SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-]{1,48})/i);
+    if (!m) return '';
+    var sku = cleanText(m[1]);
+    if (/展开|全部|件商品/i.test(sku)) return '';
+    return sku;
+  }
+
+  function extractSkuId(text) {
+    var s = cleanText(text);
+    var m =
+      s.match(/(?:平台\s*)?SKU\s*ID\s*[:：]\s*(\d{10,22})/i) ||
+      s.match(/SKUID\s*[:：]\s*(\d{10,22})/i) ||
+      s.match(/sku_id\s*[=:：]\s*(\d{10,22})/i);
+    return m ? m[1] : '';
+  }
+
+  function extractQty(text) {
+    var s = cleanText(text);
+    var m =
+      s.match(/[x×]\s*(\d{1,4})\b/i) ||
+      s.match(/数量\s*[:：]?\s*(\d{1,4})/) ||
+      s.match(/Qty\s*[:：]?\s*(\d{1,4})/i) ||
+      s.match(/(\d{1,4})\s*件(?!商品)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  function looksLikeLineBlock(text) {
+    var s = cleanText(text);
+    if (!s || s.length < 8 || s.length > 1200) return false;
+    if (/订单号|Order ID|物流|买家|Customer|收货|支付方式/i.test(s) && !/SKU/i.test(s)) return false;
+    return /SKU|商品ID|Product ID|x\s*\d|×\s*\d|£|\$|€/i.test(s);
+  }
+
+  function parseLineFromText(text, idx) {
+    var s = cleanText(text).slice(0, 900);
+    if (!looksLikeLineBlock(s)) return null;
+    var sellerSku = extractSellerSku(s);
+    var skuId = extractSkuId(s);
+    var productId = extractProductId(s);
+    // 避免把订单号当 productId
+    if (productId && /^57\d{16}$/.test(productId)) productId = '';
+    var quantity = extractQty(s);
+    var unitPrice = null;
+    var pm = s.match(/[£$€]\s*[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?/);
+    if (pm) unitPrice = parseNumber(pm[0]);
+    var name = s;
+    name = name.replace(/(?:商品\s*)?ID\s*[:：]\s*\d{10,22}/gi, ' ');
+    name = name.replace(/(?:Seller\s*)?SKU\s*[:：]\s*[A-Za-z0-9_\-]+/gi, ' ');
+    name = name.replace(/商家\s*SKU\s*[:：]\s*[A-Za-z0-9_\-]+/gi, ' ');
+    name = name.replace(/(?:平台\s*)?SKU\s*ID\s*[:：]\s*\d+/gi, ' ');
+    name = name.replace(/[x×]\s*\d{1,4}\b/gi, ' ');
+    name = name.replace(/[£$€]\s*[0-9.,]+/g, ' ');
+    name = cleanText(name).slice(0, 160);
+    if (!sellerSku && !skuId && !productId && !name) return null;
+    // 纯噪声
+    if (!sellerSku && !skuId && /^(\d+\s*件商品)?$/.test(name)) return null;
+    var lineKey = '';
+    if (skuId) lineKey = 'sid:' + skuId;
+    else if (sellerSku) lineKey = 'sku:' + sellerSku;
+    else if (productId) lineKey = 'pid:' + productId + ':n' + idx;
+    else lineKey = 'n:' + idx + ':' + name.slice(0, 40);
+    return {
+      lineNo: idx,
+      lineKey: lineKey,
+      productId: productId || '',
+      productName: name || '',
+      sellerSku: sellerSku || '',
+      skuId: skuId || '',
+      quantity: quantity != null ? quantity : 1,
+      unitPrice: unitPrice,
+      payAmount: null,
+      currencyHint: detectCurrency(s),
+      rawText: s.slice(0, 240)
+    };
+  }
+
+  function dedupeLines(lines) {
+    var out = [], seen = {};
+    for (var i = 0; i < lines.length; i++) {
+      var L = lines[i];
+      if (!L) continue;
+      var k = L.lineKey || (L.sellerSku + '|' + L.skuId + '|' + L.productName);
+      if (!k || seen[k]) continue;
+      // 优先保留有 SKU 的
+      seen[k] = true;
+      out.push(L);
+    }
+    return out;
+  }
+
+  function collectCandidateBlocks() {
+    var blocks = [];
+    var sels = [
+      '[class*="sku"]',
+      '[class*="Sku"]',
+      '[class*="product"]',
+      '[class*="Product"]',
+      '[class*="goods"]',
+      '[class*="item"]',
+      'li',
+      'tr',
+      'section',
+      'article',
+      'div'
+    ];
+    var nodes = [];
+    for (var s = 0; s < sels.length; s++) {
+      var list = document.querySelectorAll(sels[s]);
+      for (var i = 0; i < list.length && nodes.length < 400; i++) nodes.push(list[i]);
+    }
+    var seenText = {};
+    for (var n = 0; n < nodes.length; n++) {
+      var el = nodes[n];
+      var tx = cleanText(el.textContent || '');
+      if (!tx || tx.length < 12 || tx.length > 700) continue;
+      if (!/SKU|商品ID|Product ID|x\s*\d|×\s*\d/i.test(tx)) continue;
+      // 跳过超大容器
+      if (el.querySelectorAll && el.querySelectorAll('div').length > 40) continue;
+      var key = tx.slice(0, 180);
+      if (seenText[key]) continue;
+      seenText[key] = true;
+      blocks.push(tx);
+      if (blocks.length >= 40) break;
+    }
+    return blocks;
+  }
+
+  try {
+    var url = location.href || '';
+    var title = document.title || '';
+    var orderId = extractOrderIdFromUrl(url);
+    if (!orderId) orderId = extractOrderId(title + ' ' + ((document.body && document.body.innerText) || '').slice(0, 500));
+
+    var onDetail = /\/order\/detail/i.test(url) || /order_no=/i.test(url);
+    if (!onDetail && !orderId) {
+      return JSON.stringify({
+        ok: false,
+        module: 'order_detail',
+        url: url,
+        title: title,
+        orderId: '',
+        lines: [],
+        error: 'not_order_detail: ' + url
+      });
+    }
+
+    var blocks = collectCandidateBlocks();
+    var lines = [];
+    for (var b = 0; b < blocks.length; b++) {
+      var line = parseLineFromText(blocks[b], b + 1);
+      if (line) lines.push(line);
+    }
+    lines = dedupeLines(lines);
+
+    // body fallback：按 SKU 标签切分
+    if (!lines.length) {
+      var body = cleanText((document.body && document.body.innerText) || '');
+      var parts = body.split(/(?=(?:Seller\s*)?SKU\s*[:：]|商家\s*SKU\s*[:：]|商品\s*ID\s*[:：])/i);
+      for (var p = 0; p < parts.length; p++) {
+        var L2 = parseLineFromText(parts[p].slice(0, 500), p + 1);
+        if (L2) lines.push(L2);
+      }
+      lines = dedupeLines(lines);
+    }
+
+    // 重新编号 lineNo
+    for (var i = 0; i < lines.length; i++) {
+      lines[i].lineNo = i + 1;
+      if (!lines[i].lineKey) lines[i].lineKey = 'n:' + (i + 1);
+    }
+
+    var currencyHits = { USD: 0, GBP: 0, EUR: 0, CNY: 0 };
+    for (var c = 0; c < lines.length; c++) {
+      var ch = lines[c].currencyHint;
+      if (ch && currencyHits[ch] != null) currencyHits[ch]++;
+    }
+    var currency = 'GBP', max = -1;
+    var ks = Object.keys(currencyHits);
+    for (var k = 0; k < ks.length; k++) {
+      if (currencyHits[ks[k]] > max) {
+        max = currencyHits[ks[k]];
+        currency = ks[k];
+      }
+    }
+    if (max <= 0) currency = detectCurrency((document.body && document.body.innerText) || '') || 'GBP';
+
+    var ok = !!(orderId && lines.length > 0);
+    return JSON.stringify({
+      ok: ok,
+      module: 'order_detail',
+      source: lines.length ? 'detail-dom' : 'none',
+      url: url,
+      title: title,
+      orderId: orderId,
+      currency: currency,
+      lines: lines,
+      lineCount: lines.length,
+      diag: {
+        blocks: blocks.length,
+        bodyLen: ((document.body && document.body.innerText) || '').length
+      },
+      error: ok ? null : (!orderId ? 'no order id' : 'no line items')
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false,
+      module: 'order_detail',
+      url: location.href || '',
+      lines: [],
+      error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

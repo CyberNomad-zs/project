@@ -1,0 +1,68 @@
+# -*- coding: utf-8 -*-
+"""登录两个 WMS 账号，查看未发货订单数；抓取 批量修改快递方 弹窗结构（el-select 选项、按钮）。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+
+
+def run(acc):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_context(ignore_https_errors=True).new_page()
+        for _ in range(5):
+            try:
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", acc["login"]); page.fill("#loginPwd", acc["password"]); page.click("#loginSubmit")
+        time.sleep(4)
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000)
+        time.sleep(5)
+        # 订单行数
+        rows = page.query_selector_all(".el-table__row")
+        print(f"[{acc['shop']}/{acc['login']}] 订单行数 ≈ {len(rows)}")
+
+        # 尝试全选 + 点击 批量修改快递方
+        try:
+            page.click(".el-table__header .el-checkbox", timeout=4000)
+            time.sleep(1)
+        except Exception as e:
+            print("  全选失败:", e)
+        try:
+            page.click("button:has-text('批量修改快递方')", timeout=5000)
+            time.sleep(2)
+        except Exception as e:
+            print("  点击批量修改快递方失败:", e)
+
+        # 抓取弹窗
+        dlg = page.query_selector(".el-dialog__wrapper:not([style*='display: none']) .el-dialog") or page.query_selector(".el-dialog")
+        if dlg:
+            with open(os.path.join(config.DUMP_DIR, f"wms_courier_dialog_{acc['login']}.html"), "w", encoding="utf-8") as f:
+                f.write(dlg.inner_html())
+            page.screenshot(path=os.path.join(config.DUMP_DIR, f"wms_courier_dialog_{acc['login']}.png"))
+            # 打开 el-select 看选项
+            try:
+                page.click(".el-dialog .el-select", timeout=3000)
+                time.sleep(1)
+                opts = page.eval_on_selector_all(".el-select-dropdown__item", "els=>els.map(e=>e.innerText.trim())")
+                print("  快递方选项:", opts)
+            except Exception as e:
+                print("  展开选项失败:", e)
+            # 弹窗按钮
+            btns = page.eval_on_selector_all(".el-dialog button", "els=>els.map(e=>e.innerText.trim()).filter(Boolean)")
+            print("  弹窗按钮:", btns)
+            # 弹窗标题
+            title = page.query_selector(".el-dialog__title")
+            print("  弹窗标题:", title.inner_text() if title else None)
+        else:
+            print("  未发现弹窗")
+        browser.close()
+
+
+for acc in secrets.WMS_ACCOUNTS:
+    run(acc)
+print("DONE")

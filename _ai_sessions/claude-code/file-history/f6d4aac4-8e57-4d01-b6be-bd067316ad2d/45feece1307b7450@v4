@@ -1,0 +1,73 @@
+# 本项目飞书多维表配置
+
+> **注意**：`App ID` / `App Secret` 只放在浏览器插件本地设置或环境变量中，**不要提交到 Git**。
+
+## 表格标识（插件设置）
+
+从多维表格浏览器地址解析：
+
+```
+https://xxx.feishu.cn/base/{APP_TOKEN}?table={TABLE_ID}&view=...
+```
+
+| 设置项 | 说明 |
+|--------|------|
+| App Token | URL 中 `/base/` 后面那一段 |
+| Table ID | 参数 `table=` 的值 |
+| App ID / App Secret | 飞书开放平台自建应用凭证 |
+
+示例（请换成你们自己的）：
+
+| 项 | 示例 |
+|----|------|
+| App Token | `bascnXXXXXXXX` |
+| Table ID | `tblXXXXXXXX` |
+
+## 需要创建的字段（名称建议与插件一致）
+
+| 字段名 | 类型建议 | 对应业务 |
+|--------|----------|----------|
+| 日期 | 日期 | 业务日期 |
+| 店铺 | 文本 | 店铺名 |
+| 店铺ID | 文本 | 可选 |
+| 品名 | 文本 | 日报「品名」= 广告系列/活动名 |
+| 广告花费 | 数字（2 位小数） | Spend/成本 |
+| 销量 | 数字 | Orders |
+| ROI | 数字（2 位小数） | ROI |
+| 销售额 | 数字（2 位小数） | 日报「销售额」/ GMV |
+| 抓取时间 | 日期时间 | 写入时刻 |
+| 数据源URL | 文本 | 排障 |
+| 状态 | 单选：success / partial / error | 质量标记 |
+
+插件 v1.0.3+ 支持别名：`品名`↔`广告系列名称`，`销售额`↔`总收入`。
+
+## 方式一：脚本自动建字段
+
+1. [飞书开放平台](https://open.feishu.cn/) 创建企业自建应用，拿到 App ID / App Secret  
+2. 开通多维表格权限并发布  
+3. 多维表格 → 添加该应用为协作者  
+4. 本机 PowerShell：
+
+```powershell
+cd <项目根目录>
+$env:FEISHU_APP_ID="cli_xxxxxxxx"
+$env:FEISHU_APP_SECRET="你的密钥"
+$env:FEISHU_APP_TOKEN="你的app_token"
+$env:FEISHU_TABLE_ID="你的table_id"
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-create-fields.ps1
+```
+
+## 方式二：手动建字段
+
+在飞书网页打开 base → 按上表「+」加列，**字段名复制粘贴**。
+
+## 插件里填写
+
+| 设置项 | 值 |
+|--------|-----|
+| App ID | 自建应用 cli_... |
+| App Secret | 应用密钥（仅本地） |
+| App Token | 多维表格 app_token |
+| Table ID | 数据表 table_id |
+
+保存 →「测试飞书」→ 广告页取消干跑后「立即抓取」。

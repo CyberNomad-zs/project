@@ -1,0 +1,81 @@
+# -*- coding: utf-8 -*-
+"""
+ERP（赛狐 Sellfox）操作：订单 > 订单处理（订单发货）
+说明：ERP 是多阶段流水线（待审核 -> 待处理 -> 物流下单[自营/三方仓] -> 待打单 -> 已发货）。
+      变更类动作（审核通过 / 确认发货）风险高，全部受 DRY_RUN 保护；默认只做只读统计 + 获取跟踪单号。
+      具体要自动化到哪一步，见 run_shipping.py 顶部开关，并与业务确认。
+"""
+import time
+import config, core
+from core import log
+
+
+def open_order_ship(page):
+    core.safe_goto(page, config.ERP_URL)
+    # 等 SPA 渲染工具栏/表格
+    for _ in range(30):
+        time.sleep(1)
+        if page.query_selector(".el-table") or page.query_selector("text=订单处理"):
+            break
+    time.sleep(2)
+
+
+def report_counts(page):
+    """读取左侧导航各阶段的数量，便于人工掌握全局。"""
+    labels = ["待审核", "待处理", "自营仓库", "三方仓", "有货", "缺货", "已发货", "已搁置", "异常处理"]
+    result = {}
+    for lb in labels:
+        try:
+            el = page.query_selector(f"text={lb}")
+            # 数字常在相邻节点
+            num = None
+            if el:
+                parent = el.evaluate_handle("e=>e.parentElement")
+                txt = page.evaluate("e=>e.innerText", parent)
+                import re
+                m = re.findall(r"\d+", txt or "")
+                num = m[-1] if m else None
+            result[lb] = num
+        except Exception:
+            result[lb] = None
+    log(f"[ERP] 阶段统计: {result}")
+    return result
+
+
+def get_tracking(page):
+    """获取跟踪单号：通常在'更多'下拉里。DRY_RUN 下不执行。best-effort，需按实际菜单微调。"""
+    if config.DRY_RUN:
+        log("[ERP][DRY] 将执行'获取跟踪单号'（已跳过）")
+        return
+    try:
+        page.click("button:has-text('更多')", timeout=5000)
+        time.sleep(1)
+        page.click("text=获取跟踪单号", timeout=5000)
+        time.sleep(3)
+        # 进度弹窗：状态 获取完成 -> 关闭
+        for _ in range(30):
+            btn = page.query_selector(".el-dialog button:has-text('关闭'), .el-dialog button:has-text('关 闭')")
+            if btn:
+                try: btn.click()
+                except Exception: pass
+                break
+            time.sleep(1)
+        log("[ERP] 已执行获取跟踪单号")
+    except Exception as e:
+        log(f"[ERP] 获取跟踪单号失败（需按实际菜单微调选择器）: {e}")
+
+
+def confirm_shipping(page):
+    """
+    确认发货（视频中的关键动作）：勾选待发订单 -> 确认发货 -> 弹窗'已选N个包裹,会扣减库存并提交平台' -> 确定。
+    ⚠️ 高风险：会扣库存并提交平台。默认 DRY_RUN 保护，且需与业务确认在哪个阶段(待处理/物流下单)执行。
+    """
+    if config.DRY_RUN:
+        log("[ERP][DRY] 将执行'确认发货'（已跳过，需业务确认阶段与筛选后再开启）")
+        return
+    log("[ERP] confirm_shipping 真实执行 —— 该分支需在明确阶段/筛选并联调后启用")
+    # TODO: 明确阶段(如'待处理'/'物流下单-三方仓')与筛选条件后实现：
+    #   1) 切到对应左侧导航
+    #   2) 勾选目标订单（注意排除 买家申请取消/超期/缺货 等异常）
+    #   3) page.click("button:has-text('确认发货')")
+    #   4) 处理弹窗: page.click(".el-message-box__btns button:has-text('确定')")

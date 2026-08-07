@@ -1,0 +1,118 @@
+import { loadConfig } from './config.js';
+import { launchBrowser } from './browser.js';
+import { calibrate } from './calibrate.js';
+import { runOnce } from './run.js';
+import { sendFeishu } from './feishu.js';
+import { log } from './logger.js';
+
+const cmd = process.argv[2] || 'once';
+const cfg = loadConfig();
+
+async function loginFlow() {
+  log.info('打开浏览器，请在窗口中完成登录（手机号 + 密码，如需短信验证码请手动输入）。');
+  const { context, page } = await launchBrowser(cfg, { headless: false });
+  await page.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+  log.info('等待登录完成…（最多 5 分钟）。登录并看到商品列表后即可，无需手动关闭窗口。');
+
+  const deadline = Date.now() + 5 * 60 * 1000;
+  let ok = false;
+  while (Date.now() < deadline) {
+    // 窗口被手动关闭则提前结束
+    if (page.isClosed()) { log.warn('检测到浏览器窗口已关闭，结束等待。'); break; }
+    try {
+      await page.waitForTimeout(3000);
+      const url = page.url();
+      const loggedIn = await page
+        .getByText(/商品列表|在售中|全部\s*\d+/)
+        .first()
+        .isVisible()
+        .catch(() => false);
+      if (loggedIn && !/login|signin/i.test(url)) { ok = true; break; }
+    } catch (e) {
+      // 登录页重定向/刷新期间的瞬时错误，忽略后继续轮询
+      if (page.isClosed()) { log.warn('浏览器窗口已关闭，结束等待。'); break; }
+      log.warn('轮询瞬时错误（忽略）：', e.message);
+    }
+  }
+  if (ok) log.info('✅ 登录成功，session 已保存。之后可运行 npm run once / npm start。');
+  else log.warn('⌛ 超时未检测到登录成功。若已登录可忽略；否则重试 npm run login。');
+  await page.waitForTimeout(1500);
+  await context.close().catch(() => {});
+}
+
+async function startLoop() {
+  log.info(`常驻监测启动，间隔 ${cfg.intervalMinutes} 分钟。Ctrl+C 退出。`);
+  let loginFailStreak = 0; // 连续「未登录」轮次
+  let loginAlertedAt = 0;  // 上次就登录过期发告警时的连续轮次（0 = 尚未告警）
+  // 立即先跑一轮
+  for (;;) {
+    const t0 = Date.now();
+    try {
+      await runOnce(cfg);
+      if (loginFailStreak > 0) {
+        log.info('登录态已恢复，监测正常。');
+        loginFailStreak = 0;
+        loginAlertedAt = 0;
+      }
+    } catch (e) {
+      log.error('本轮监测失败：', e.message);
+      if (e.code === 'NOT_LOGGED_IN') {
+        loginFailStreak++;
+        await maybeAlertLoginExpiry(loginFailStreak, loginAlertedAt).then((sent) => {
+          if (sent) loginAlertedAt = loginFailStreak;
+        });
+      } else {
+        // 非登录类错误（导航/网关抖动等）不计入登录连续失败，避免误报登录过期
+        loginFailStreak = 0;
+      }
+    }
+    const elapsed = Date.now() - t0;
+    const waitMs = Math.max(60_000, cfg.intervalMinutes * 60_000 - elapsed);
+    log.info(`本轮结束，${Math.round(waitMs / 1000)} 秒后进入下一轮。`);
+    await sleep(waitMs);
+  }
+}
+
+/**
+ * 登录连续失败达到阈值时发飞书提醒；仍不恢复则每隔 loginRealertRounds 轮再提醒一次。
+ * @returns {Promise<boolean>} 本轮是否发送了告警
+ */
+async function maybeAlertLoginExpiry(streak, alertedAt) {
+  if (!cfg.alerts.loginExpiry) return false;
+  const first = alertedAt === 0 && streak >= cfg.loginAlertAfterRounds;
+  const repeat = alertedAt > 0 && (streak - alertedAt) >= cfg.loginRealertRounds;
+  if (!first && !repeat) return false;
+  const mins = streak * cfg.intervalMinutes;
+  const ok = await sendFeishu(cfg, {
+    title: '⚠️ Temu 监测中断：登录已过期',
+    template: 'orange',
+    lines: [
+      `监测已连续 **${streak}** 轮（约 ${mins} 分钟）无法登录 Temu 后台，当前**没有在出数据**。`,
+      '',
+      '请到运行监测的电脑上重新登录一次：',
+      '`cd temu-monitor` → `npm run login`（或运行「启动.bat」选 1）',
+      '登录后监测会自动恢复，无需重启。',
+      '',
+      `_时间：${new Date().toLocaleString('zh-CN')}_`,
+    ],
+  }).catch(() => false);
+  if (ok) log.info(`已发送登录过期飞书提醒（连续失败 ${streak} 轮）。`);
+  return ok;
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+(async () => {
+  switch (cmd) {
+    case 'login': await loginFlow(); break;
+    case 'calibrate': await calibrate(cfg); break;
+    case 'once': await runOnce(cfg); break;
+    case 'start': await startLoop(); break;
+    default:
+      log.error(
+        `未知命令：${cmd}。可用：login | calibrate | once | start` +
+          `\n  once/start 默认全量（赛狐下架+浏览器流量，等同插件，无需扩展）` +
+          `\n  FULL_RUN=0 可退回仅浏览器`,
+      );
+  }
+})().then(() => process.exit(0)).catch((e) => { log.error(e); process.exit(1); });

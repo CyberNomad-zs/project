@@ -1,0 +1,59 @@
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ROOT } from './config.js';
+
+const STATE_FILE = resolve(ROOT, 'data', 'state.json');
+
+export function loadState() {
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+  } catch {
+    return { stores: {} };
+  }
+}
+
+export function saveState(state) {
+  mkdirSync(resolve(ROOT, 'data'), { recursive: true });
+  writeFileSync(STATE_FILE, JSON.stringify(state, null, 2), 'utf8');
+}
+
+/**
+ * 对比本次扫描结果与上次快照，产出需要告警的事件。
+ * @param {object} prev  上次该店铺快照（可能为空）
+ * @param {object} curr  本次扫描结果
+ * @param {object} alertsCfg { onSaleDrop, trafficAnomaly }
+ * @returns {Array<{type:string, text:string}>}
+ */
+export function diffStore(prev, curr, alertsCfg) {
+  const events = [];
+
+  // 在售数量下降
+  if (
+    alertsCfg.onSaleDrop &&
+    prev && typeof prev.onSaleCount === 'number' &&
+    typeof curr.onSaleCount === 'number' &&
+    curr.onSaleCount < prev.onSaleCount
+  ) {
+    events.push({
+      type: 'onSaleDrop',
+      text: `在售商品数量下降：${prev.onSaleCount} → ${curr.onSaleCount}（减少 ${prev.onSaleCount - curr.onSaleCount} 件）`,
+    });
+  }
+
+  // 流量异常：新增或首次出现时告警（避免每轮重复刷屏）
+  if (alertsCfg.trafficAnomaly) {
+    const prevTotal = prev?.trafficAnomalyTotal ?? 0;
+    const currTotal = curr.trafficAnomalyTotal ?? 0;
+    if (currTotal > prevTotal) {
+      const parts = [];
+      if (curr.trafficWatchCount) parts.push(`待关注 ${curr.trafficWatchCount}`);
+      if (curr.trafficDeclineCount) parts.push(`近期有下降 ${curr.trafficDeclineCount}`);
+      events.push({
+        type: 'trafficAnomaly',
+        text: `商品流量异常增加：${prevTotal} → ${currTotal}（${parts.join('，') || '共 ' + currTotal + ' 项'}）`,
+      });
+    }
+  }
+
+  return events;
+}

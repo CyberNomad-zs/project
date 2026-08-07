@@ -1,0 +1,26 @@
+---
+name: haiwaicang-fahuo-flow
+description: 海外仓订单发货业务流程与自动化项目（Sellfox ERP + 海外仓WMS）的关键规则
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: dce5b0ea-d0d2-42df-858e-039f76260a64
+---
+
+项目：把「海外仓订单发货」流程做成操作手册 + 全自动脚本（Playwright+Python）。依据操作录屏 `E:\project\海外仓\2026-07-08 09-47-00.mp4`。
+
+**两个系统**
+- Sellfox ERP：`www.sellfox.com/amzup-web-main/web/orderShip/index.html`，账号 17312292726 —— 订单处理/确认发货/扣库存/提交平台/获取跟踪单号。
+- 海外仓WMS：`193.112.93.60:9999/index.html#` —— 一件代发>平台订单/批量修改快递方/批量发货。两个账号=两个店铺：JMSM=金猫、JMCAT=黑猫。
+
+**主流程**：ERP 确认发货（弹窗"已选N个包裹，会扣减库存并提交平台"→确定）→ WMS 一件代发>平台订单 筛"未发货"→勾选→批量修改快递方→批量发货（Tip:预发货成功）→ 回 ERP 获取跟踪单号。
+
+**快递方规则（非显然，来自用户口述）**：按店铺/账号不同的优先列表，从上往下依次试，失败换下一个，顺序不严格：
+- 金猫(JMSM): RM → DPD
+- 黑猫(JMCAT): RM → DPD → EH
+- FEDEX 暂不在常规规则内。
+（JMSM=金猫，JMCAT=黑猫。视频里登录的是 JMCAT=黑猫。）
+
+**自动化决策**：范围=ERP+WMS全程；全自动直到确认；先 DRY_RUN 空跑演练确认无误再开真发。技术=Playwright+Python(已装 chromium)。项目在 `E:\project\海外仓\automation\`。用户有两系统账号；用持久化浏览器profile保存登录，避免我接触密码。
+
+手册：`E:\project\海外仓\操作手册_海外仓订单发货.md`。

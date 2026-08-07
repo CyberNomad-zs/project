@@ -1,0 +1,45 @@
+# -*- coding: utf-8 -*-
+"""
+账号凭据（敏感！请勿提交到公开仓库、勿泄露）。
+建议将本文件加入 .gitignore。
+"""
+
+# ---- Sellfox ERP ----
+ERP = {
+    "url": "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html",
+    "user": "17312292726",
+    "password": "Xy147258",
+}
+
+# ---- 海外仓WMS（两个账号 = 两个店铺）----
+WMS_URL = "http://193.112.93.60:9999/index.html#"
+
+WMS_ACCOUNTS = [
+    # display = 登录后页面顶部 "Hi，XXX" 显示的名字，用于校验会话确实切到本账号
+    # （2026-07-10 实测：金猫显示中文店铺名"金猫商贸"，黑猫显示登录名"JMCAT"）。
+    {"shop": "金猫", "login": "JMSM",  "password": "JMSMjmsm888", "display": "金猫商贸"},
+    {"shop": "黑猫", "login": "JMCAT", "password": "111111Aa",    "display": "JMCAT"},
+]
+
+# ---- 飞书（Feishu/Lark）运行汇总通知（企业自建应用 app_id/app_secret 方式）----
+# 每次运行 / 每轮循环结束，发一张"运行汇总"卡片到指定会话（群或个人）。
+# 准备步骤（一次性）：
+#   1) 飞书开放平台 https://open.feishu.cn -> 创建"企业自建应用"，拿到 App ID / App Secret；
+#   2) 该应用 -> 添加"机器人"能力；
+#   3) 权限管理 -> 开通"以应用身份发消息" im:message:send_as_bot（发群/单聊消息）；
+#      发到群还需把应用/机器人【拉进目标群】；
+#   4) 版本发布并通过审核（企业内自建通常自动/管理员一键通过）；
+#   5) 取群 chat_id：把上面的 app_id/app_secret 填好后，命令行跑 `python notify.py`，
+#      它会列出机器人所在的群及 chat_id，复制目标群的 chat_id 回填到 receive_id。
+# receive_id_type: chat_id(群) / open_id / user_id / email(个人)
+# 也可用环境变量覆盖(优先)：HWC_FEISHU_APP_ID / _APP_SECRET / _RECEIVE_ID /
+#   _RECEIVE_ID_TYPE / _LEVEL(all|fail_only) / _ENABLE(0=关) / _BASE_URL
+FEISHU = {
+    "enable": True,             # False 或 HWC_FEISHU_ENABLE=0 可临时关掉通知
+    "app_id": "",              # cli_xxxxxxxxxxxx
+    "app_secret": "",          # 应用凭证 App Secret
+    "receive_id": "",          # 目标群 chat_id(oc_xxx) 或个人 open_id / 邮箱
+    "receive_id_type": "chat_id",
+    "level": "all",            # all=每次运行都发汇总；fail_only=只在有失败/异常时才发
+    # "base_url": "https://open.feishu.cn",   # 国际版 Lark 改 https://open.larksuite.com
+}

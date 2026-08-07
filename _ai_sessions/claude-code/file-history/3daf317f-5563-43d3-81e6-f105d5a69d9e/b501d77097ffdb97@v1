@@ -1,0 +1,129 @@
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infra.db import get_db
+from app.infra.security import get_current_user, require_ingest_key
+
+router_export = APIRouter(prefix="/api/v1/export", tags=["export"])
+router_collectors = APIRouter(prefix="/api/v1/collectors", tags=["collectors"])
+
+
+class ExportBody(BaseModel):
+    table_key: str = Field(
+        default="tasks",
+        description="tasks | amz_shop_daily | amz_link_daily | amz_risk",
+    )
+    mode: str = Field(default="incremental", pattern="^(incremental|rebuild)$")
+    biz_date: str | None = None
+    lookback_days: int = Field(default=14, ge=1, le=90)
+    limit: int = Field(default=500, ge=1, le=5000)
+    dry_run: bool = False
+    # True：本请求内直接跑同步（不经 worker）；适合联调
+    run_inline: bool = False
+
+
+class HeartbeatBody(BaseModel):
+    node_id: str
+    version: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+@router_export.post("/feishu", status_code=202)
+async def export_feishu(
+    body: ExportBody,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    import json
+    from datetime import datetime, timezone
+
+    job_id = str(uuid4())
+    payload = {
+        "biz_date": body.biz_date,
+        "lookback_days": body.lookback_days,
+        "limit": body.limit,
+        "dry_run": body.dry_run,
+    }
+    await db.execute(
+        text(
+            """
+            INSERT INTO sync_feishu_job (id, table_key, mode, status, payload)
+            VALUES (:id, :table_key, :mode, 'pending', CAST(:payload AS jsonb))
+            """
+        ),
+        {
+            "id": job_id,
+            "table_key": body.table_key,
+            "mode": body.mode,
+            "payload": json.dumps(payload, ensure_ascii=False),
+        },
+    )
+
+    if body.run_inline and body.table_key.startswith("amz_"):
+        from app.jobs.amz_feishu_sync import run_feishu_job
+
+        await db.commit()
+        stats = await run_feishu_job(db, job_id)
+        return {
+            "job_id": job_id,
+            "queued_at": datetime.now(timezone.utc).isoformat(),
+            "inline": True,
+            "result": stats,
+        }
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO outbox_event (id, event_type, aggregate_type, aggregate_id, payload)
+            VALUES (:id, 'feishu.job', 'sync_feishu_job', :job_id, CAST(:payload AS jsonb))
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "job_id": job_id,
+            "payload": json.dumps(
+                {"table_key": body.table_key, "mode": body.mode, **payload},
+                ensure_ascii=False,
+            ),
+        },
+    )
+    await db.commit()
+    return {"job_id": job_id, "queued_at": datetime.now(timezone.utc).isoformat(), "inline": False}
+
+
+@router_collectors.post("/heartbeat")
+async def heartbeat(
+    body: HeartbeatBody,
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_ingest_key),
+) -> dict[str, Any]:
+    import json
+    from datetime import datetime, timezone
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO collector_node (node_id, version, meta, last_seen_at)
+            VALUES (:node_id, :version, CAST(:meta AS jsonb), now())
+            ON CONFLICT (node_id) DO UPDATE SET
+                version = EXCLUDED.version,
+                meta = EXCLUDED.meta,
+                last_seen_at = now()
+            """
+        ),
+        {
+            "node_id": body.node_id,
+            "version": body.version,
+            "meta": json.dumps(body.meta, ensure_ascii=False),
+        },
+    )
+    await db.commit()
+    return {
+        "server_time": datetime.now(timezone.utc).isoformat(),
+        "config_version": "phase0",
+    }

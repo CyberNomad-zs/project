@@ -1,0 +1,395 @@
+# TikTok shop KPI / health / finance multi-store scrape (P2c + P3)
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1 -Modules shop_daily,health_daily
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1 -DryRun true -ListOnly
+# Daily full-store (Task Scheduler):
+#   install-shop-modules-daily-task.ps1  ->  run-shop-modules-daily.ps1  (main stores.config.json)
+#
+# Requires: Ziniao + Bridge; default config\stores.config.json (full-store filter; empty includeStoreIds)
+# Ingest only (no Feishu). URLs: config.shopDailyUrl / healthUrl / financeUrl (optional).
+
+param(
+  [string]$ConfigPath = "",
+  [switch]$ListOnly,
+  [string]$DryRun = "",
+  [string]$Modules = "shop_daily,health_daily,finance_daily"
+)
+
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+if (-not $ConfigPath) { $ConfigPath = Join-Path $root 'config\stores.config.json' }
+if (-not (Test-Path $ConfigPath)) { throw "Missing config: $ConfigPath" }
+
+$cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$qingquanLib = Join-Path $PSScriptRoot 'qingquan-client.ps1'
+if (Test-Path $qingquanLib) { . $qingquanLib }
+
+$script:logsDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $script:logsDir | Out-Null
+$script:runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:runLogFile = Join-Path $script:logsDir ("shop-modules-run-{0}.log" -f $script:runStamp)
+
+function Write-RunLog([string]$msg) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  try { Add-Content -LiteralPath $script:runLogFile -Value $line -Encoding UTF8 } catch { }
+}
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+  Write-RunLog $msg
+}
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw 'node not found' }
+  $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+  if (-not (Test-Path $runJs)) {
+    $cmd = Get-Command ziniao -ErrorAction SilentlyContinue
+    if ($cmd) { $runJs = $cmd.Source }
+  }
+  if (-not (Test-Path $runJs)) { throw 'ziniao-cli run.js not found' }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr) { Write-Host $stderr }
+  return $stdout
+}
+function ConvertTo-ScrapeOneLine([string]$js) {
+  return (($js -replace '(?m)^\s*//.*$', '' -replace '\r?\n', ' ' -replace '\s+', ' ').Trim())
+}
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      return ([string]$j.data.data.result | ConvertFrom-Json)
+    }
+    if ($null -ne $j.ok) { return $j }
+  } catch { }
+  $m = [regex]::Matches($execOut, '\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}')
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+function Convert-DryRunFlag([string]$raw) {
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  switch -Regex ($raw.Trim()) {
+    '^(?i:true|1|yes|y|\$true)$'  { return $true }
+    '^(?i:false|0|no|n|\$false)$' { return $false }
+    default { throw "Invalid -DryRun '$raw'" }
+  }
+}
+function Get-DisplayName($store, $map) {
+  $n = [string]$store.storeName
+  if ($map -and $map.PSObject.Properties.Name -contains $n) { return [string]$map.$n }
+  return $n
+}
+function Get-ModuleUrl($store, $cfg, $moduleKey) {
+  $plat = ''
+  if ($store.platformName) { $plat = [string]$store.platformName }
+  elseif ($store.platform) { $plat = [string]$store.platform }
+  $mapKey = switch ($moduleKey) {
+    'shop_daily' { 'shopDailyUrl' }
+    'health_daily' { 'healthUrl' }
+    'finance_daily' { 'financeUrl' }
+    default { $null }
+  }
+  $defaults = @{
+    # compass/data-overview 常停在 Key metrics 占位；首页卡片稳定有 GMV/订单/客户
+    shop_daily    = 'https://seller-uk.tiktok.com/homepage'
+    health_daily  = 'https://seller-uk.tiktok.com/health-center'
+    finance_daily = 'https://seller-uk.tiktok.com/finance/bills'
+  }
+  if ($mapKey -and $cfg.$mapKey) {
+    $block = $cfg.$mapKey
+    if ($block.byPlatform -and $plat) {
+      foreach ($p in $block.byPlatform.PSObject.Properties) {
+        if ($plat -eq [string]$p.Name -or $plat -like ("*{0}*" -f $p.Name)) { return [string]$p.Value }
+      }
+    }
+    if ($block.default) { return [string]$block.default }
+  }
+  if ($cfg.urls -and $cfg.urls.$moduleKey) { return [string]$cfg.urls.$moduleKey }
+  return [string]$defaults[$moduleKey]
+}
+
+$modList = @($Modules.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+$scriptMap = @{
+  shop_daily    = (Join-Path $root 'scripts\scrape-shop-daily-page.js')
+  health_daily  = (Join-Path $root 'scripts\scrape-health-daily-page.js')
+  finance_daily = (Join-Path $root 'scripts\scrape-finance-daily-page.js')
+}
+$sourceMap = @{
+  shop_daily    = 'tiktok_shop_daily'
+  health_daily  = 'tiktok_health_daily'
+  finance_daily = 'tiktok_finance_daily'
+}
+foreach ($m in $modList) {
+  if (-not $scriptMap.ContainsKey($m)) { throw "Unknown module: $m (use shop_daily,health_daily,finance_daily)" }
+  if (-not (Test-Path $scriptMap[$m])) { throw "Missing scrape script: $($scriptMap[$m])" }
+}
+
+Write-Step '===== shop-modules multi-store START ====='
+Write-Step ("config={0} modules={1}" -f $ConfigPath, ($modList -join ','))
+Initialize-ZiniaoCli
+$listOut = Invoke-Ziniao @('store', 'list')
+$storesObj = $listOut | ConvertFrom-Json
+$all = @()
+if ($storesObj.data) {
+  if ($storesObj.data.items) { $all = @($storesObj.data.items) }
+  elseif ($storesObj.data -is [System.Array]) { $all = @($storesObj.data) }
+  elseif ($storesObj.data.list) { $all = @($storesObj.data.list) }
+  elseif ($storesObj.data.stores) { $all = @($storesObj.data.stores) }
+}
+$norm = @()
+foreach ($s in $all) {
+  $sid = ''; if ($s.storeId) { $sid = [string]$s.storeId } elseif ($s.id) { $sid = [string]$s.id }
+  $sname = ''; if ($s.storeName) { $sname = [string]$s.storeName } elseif ($s.name) { $sname = [string]$s.name }
+  $plat = ''; if ($s.platformName) { $plat = [string]$s.platformName } elseif ($s.platform) { $plat = [string]$s.platform }
+  if (-not $sid) { continue }
+  $norm += [pscustomobject]@{
+    storeId = $sid; storeName = $sname; platform = $plat; platformName = $plat
+    ip = $(if ($s.ip) { [string]$s.ip } else { '' })
+  }
+}
+$selected = @($norm)
+if ($cfg.filter) {
+  if ($cfg.filter.platformContains -and @($cfg.filter.platformContains).Count -gt 0) {
+    $selected = @($selected | Where-Object {
+      $p = $_.platform; $ok = $false
+      foreach ($k in @($cfg.filter.platformContains)) { if ($p -like ("*{0}*" -f $k)) { $ok = $true } }
+      $ok
+    })
+  }
+  if ($cfg.filter.requireIp) {
+    $selected = @($selected | Where-Object { -not [string]::IsNullOrWhiteSpace($_.ip) })
+  }
+  if ($cfg.filter.excludeStoreIds) {
+    $ex = @($cfg.filter.excludeStoreIds | ForEach-Object { [string]$_ })
+    $selected = @($selected | Where-Object { $ex -notcontains $_.storeId })
+  }
+  if ($cfg.filter.includeStoreIds -and @($cfg.filter.includeStoreIds).Count -gt 0) {
+    $inc = @($cfg.filter.includeStoreIds | ForEach-Object { [string]$_ })
+    $selected = @($selected | Where-Object { $inc -contains $_.storeId })
+  }
+}
+
+# 非广告运营模块排除：欧盟 Pop 等（广告仍可采）
+# 兼容字段：opsExclude* 优先合并 ordersExclude*
+if ($cfg.modules) {
+  $oex = @()
+  if ($cfg.modules.opsExcludeStoreIds) { $oex += @($cfg.modules.opsExcludeStoreIds | ForEach-Object { [string]$_ }) }
+  if ($cfg.modules.ordersExcludeStoreIds) { $oex += @($cfg.modules.ordersExcludeStoreIds | ForEach-Object { [string]$_ }) }
+  $oex = @($oex | Select-Object -Unique | Where-Object { $_ })
+  if ($oex.Count -gt 0) {
+    $before = $selected.Count
+    $selected = @($selected | Where-Object { $oex -notcontains $_.storeId })
+    if ($before -ne $selected.Count) {
+      Write-Step ("opsExcludeStoreIds removed {0} store(s): {1}" -f ($before - $selected.Count), ($oex -join ','))
+    }
+  }
+  $pex = @()
+  if ($cfg.modules.opsExcludePlatformContains) { $pex += @($cfg.modules.opsExcludePlatformContains | ForEach-Object { [string]$_ }) }
+  if ($cfg.modules.ordersExcludePlatformContains) { $pex += @($cfg.modules.ordersExcludePlatformContains | ForEach-Object { [string]$_ }) }
+  $pex = @($pex | Select-Object -Unique | Where-Object { $_ })
+  if ($pex.Count -gt 0) {
+    $before = $selected.Count
+    $selected = @($selected | Where-Object {
+      $p = [string]$_.platform
+      $hit = $false
+      foreach ($k in $pex) { if ($k -and $p -like ("*{0}*" -f $k)) { $hit = $true } }
+      -not $hit
+    })
+    if ($before -ne $selected.Count) {
+      Write-Step ("opsExcludePlatformContains removed {0} store(s)" -f ($before - $selected.Count))
+    }
+  }
+}
+
+Write-Step ("stores selected: {0}" -f $selected.Count)
+foreach ($s in $selected) { Write-Step ("  - {0} | {1} | {2}" -f $s.storeId, $s.storeName, $s.platform) }
+if ($ListOnly) { Write-Step 'ListOnly done'; return }
+if ($selected.Count -eq 0) { throw 'No stores matched' }
+
+$dryParsed = Convert-DryRunFlag $DryRun
+$useDryRun = if ($null -ne $dryParsed) { [bool]$dryParsed } else {
+  if ($cfg.options -and $null -ne $cfg.options.dryRun) { [bool]$cfg.options.dryRun } else { $true }
+}
+$waitOpen = 28000; $waitVisit = 30000; $retries = 3
+if ($cfg.options.waitAfterOpenMs) { $waitOpen = [Math]::Max(15000, [int]$cfg.options.waitAfterOpenMs) }
+if ($cfg.options.waitAfterVisitMs) { $waitVisit = [Math]::Max(15000, [int]$cfg.options.waitAfterVisitMs) }
+if ($cfg.options.scrapeRetries) { $retries = [Math]::Max(2, [int]$cfg.options.scrapeRetries) }
+
+# biz_date：默认昨天（与广告日更一致）
+$bizDate = (Get-Date).Date.AddDays(-1).ToString('yyyy-MM-dd')
+if ($cfg.options -and $cfg.options.dateMode -eq 'today') {
+  $bizDate = (Get-Date).Date.ToString('yyyy-MM-dd')
+}
+Write-Step ("dryRun={0} biz_date={1}" -f $useDryRun, $bizDate)
+
+$oneLiners = @{}
+foreach ($m in $modList) {
+  $oneLiners[$m] = ConvertTo-ScrapeOneLine (Get-Content $scriptMap[$m] -Raw -Encoding UTF8)
+}
+
+$summary = @()
+foreach ($store in $selected) {
+  $sid = $store.storeId
+  $sname = $store.storeName
+  $display = Get-DisplayName $store $cfg.storeNameMap
+  Write-Step ("==== STORE {0} ({1}) => {2} ====" -f $sname, $sid, $display)
+
+  # open once on first module URL
+  $firstUrl = Get-ModuleUrl $store $cfg $modList[0]
+  try {
+    Write-Step '  open store...'
+    $openArgs = @('store', 'open', '--id', $sid, '--url', $firstUrl)
+    if ($cfg.options.windowRatio -and $cfg.options.windowRatio -ne 'none') {
+      $openArgs += @('--window-ratio', [string]$cfg.options.windowRatio)
+    }
+    Write-Host (Invoke-Ziniao $openArgs)
+    Start-Sleep -Milliseconds $waitOpen
+
+    foreach ($mod in $modList) {
+      $item = [ordered]@{
+        storeId = $sid; storeName = $sname; displayName = $display; module = $mod
+        ok = $false; qingquanAccepted = 0; qingquanDup = 0; error = $null
+      }
+      $modUrl = Get-ModuleUrl $store $cfg $mod
+      Write-Step ("  -- module {0} url={1}" -f $mod, $modUrl)
+      try {
+        $null = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $modUrl, '--wait-until', 'load', '--timeout', '120000')
+        # SPA 渲染：finance 快，compass/health 慢
+        $extraWait = [Math]::Max(35000, $waitVisit)
+        if ($mod -eq 'finance_daily') { $extraWait = [Math]::Max(15000, [int]($waitVisit * 0.6)) }
+        Start-Sleep -Milliseconds $extraWait
+        $payload = $null
+        $lastErr = $null
+        for ($attempt = 1; $attempt -le $retries; $attempt++) {
+          Write-Step ("  scrape {0} attempt {1}/{2}..." -f $mod, $attempt, $retries)
+          $execOut = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $oneLiners[$mod], '--timeout', '60000')
+          if ([string]::IsNullOrWhiteSpace($execOut)) {
+            $lastErr = 'empty page exec'
+          } else {
+            $payload = Get-ScrapePayload $execOut
+            if ($payload -and $payload.ok) { $lastErr = $null; break }
+            $lastErr = $null
+            if ($payload -and $payload.error) { $lastErr = [string]$payload.error }
+            else { $lastErr = 'scrape fail' }
+            try {
+              Set-Content -LiteralPath (Join-Path $script:logsDir ("{0}-exec-raw-{1}-a{2}.txt" -f $mod, $sid, $attempt)) -Value $execOut -Encoding UTF8
+            } catch { }
+          }
+          Write-Step ("  attempt fail: {0}" -f $lastErr)
+          if ($attempt -lt $retries) {
+            Start-Sleep -Seconds 12
+            # 不重复 visit（可能打挂 Bridge）；再等 SPA
+            if ($lastErr -match 'SPA not ready|not ready|no KPI|no health') {
+              Write-Step '  extra 25s for SPA render'
+              Start-Sleep -Seconds 25
+            } else {
+              $null = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $modUrl, '--wait-until', 'load', '--timeout', '120000')
+              Start-Sleep -Seconds 15
+            }
+          }
+        }
+        if ($lastErr -or -not $payload) {
+          if ($lastErr) { throw $lastErr }
+          throw 'no payload'
+        }
+
+        # finance 等允许部分字段 null，但至少要有一个金额
+        if ($mod -eq 'finance_daily') {
+          $hasAmt = $false
+          if ($null -ne $payload.settlementAmount -or $null -ne $payload.pendingAmount -or $null -ne $payload.refundAmount) { $hasAmt = $true }
+          if ($null -ne $payload.settlement_amount -or $null -ne $payload.pending_amount) { $hasAmt = $true }
+          if (-not $hasAmt) { throw 'finance scrape ok flag but no amounts' }
+        }
+
+        $dbg = Join-Path $script:logsDir ("{0}-debug-{1}-{2}.json" -f $mod, $sid, $script:runStamp)
+        (@{ storeId = $sid; displayName = $display; url = $modUrl; bizDate = $bizDate; payload = $payload } |
+          ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $dbg -Encoding UTF8
+
+        if ((Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue) -and $cfg.qingquan -and $cfg.qingquan.enabled) {
+          $collectedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+          $qqItems = $null
+          switch ($mod) {
+            'shop_daily' {
+              $qqItems = ConvertTo-QingquanShopDailyIngestItems -Payload $payload -CollectedAt $collectedAt `
+                -StoreId $sid -StoreName $display -BizDate $bizDate -SourceUrl $modUrl
+            }
+            'health_daily' {
+              $qqItems = ConvertTo-QingquanHealthDailyIngestItems -Payload $payload -CollectedAt $collectedAt `
+                -StoreId $sid -StoreName $display -BizDate $bizDate -SourceUrl $modUrl
+            }
+            'finance_daily' {
+              $qqItems = ConvertTo-QingquanFinanceDailyIngestItems -Payload $payload -CollectedAt $collectedAt `
+                -StoreId $sid -StoreName $display -BizDate $bizDate -SourceUrl $modUrl
+            }
+          }
+          if ($useDryRun) {
+            Write-Step ("  qingquan dryRun: would report {0}" -f $sourceMap[$mod])
+          } else {
+            $qq = Send-QingquanIngest -Config $cfg -Items $qqItems -Source $sourceMap[$mod]
+            $item.qingquanAccepted = $qq.accepted
+            $item.qingquanDup = $qq.duplicated
+            if ($qq.error) { $item.error = [string]$qq.error }
+            Write-Step ("  qingquan accepted={0} dup={1} ok={2}" -f $qq.accepted, $qq.duplicated, $qq.ok)
+          }
+        } else {
+          Write-Step '  skip qingquan'
+        }
+        $item.ok = $true
+      } catch {
+        $item.error = [string]$_
+        Write-Step ("  FAIL {0}: {1}" -f $mod, $item.error)
+      }
+      $summary += [pscustomobject]$item
+    }
+  } catch {
+    Write-Step ("  STORE FAIL {0}: {1}" -f $sname, $_)
+  } finally {
+    if ($cfg.options -and $null -ne $cfg.options.closeAfter -and -not [bool]$cfg.options.closeAfter) {
+      Write-Step '  leave store open'
+    } else {
+      try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+    }
+  }
+  if ($cfg.options.delayBetweenStoresMs) { Start-Sleep -Milliseconds ([int]$cfg.options.delayBetweenStoresMs) }
+}
+
+Write-Step '======== SHOP-MODULES SUMMARY ========'
+$summary | Format-Table storeName, module, ok, qingquanAccepted, qingquanDup, error -AutoSize
+$okN = @($summary | Where-Object { $_.ok }).Count
+Write-Step ("OK {0}/{1}" -f $okN, $summary.Count)
+$sumPath = Join-Path $script:logsDir ("shop-modules-summary-{0}.json" -f $script:runStamp)
+($summary | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $sumPath -Encoding UTF8
+Write-Step ("summary: {0}" -f $sumPath)
+Write-Step '===== shop-modules multi-store END ====='

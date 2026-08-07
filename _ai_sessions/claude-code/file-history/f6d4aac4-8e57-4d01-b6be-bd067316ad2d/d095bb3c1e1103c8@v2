@@ -1,0 +1,138 @@
+/**
+ * 飞书多维表格写入
+ */
+
+import { BITABLE_FIELDS, FEISHU } from '../lib/constants.js';
+import { getConfig } from '../lib/storage.js';
+import { getTenantAccessToken } from './auth.js';
+
+/**
+ * 业务记录 → 飞书 fields
+ * 日期字段：飞书日期类型为毫秒时间戳
+ * @param {object} row
+ */
+export function toBitableFields(row) {
+  const dateMs = row.date ? new Date(`${row.date}T00:00:00`).getTime() : Date.now();
+  const scrapedMs = row.scrapedAt ? new Date(row.scrapedAt).getTime() : Date.now();
+
+  return {
+    [BITABLE_FIELDS.date]: dateMs,
+    [BITABLE_FIELDS.store]: row.store || '',
+    [BITABLE_FIELDS.storeId]: row.storeId || '',
+    [BITABLE_FIELDS.campaign]: row.campaign || '',
+    [BITABLE_FIELDS.spend]: Number(row.spend) || 0,
+    [BITABLE_FIELDS.orders]: Number(row.orders) || 0,
+    [BITABLE_FIELDS.roi]: Number(row.roi) || 0,
+    [BITABLE_FIELDS.revenue]: Number(row.revenue) || 0,
+    [BITABLE_FIELDS.scrapedAt]: scrapedMs,
+    [BITABLE_FIELDS.sourceUrl]: row.sourceUrl || '',
+    [BITABLE_FIELDS.status]: row.status || 'success'
+  };
+}
+
+/**
+ * @param {object[]} rows 归一化后的业务行
+ * @param {{dryRun?: boolean}} [opts]
+ */
+export async function writeRecords(rows, opts = {}) {
+  const config = await getConfig();
+  const { appToken, tableId } = config.feishu || {};
+  if (!appToken || !tableId) {
+    throw new Error('请先配置飞书多维表格 app_token 与 table_id');
+  }
+
+  if (!rows?.length) {
+    return { written: 0, batches: 0, dryRun: !!opts.dryRun };
+  }
+
+  if (opts.dryRun || config.dryRun) {
+    return {
+      written: 0,
+      batches: 0,
+      dryRun: true,
+      preview: rows.slice(0, 50)
+    };
+  }
+
+  const records = rows.map((r) => ({ fields: toBitableFields(r) }));
+  let written = 0;
+  let batches = 0;
+
+  for (let i = 0; i < records.length; i += FEISHU.BATCH_SIZE) {
+    const chunk = records.slice(i, i + FEISHU.BATCH_SIZE);
+    await batchCreateWithRetry(appToken, tableId, chunk);
+    written += chunk.length;
+    batches += 1;
+  }
+
+  return { written, batches, dryRun: false };
+}
+
+async function batchCreateWithRetry(appToken, tableId, records) {
+  let lastErr;
+  for (let attempt = 0; attempt < FEISHU.MAX_RETRIES; attempt++) {
+    try {
+      return await batchCreate(appToken, tableId, records, attempt > 0);
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e.message || e);
+      // token 失效
+      if (/99991663|99991661|token/i.test(msg) || e.status === 401) {
+        await getTenantAccessToken(true);
+      }
+      // 限流
+      const delay = Math.min(1000 * 2 ** attempt, 8000);
+      await sleep(delay);
+    }
+  }
+  throw lastErr;
+}
+
+async function batchCreate(appToken, tableId, records, forceToken = false) {
+  const token = await getTenantAccessToken(forceToken);
+  const url = FEISHU.BITABLE_BATCH_CREATE(appToken, tableId);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json; charset=utf-8'
+    },
+    body: JSON.stringify({ records })
+  });
+
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok || json.code !== 0) {
+    const err = new Error(
+      `飞书写入失败: HTTP ${res.status} code=${json.code} msg=${json.msg || JSON.stringify(json)}`
+    );
+    err.status = res.status;
+    err.body = json;
+    throw err;
+  }
+  return json;
+}
+
+/**
+ * 测试飞书连通性：拿 token + 读 1 条记录（不写入）
+ */
+export async function testFeishuConnection() {
+  const config = await getConfig();
+  const { appToken, tableId } = config.feishu || {};
+  if (!appToken || !tableId) {
+    throw new Error('缺少 app_token 或 table_id');
+  }
+  const token = await getTenantAccessToken(true);
+  const url = `${FEISHU.BITABLE_LIST(appToken, tableId)}?page_size=1`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  const json = await res.json();
+  if (json.code !== 0) {
+    throw new Error(`连通性检查失败: code=${json.code} msg=${json.msg}`);
+  }
+  return { ok: true, total: json.data?.total ?? 0 };
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}

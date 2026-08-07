@@ -1,0 +1,127 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f6f8;
+  --card: #ffffff;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --primary: #0f766e;
+  --primary-hover: #0d9488;
+  --danger: #b91c1c;
+  --warn: #b45309;
+  --ok: #047857;
+  --shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: linear-gradient(180deg, #ecfeff 0%, var(--bg) 220px);
+  color: var(--text);
+}
+button, input, select, textarea { font: inherit; }
+a { color: var(--primary); }
+
+.app-shell { max-width: 1200px; margin: 0 auto; padding: 24px 20px 48px; }
+.topbar {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  margin-bottom: 20px;
+}
+.brand h1 { margin: 0; font-size: 22px; letter-spacing: 0.02em; }
+.brand p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+.card + .card { margin-top: 16px; }
+.card h2 { margin: 0 0 14px; font-size: 16px; }
+
+.grid-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.stat {
+  background: #f8fafc;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+}
+.stat .label { color: var(--muted); font-size: 12px; }
+.stat .value { margin-top: 6px; font-size: 24px; font-weight: 700; }
+
+.row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+.grow { flex: 1 1 auto; }
+
+label.field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
+input, select, textarea {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--text);
+  min-width: 140px;
+}
+textarea { min-height: 72px; width: 100%; resize: vertical; }
+
+.btn {
+  border: none;
+  border-radius: 10px;
+  padding: 10px 14px;
+  cursor: pointer;
+  background: #e5e7eb;
+  color: var(--text);
+}
+.btn:hover { filter: brightness(0.98); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-danger { background: #fee2e2; color: var(--danger); }
+.btn-ghost { background: transparent; border: 1px solid var(--line); }
+
+.table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+th { background: #f8fafc; color: var(--muted); font-weight: 600; white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+
+.badge {
+  display: inline-flex; align-items: center;
+  border-radius: 999px; padding: 2px 8px; font-size: 12px; font-weight: 600;
+}
+.badge.open { background: #dbeafe; color: #1d4ed8; }
+.badge.in_progress { background: #ffedd5; color: var(--warn); }
+.badge.resolved { background: #d1fae5; color: var(--ok); }
+.badge.cancelled { background: #e5e7eb; color: #4b5563; }
+
+.login-wrap {
+  min-height: 100vh; display: grid; place-items: center; padding: 24px;
+}
+.login-card { width: min(420px, 100%); }
+.login-card h1 { margin: 0 0 6px; font-size: 22px; }
+.login-card .sub { color: var(--muted); margin-bottom: 18px; font-size: 13px; }
+.stack { display: grid; gap: 12px; }
+.error {
+  background: #fef2f2; color: var(--danger); border: 1px solid #fecaca;
+  border-radius: 10px; padding: 10px 12px; font-size: 13px;
+}
+.muted { color: var(--muted); font-size: 12px; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.drawer-mask {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, 0.35);
+  display: grid; place-items: end center; padding: 24px;
+}
+.drawer {
+  width: min(520px, 100%); background: #fff; border-radius: 16px;
+  padding: 18px; box-shadow: var(--shadow);
+}
+@media (max-width: 900px) {
+  .grid-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

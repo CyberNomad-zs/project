@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fa6da-945b-7e82-a3c6-8be88bad6beb",
+    "cwd": "E:\\project\\海外TK店铺广告投流数据自动化监测"
+  },
+  "session_summary": "自动化脚本抓取字段分析",
+  "created_at": "2026-07-28T03:52:50.568807200Z",
+  "updated_at": "2026-07-30T03:05:20.763665500Z",
+  "num_messages": 64,
+  "num_chat_messages": 40,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 3,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外TK店铺广告投流数据自动化监测/",
+  "git_remotes": [
+    "https://github.com/JMCATTT/tk-shop-ad-monitor.git"
+  ],
+  "head_commit": "de71178a2990f69cad3cdf83c2b6324e9184e5d9",
+  "head_branch": "main",
+  "request_id": "647415ef-bce0-47b2-a3b1-46576a07d9c4",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T08:01:39.487121200Z",
+  "generated_title": "自动化脚本抓取字段分析",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

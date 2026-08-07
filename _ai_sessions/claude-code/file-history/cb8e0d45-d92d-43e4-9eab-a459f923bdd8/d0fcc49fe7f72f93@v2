@@ -1,0 +1,82 @@
+# -*- coding: utf-8 -*-
+"""
+只读：定位 ERP 待处理视图的「全部渠道」筛选控件，探清如何打开下拉、选项结构、确定按钮。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            print("ERP 未登录"); ctx.close(); return
+        erp.open_order_ship(page)           # 含关闭异常提醒弹窗
+        erp.goto_view(page, "待处理")
+        time.sleep(2)
+
+        # 找所有含"渠道"字样的候选控件（input/placeholder/label/span）
+        info = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('input,.el-select,.el-input__inner,span,div,label').forEach(e=>{
+                const ph=e.getAttribute && e.getAttribute('placeholder');
+                const t=(e.innerText||'').trim();
+                if((ph && ph.includes('渠道')) || (t && t.length<=8 && t.includes('渠道'))){
+                    const r=e.getBoundingClientRect();
+                    if(r.width>0 && r.height>0)
+                        out.push({tag:e.tagName, cls:(typeof e.className==='string'?e.className:'').slice(0,60),
+                                  ph:ph||'', txt:t.slice(0,20), x:Math.round(r.x), y:Math.round(r.y), w:Math.round(r.width)});
+                }
+            });
+            // 去重
+            const seen=new Set(), uniq=[];
+            out.forEach(o=>{const k=o.tag+o.cls+o.ph+o.txt+o.x+o.y; if(!seen.has(k)){seen.add(k);uniq.push(o);}});
+            return uniq;
+        }""")
+        print("=== 含『渠道』的候选控件 ===")
+        for o in info:
+            print("  ", o)
+
+        # 尝试点击 placeholder 含渠道 的输入框打开下拉
+        opened = False
+        for sel in ["input[placeholder*='渠道']", ".el-select:has(input[placeholder*='渠道'])"]:
+            try:
+                page.click(sel, timeout=3000); opened = True
+                print("用选择器打开:", sel); break
+            except Exception as e:
+                print("尝试", sel, "失败:", str(e)[:60])
+        time.sleep(1.5)
+
+        # 抓下拉/弹层里的选项
+        items = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('.el-select-dropdown__item, .el-checkbox, .el-cascader-node').forEach(e=>{
+                if(e.offsetParent!==null){ const t=(e.innerText||'').trim(); if(t) out.push(t); }
+            });
+            return [...new Set(out)].slice(0,40);
+        }""")
+        print("=== 打开后可见选项 ===")
+        for it in items:
+            print("   -", it)
+
+        # 弹层里的按钮（确定/取消）
+        btns = page.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('.el-select-dropdown button, .el-popper button, .el-scrollbar button').forEach(b=>{
+                if(b.offsetParent!==null){ const t=(b.innerText||'').trim(); if(t) out.push(t); }
+            });
+            return [...new Set(out)];
+        }""")
+        print("弹层按钮:", btns)
+
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_channel_filter.png"), full_page=True)
+        print("截图: capture/dumps/erp_channel_filter.png")
+        time.sleep(15)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

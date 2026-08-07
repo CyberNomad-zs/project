@@ -1,0 +1,87 @@
+# -*- coding: utf-8 -*-
+"""
+探清 ERP「物流追踪」(获取跟踪号/更新订单状态) 操作：
+三方仓视图 -> 工具栏【物流追踪】-> 弹「提示：获取中…获取完成 共N包裹 已获取X 失败Y」-> 关闭。
+不分渠道。此操作只拉取状态，不发货，安全。结果写 UTF-8 文件避免乱码。
+"""
+import sys, os, time, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+OUT = os.path.join(config.DUMP_DIR, "erp_update_probe.json")
+
+
+def find_toolbar_btn(page, text):
+    """返回工具栏(非行内)中文本==text 的按钮中心坐标。"""
+    return page.evaluate(r"""(text) => {
+        const norm = s => (s||'').replace(/\s+/g,'');
+        let best=null;
+        document.querySelectorAll('button, .el-button, .base_button_comp, [class*=btn]').forEach(e=>{
+            if(e.offsetParent===null) return;
+            if(norm(e.innerText)!==text) return;
+            if(e.closest('.vxe-body--row')) return;
+            const r=e.getBoundingClientRect();
+            const desc=e.querySelectorAll('*').length;
+            if(!best || desc<best.desc) best={desc, x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2)};
+        });
+        return best;
+    }""", text)
+
+
+def read_dialog(page):
+    return page.evaluate(r"""() => {
+        const d=[...document.querySelectorAll('.el-dialog, .el-message-box')].find(e=>e.offsetParent!==null);
+        return d? (d.innerText||'').trim() : null;
+    }""")
+
+
+def main():
+    out = {}
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            out["error"] = "ERP未登录"; json.dump(out, open(OUT,"w",encoding="utf-8"), ensure_ascii=False); ctx.close(); return
+        erp.open_order_ship(page)
+        page.click("text=三方仓", timeout=6000); time.sleep(3)
+
+        loc = find_toolbar_btn(page, "物流追踪")
+        out["btn_coord"] = loc
+        if not loc:
+            out["error"] = "未找到物流追踪按钮"
+            json.dump(out, open(OUT,"w",encoding="utf-8"), ensure_ascii=False, indent=2); ctx.close(); return
+        page.mouse.click(loc["x"], loc["y"])
+        out["clicked"] = True
+
+        # 轮询捕获提示弹窗，记录演变
+        seq = []
+        final = None
+        for i in range(40):
+            time.sleep(1)
+            txt = read_dialog(page)
+            if txt:
+                final = txt
+                if not seq or seq[-1] != txt:
+                    seq.append(txt)
+                if ("获取完成" in txt) or ("100%" in txt):
+                    break
+        out["dialog_seq"] = seq
+        out["dialog_final"] = final
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_update_result.png"), full_page=True)
+
+        # 关闭
+        closed = None
+        for t in ["关闭", "关 闭", "确定", "确 定", "ok"]:
+            b = page.query_selector(f".el-dialog:visible button:has-text('{t}'), .el-message-box:visible button:has-text('{t}')")
+            if b and b.is_visible():
+                b.click(); closed = t; break
+        out["closed_by"] = closed
+
+        json.dump(out, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        print("written", OUT)
+        time.sleep(3); ctx.close()
+
+
+if __name__ == "__main__":
+    main()

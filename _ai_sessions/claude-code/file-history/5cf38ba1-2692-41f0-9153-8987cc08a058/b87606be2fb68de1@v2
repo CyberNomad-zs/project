@@ -1,0 +1,46 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告/订单已通；商品 scraper 已按实页字段重写待稳定实跑；KPI/健康/财务表+ingest 骨架已落。
+
+**广告日更（定时 + 简报）**：已在**同事本机** Windows 计划任务跑，**中心/本仓库不重复建设、不列为待办**。中心只收 dual/ingest → `tk.fact_ads_campaign_daily`。
+
+## 2026-07-31（任务 1→2→3）
+
+### 1 商品
+- 实页已确认 URL：`/product/manage`，表头：商品/表现/状态/库存/零售价…
+- `scrape-products-page.js` 已按 ID:/商家SKU/已售出 等规则重写
+- Ingest `tiktok_products` + 表 `fact_tiktok_product` 生产可用（smoke OK）
+- **待**：`page exec` 在商品页偶发空返回/Bridge 抖，需再实跑校准
+
+### 2 生产对齐
+- 生产 migrations：005/006/007/008 已执行（`tk` schema + 兼容视图）
+- 生产 ingest 含 ads/orders/products（shop/health/finance source 已挂、无 scrape 数据）
+- 行数快照（生产实查）：ads≈13，orders≈352，products=1 smoke
+
+### 3 KPI / 健康 / 财务骨架
+- `007_tiktok_shop_kpi_health_finance.sql`
+- ingest sources：`tiktok_shop_daily` / `tiktok_health_daily` / `tiktok_finance_daily`
+- scrape 脚本尚未写（下一迭代，若业务仍要）
+
+## 下一批（中心侧，按优先级）
+
+1. **P2b 商品**实跑校准（非 smoke）
+2. **订单质量**：未来 `biz_date`、店名 vs `shop` 主数据映射
+3. **P2c/P3** KPI·健康·财务 scrape（按需）
+4. ~~广告 dual 日更跑稳~~ → **不做**（同事本机定时已承担）
+
+## 日常
+
+```powershell
+cd collectors/tiktok-ads
+# 广告：同事本机定时；开发机可手动
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1
+```
+
+广告计划任务说明见 `collectors/tiktok-ads/docs/每日定时任务.md`（**运维归属：同事本机**）。
+
+## 代码
+- main 已含 PR#1（ads dual）；本轮增量在 `feature/tk-products-kpi`，待再开 PR 或 commit

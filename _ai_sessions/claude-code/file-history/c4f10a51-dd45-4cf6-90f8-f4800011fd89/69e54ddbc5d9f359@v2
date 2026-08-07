@@ -1,0 +1,65 @@
+# -*- coding: utf-8 -*-
+"""
+只读探测：两个 WMS 账号登录后，页面顶部到底显示什么账号标识（用于校准 wms_login 的账号校验判据）。
+每个账号用独立干净 context，dump: wms_current_account 结果 + 所有含 Hi/欢迎/退出/账号名 的可见文本 + url。
+输出 UTF-8 文件避开 gbk 乱码：capture/dumps/wms_probe_account.txt
+用法：python capture/wms_probe_account.py
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+config.DRY_RUN = True
+import core, secrets
+from playwright.sync_api import sync_playwright
+
+JMSM = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")
+JMCAT = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMCAT")
+
+out = []
+def w(s=""):
+    out.append(str(s))
+
+
+def id_texts(page):
+    return page.evaluate(r"""() => {
+      const hits=[];
+      document.querySelectorAll('*').forEach(e=>{
+        if(e.children.length || e.offsetParent===null) return;
+        const t=(e.innerText||'').trim();
+        if(!t || t.length>40) return;
+        if(/Hi|欢迎|你好|退出|注销|JMSM|JMCAT|金猫|黑猫|昇新|账号|账户|当前/.test(t)) hits.push(t);
+      });
+      return [...new Set(hits)].slice(0,50);
+    }""")
+
+
+def probe(browser, acc):
+    ctx = browser.new_context(ignore_https_errors=True)
+    page = ctx.new_page()
+    try:
+        core.safe_goto(page, core.LOGIN_URL_WMS); time.sleep(1.5)
+        page.fill("#loginName", acc["login"]); page.fill("#loginPwd", acc["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        core.safe_goto(page, core.INDEX_WMS); time.sleep(3)
+        w(f"\n===== 账号 {acc['shop']}（login={acc['login']}）=====")
+        w(f"  url                     = {page.url}")
+        w(f"  wms_current_account()   = {core.wms_current_account(page)!r}")
+        w(f"  含身份关键词的可见文本   = {id_texts(page)}")
+    finally:
+        ctx.close()
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        probe(browser, JMCAT)
+        probe(browser, JMSM)
+        browser.close()
+    path = os.path.join(config.DUMP_DIR, "wms_probe_account.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
+    print("WROTE", path)
+
+
+if __name__ == "__main__":
+    main()

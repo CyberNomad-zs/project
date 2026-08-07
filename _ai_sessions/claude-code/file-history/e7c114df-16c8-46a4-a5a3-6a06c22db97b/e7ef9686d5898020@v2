@@ -1,0 +1,115 @@
+# -*- coding: utf-8 -*-
+"""只读诊断：登录金猫(JMSM)看 平台订单>未发货 列表结构。
+- dump 表头列、每单订单号+各列值(找快递方/渠道列)、筛选控件。
+- 绝不点击 批量发货 / 批量修改快递方，纯读取 + 截图。
+输出：capture/dumps/wms_diag_jmsm.txt / .png / .html
+用法：python capture/wms_diag_jmsm.py
+"""
+import sys, os, time, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")  # 金猫
+
+OUT = os.path.join(config.DUMP_DIR, "wms_diag_jmsm.txt")
+lines = []
+def w(s=""):
+    lines.append(str(s))
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+        for _ in range(5):
+            try:
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        w(f"login url: {page.url}")
+
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000)
+        time.sleep(5)
+        # 点一次查询刷新未发货
+        try:
+            page.click("button:has-text('查询')", timeout=5000); time.sleep(3)
+        except Exception as e:
+            w(f"点查询失败: {e}")
+
+        # 未发货数
+        el = page.query_selector(".el-pagination__total")
+        w(f"分页总数文本: {el.inner_text().strip() if el else '(无)'}")
+
+        # ---- 筛选控件：搜索区的 label + placeholder + select 选中值 ----
+        w("\n==== 筛选控件(搜索区) ====")
+        controls = page.evaluate(r"""() => {
+            const out = [];
+            document.querySelectorAll('.el-form-item, .el-input, .el-select').forEach(g=>{
+              const lab = g.querySelector('.el-form-item__label');
+              const inp = g.querySelector('input');
+              const vis = !!(g.offsetWidth||g.offsetHeight);
+              if(!vis) return;
+              out.push({
+                label: lab ? lab.innerText.trim() : '',
+                placeholder: inp ? (inp.getAttribute('placeholder')||'') : '',
+                value: inp ? (inp.value||'') : ''
+              });
+            });
+            return out;
+        }""")
+        seen=set()
+        for c in controls:
+            key = (c['label'], c['placeholder'])
+            if key in seen: continue
+            seen.add(key)
+            if c['label'] or c['placeholder']:
+                w(f"  label={c['label']!r} placeholder={c['placeholder']!r} value={c['value']!r}")
+
+        # ---- 表头 ----
+        w("\n==== 表头列(主表) ====")
+        heads = page.evaluate(r"""() => {
+            const hw = document.querySelector('.el-table__header-wrapper');
+            if(!hw) return [];
+            return [...hw.querySelectorAll('thead th')].map(th=>th.innerText.trim());
+        }""")
+        for i,h in enumerate(heads):
+            w(f"  [{i}] {h!r}")
+
+        # ---- 每行：按表头列对齐取值 ----
+        w("\n==== 未发货订单行(主表 body，按列对齐) ====")
+        rows = page.evaluate(r"""() => {
+            const bw = document.querySelector('.el-table__body-wrapper');
+            if(!bw) return [];
+            return [...bw.querySelectorAll('tr.el-table__row')].map(tr=>{
+              return [...tr.querySelectorAll('td')].map(td=>td.innerText.replace(/\s+/g,' ').trim());
+            });
+        }""")
+        w(f"(主表 body 行数={len(rows)})")
+        for r in rows:
+            w("  ---")
+            for i,cell in enumerate(r):
+                head = heads[i] if i < len(heads) else f"col{i}"
+                if cell:
+                    w(f"    {head}: {cell}")
+
+        # 截图 + html
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "wms_diag_jmsm.png"), full_page=True)
+        html = page.content()
+        with open(os.path.join(config.DUMP_DIR, "wms_diag_jmsm.html"), "w", encoding="utf-8") as f:
+            f.write(html)
+        w(f"\nhtml bytes={len(html)}  url={page.url}")
+
+        with open(OUT, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print("WROTE", OUT)
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

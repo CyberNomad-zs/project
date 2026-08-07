@@ -1,0 +1,111 @@
+# 清泉跨境系统（企业级）
+
+多平台（Amazon / TikTok / Temu）运营数据汇总与任务闭环的企业私有化平台。
+
+数据以 **PostgreSQL 为 Source of Truth**，飞书多维表为同步出口；采集端复用现有海外仓 / Temu / TK 三套工具，经统一 Ingest API 上报。
+
+## 文档
+
+| 文档 | 说明 |
+|------|------|
+| [docs/架构方案.md](docs/架构方案.md) | 总体架构、分期、部署 |
+| [docs/会议纪要-技术会.md](docs/会议纪要-技术会.md) | 技术会需求摘要 |
+| [docs/字段映射字典.md](docs/字段映射字典.md) | 采集 ↔ 中心表 ↔ 飞书字段 |
+| [docs/Phase0-实施计划.md](docs/Phase0-实施计划.md) | 2–3 周基座计划 |
+| [docs/TK中心化改造方案.md](docs/TK中心化改造方案.md) | TK 广告先上报中心再写飞书 |
+| [docs/openapi-v1.yaml](docs/openapi-v1.yaml) | Phase0 OpenAPI |
+
+## 目录
+
+```
+backend/          FastAPI 中心服务
+deploy/           docker-compose
+collectors/       边缘采集与 Agent SDK
+docs/             方案与字典
+packages/         共享库（预留）
+web/              管理端（Phase0 后补）
+```
+
+## 快速启动（Phase0 骨架）
+
+### 前置
+
+- Docker Desktop / Docker Engine
+- （可选）本机 Python 3.12：跑 seed 与 mock
+
+### 启动
+
+```powershell
+cd "E:\project\清泉跨境系统（企业级）"
+copy .env.example .env
+cd deploy
+docker compose up -d --build
+```
+
+首次数据库会自动执行 `backend/migrations/001_init.sql`。
+
+### 种子数据
+
+```powershell
+docker compose exec api python -m app.scripts.seed
+```
+
+默认管理员：`admin` / `admin123`（登录后请修改）。
+
+### 验证
+
+```powershell
+curl http://localhost:8000/health
+
+# 登录
+curl -X POST http://localhost:8000/api/v1/auth/login `
+  -H "Content-Type: application/json" `
+  -d "{\"username\":\"admin\",\"password\":\"admin123\"}"
+
+# 模拟 TK 广告上报（本机 Python）
+$env:QINGQUAN_URL="http://127.0.0.1:8000"
+$env:QINGQUAN_API_KEY="dev-ingest-key"
+python ..\collectors\agent-core\mock_ingest_tiktok.py
+```
+
+API 文档：http://localhost:8000/docs
+
+### Worker（飞书同步）
+
+在 `.env` 填入飞书应用与任务表后：
+
+```powershell
+docker compose --profile worker up -d worker
+```
+
+飞书多维表需包含列（可调 `task_to_fields` 映射）：平台、业务ID、异常类型、标题、状态、进度、去重键。
+
+## 与现有项目关系
+
+| 项目 | 路径 | 策略 |
+|------|------|------|
+| 海外仓 | `E:\project\海外仓` | 发货桥暂独立；赛狐客户端后续抽到 sellfox-worker |
+| Temu | `E:\project\temu` | Phase1 增加中心上报 |
+| TK 广告 | `E:\project\海外TK店铺广告投流数据自动化监测` | 按 [TK中心化改造方案](docs/TK中心化改造方案.md) 旁路 dual 写入 |
+
+## Phase0 已具备
+
+- [x] 架构与字段/改造文档
+- [x] PG 表结构（用户/店铺/ingest/广告事实/任务/飞书映射/outbox）
+- [x] FastAPI：登录、店铺、Ingest、任务状态机、心跳、导出入队
+- [x] 任务去重（部分唯一索引 + 引擎）
+- [x] 飞书 Bitable 适配器 + Worker 轮询 outbox
+- [x] Agent SDK + TK mock 幂等脚本
+- [x] Docker Compose
+
+## 下一步
+
+1. 按 Phase0 计划补 Vue 任务台  
+2. TK 项目接入 `qingquan` dual 模式  
+3. Temu 下架/限流 → 任务  
+4. 亚马逊销售异常 Job + 前台巡检插件  
+
+## 安全提示
+
+- 勿将真实 `.env`、飞书 Secret、赛狐密钥提交仓库  
+- 生产务必修改 `APP_SECRET_KEY`、`ADMIN_PASSWORD`、`INGEST_DEFAULT_API_KEY`  

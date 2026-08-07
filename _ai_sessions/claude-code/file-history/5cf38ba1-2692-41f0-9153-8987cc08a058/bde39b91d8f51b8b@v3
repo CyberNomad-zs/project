@@ -1,0 +1,553 @@
+# TikTok products multi-store scrape (P2b skeleton) via ziniao-cli
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1 -ListOnly
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1 -DryRun true
+#
+# Requires: Ziniao client + Bridge; config\stores.config.json
+# Does NOT write Feishu by default (products Feishu optional later) — only Qingquan ingest.
+
+param(
+  [string]$ConfigPath = "",
+  [switch]$ListOnly,
+  [string]$DryRun = ""
+)
+
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+if (-not $ConfigPath) { $ConfigPath = Join-Path $root 'config\stores.config.json' }
+$scrapeJsPath = Join-Path $root 'scripts\scrape-products-page.js'
+$clickNextJsPath = Join-Path $root 'scripts\products-click-next.js'
+if (-not (Test-Path $ConfigPath)) { throw "Missing config: $ConfigPath" }
+if (-not (Test-Path $scrapeJsPath)) { throw "Missing $scrapeJsPath" }
+$clickNextJs = ''
+if (Test-Path $clickNextJsPath) { $clickNextJs = Get-Content $clickNextJsPath -Raw -Encoding UTF8 }
+
+$cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$scrapeJs = Get-Content $scrapeJsPath -Raw -Encoding UTF8
+$qingquanLib = Join-Path $PSScriptRoot 'qingquan-client.ps1'
+if (Test-Path $qingquanLib) { . $qingquanLib }
+
+$script:logsDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $script:logsDir | Out-Null
+$script:runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:runLogFile = Join-Path $script:logsDir ("products-run-{0}.log" -f $script:runStamp)
+
+function Write-RunLog([string]$msg) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  try { Add-Content -LiteralPath $script:runLogFile -Value $line -Encoding UTF8 } catch { }
+}
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+  Write-RunLog $msg
+}
+
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw 'node not found' }
+  $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+  if (-not (Test-Path $runJs)) {
+    $cmd = Get-Command ziniao -ErrorAction SilentlyContinue
+    if ($cmd) { $runJs = $cmd.Source }
+  }
+  if (-not (Test-Path $runJs)) { throw 'ziniao-cli run.js not found' }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr) { Write-Host $stderr }
+  # 合并 stderr：Bridge 错误有时只在 stderr 的 JSON 里，stdout 为空
+  if ([string]::IsNullOrWhiteSpace($stdout) -and $stderr -and ($stderr -match '\{')) {
+    return $stderr
+  }
+  if ($stdout -and $stderr -and ($stderr -match '无法连接紫鸟浏览器 Bridge') -and ($stdout -notmatch '无法连接')) {
+    return ($stdout + "`n" + $stderr)
+  }
+  return $stdout
+}
+
+function ConvertTo-ScrapeOneLine([string]$js) {
+  $one = ($js -replace '(?m)^\s*//.*$', '' -replace '\r?\n', ' ' -replace '\s+', ' ').Trim()
+  return $one
+}
+
+function Get-ProductsUrl($store, $cfg) {
+  $plat = ''
+  if ($store.platformName) { $plat = [string]$store.platformName }
+  elseif ($store.platform) { $plat = [string]$store.platform }
+  if ($cfg.productUrl -and $cfg.productUrl.byPlatform -and $plat) {
+    foreach ($p in $cfg.productUrl.byPlatform.PSObject.Properties) {
+      if ($plat -eq [string]$p.Name -or $plat -like ("*{0}*" -f $p.Name) -or ([string]$p.Name -like ("*{0}*" -f $plat))) {
+        return [string]$p.Value
+      }
+    }
+  }
+  if ($cfg.productUrl -and $cfg.productUrl.default) { return [string]$cfg.productUrl.default }
+  if ($cfg.urls -and $cfg.urls.orders) { return [string]$cfg.urls.orders }
+  return 'https://seller-uk.tiktok.com/product/manage'
+}
+
+function Get-DisplayName($store, $map) {
+  $n = [string]$store.storeName
+  if ($map -and $map.PSObject.Properties.Name -contains $n) { return [string]$map.$n }
+  return $n
+}
+
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  # ziniao wraps result JSON in data.data.result string sometimes
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      $inner = [string]$j.data.data.result
+      return ($inner | ConvertFrom-Json)
+    }
+    if ($j.ok -ne $null -and $j.rows) { return $j }
+    if ($j.ok -ne $null) { return $j }
+  } catch { }
+  # last {...} object in output
+  $m = [regex]::Matches($execOut, '\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}')
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+
+function Test-ZiniaoBridgeError([string]$out) {
+  # 注意：ziniao 成功提示常走 stderr，Invoke-Ziniao 只返回 stdout → 空串≠Bridge 挂
+  if ([string]::IsNullOrWhiteSpace($out)) { return $false }
+  if ($out -match '无法连接紫鸟浏览器 Bridge|无法连接.*9481') { return $true }
+  try {
+    $j = $out | ConvertFrom-Json
+    if ($j.ok -eq $false -and $j.error) {
+      $msg = "$($j.error.message)$($j.error.hint)$($j.error.type)"
+      if ($msg -match 'Bridge|9481|无法连接紫鸟') { return $true }
+    }
+  } catch { }
+  return $false
+}
+
+function Test-ZiniaoCliFailed([string]$out) {
+  if ([string]::IsNullOrWhiteSpace($out)) { return $false }
+  if (Test-ZiniaoBridgeError $out) { return $true }
+  try {
+    $j = $out | ConvertFrom-Json
+    if ($j.ok -eq $false) { return $true }
+  } catch { }
+  return $false
+}
+
+function Wait-ZiniaoBridgeReady([int]$MaxSec = 60) {
+  $deadline = (Get-Date).AddSeconds($MaxSec)
+  while ((Get-Date) -lt $deadline) {
+    $portUp = $false
+    try {
+      $tnc = Test-NetConnection -ComputerName '127.0.0.1' -Port 9481 -WarningAction SilentlyContinue
+      if ($tnc -and $tnc.TcpTestSucceeded) { $portUp = $true }
+    } catch {
+      try {
+        $c = New-Object System.Net.Sockets.TcpClient
+        $iar = $c.BeginConnect('127.0.0.1', 9481, $null, $null)
+        $portUp = $iar.AsyncWaitHandle.WaitOne(1500, $false) -and $c.Connected
+        $c.Close()
+      } catch { $portUp = $false }
+    }
+    if ($portUp) { return $true }
+    Start-Sleep -Seconds 2
+  }
+  return $false
+}
+
+function Open-ProductStore([string]$sid, [string]$productUrl, $cfg, [int]$waitOpenMs) {
+  # 关键：open 时已带 launchUrl=product/manage。
+  # 实探测：page visit 商品页常把 Bridge 打挂（9481 TCP 仍通但 HTTP 失败）；
+  # 订单 visit 正常。因此商品链路默认 **跳过 visit**，只靠 open + 长等待 + exec。
+  $openArgs = @('store', 'open', '--id', $sid, '--url', $productUrl)
+  if ($cfg.options.windowRatio -and $cfg.options.windowRatio -ne 'none') {
+    $openArgs += @('--window-ratio', [string]$cfg.options.windowRatio)
+  }
+  $openOut = Invoke-Ziniao $openArgs
+  Write-Host $openOut
+  $settle = [Math]::Max($waitOpenMs, 45000)
+  Write-Step ("  open done — settle {0}ms (no page visit; product manage Bridge quirk)..." -f $settle)
+  Start-Sleep -Milliseconds $settle
+  [void](Wait-ZiniaoBridgeReady -MaxSec 30)
+
+  # warm：极简脚本，避免 PS 转义把 JS 弄坏
+  $warmJs = 'JSON.stringify({ok:true,href:String(location.href||""),tables:document.querySelectorAll("table").length,tlen:((document.body&&document.body.innerText)||"").length})'
+  $warm = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $warmJs, '--timeout', '30000')
+  $warmPayload = Get-ScrapePayload $warm
+  $href = ''
+  $tables = 0
+  $tlen = 0
+  if ($warmPayload) {
+    if ($warmPayload.href) { $href = [string]$warmPayload.href }
+    if ($null -ne $warmPayload.tables) { $tables = [int]$warmPayload.tables }
+    if ($null -ne $warmPayload.tlen) { $tlen = [int]$warmPayload.tlen }
+  }
+  Write-Step ("  warm href={0} tables={1} tlen={2}" -f $(if ($href) { $href } else { '(empty)' }), $tables, $tlen)
+
+  if (Test-ZiniaoBridgeError $warm -or $href -eq 'about:blank' -or ($tlen -lt 50 -and $tables -eq 0)) {
+    Write-Step '  warm weak — extra 25s wait then re-warm (still no visit)'
+    Start-Sleep -Seconds 25
+    $warm2 = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $warmJs, '--timeout', '30000')
+    $wp2 = Get-ScrapePayload $warm2
+    if ($wp2 -and $wp2.href) {
+      Write-Step ("  warm2 href={0} tables={1} tlen={2}" -f $wp2.href, $(if ($null -ne $wp2.tables) { $wp2.tables } else { '?' }), $(if ($null -ne $wp2.tlen) { $wp2.tlen } else { '?' }))
+    } else {
+      Write-Step '  warm2 empty — will still try scrape'
+      if (Test-ZiniaoBridgeError $warm2) {
+        Write-Step '  Bridge error on warm2 — close/reopen once'
+        try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+        Start-Sleep -Seconds 5
+        Write-Host (Invoke-Ziniao $openArgs)
+        Start-Sleep -Milliseconds ([Math]::Max($settle, 50000))
+      }
+    }
+  } elseif ($tables -eq 0 -and $tlen -lt 200) {
+    Write-Step '  page thin — wait 20s for SPA render'
+    Start-Sleep -Seconds 20
+  }
+}
+
+function Convert-DryRunFlag([string]$raw) {
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  switch -Regex ($raw.Trim()) {
+    '^(?i:true|1|yes|y|\$true)$'  { return $true }
+    '^(?i:false|0|no|n|\$false)$' { return $false }
+    default { throw "Invalid -DryRun '$raw'" }
+  }
+}
+
+Write-Step '===== products multi-store START ====='
+Write-Step ("config={0}" -f $ConfigPath)
+Initialize-ZiniaoCli
+Write-Step 'list stores...'
+$listOut = Invoke-Ziniao @('store', 'list')
+$storesObj = $null
+try { $storesObj = $listOut | ConvertFrom-Json } catch { throw "store list parse fail: $listOut" }
+$all = @()
+if ($storesObj.data) {
+  if ($storesObj.data.items) { $all = @($storesObj.data.items) }
+  elseif ($storesObj.data -is [System.Array]) { $all = @($storesObj.data) }
+  elseif ($storesObj.data.list) { $all = @($storesObj.data.list) }
+  elseif ($storesObj.data.stores) { $all = @($storesObj.data.stores) }
+}
+# normalize — ziniao fields: storeId / storeName / platformName / ip
+$norm = @()
+foreach ($s in $all) {
+  $sid = ''
+  if ($s.storeId) { $sid = [string]$s.storeId } elseif ($s.id) { $sid = [string]$s.id }
+  $sname = ''
+  if ($s.storeName) { $sname = [string]$s.storeName } elseif ($s.name) { $sname = [string]$s.name }
+  $plat = ''
+  if ($s.platformName) { $plat = [string]$s.platformName }
+  elseif ($s.platform) { $plat = [string]$s.platform }
+  if (-not $sid) { continue }
+  $norm += [pscustomobject]@{
+    storeId = $sid
+    storeName = $sname
+    platform = $plat
+    platformName = $plat
+    ip = $(if ($s.ip) { [string]$s.ip } else { '' })
+    raw = $s
+  }
+}
+
+$selected = @($norm)
+if ($cfg.filter) {
+  if ($cfg.filter.platformContains -and @($cfg.filter.platformContains).Count -gt 0) {
+    $selected = @($selected | Where-Object {
+      $p = $_.platform
+      $ok = $false
+      foreach ($k in @($cfg.filter.platformContains)) { if ($p -like ("*{0}*" -f $k)) { $ok = $true } }
+      $ok
+    })
+  }
+  if ($cfg.filter.requireIp) {
+    $selected = @($selected | Where-Object { -not [string]::IsNullOrWhiteSpace($_.ip) })
+  }
+  if ($cfg.filter.excludeStoreIds) {
+    $ex = @($cfg.filter.excludeStoreIds | ForEach-Object { [string]$_ })
+    $selected = @($selected | Where-Object { $ex -notcontains $_.storeId })
+  }
+  if ($cfg.filter.includeStoreIds -and @($cfg.filter.includeStoreIds).Count -gt 0) {
+    $inc = @($cfg.filter.includeStoreIds | ForEach-Object { [string]$_ })
+    $selected = @($selected | Where-Object { $inc -contains $_.storeId })
+  }
+}
+
+# Extra order-module excludes (ads may still scrape EU; orders often hit captcha)
+if ($cfg.modules) {
+  if ($cfg.modules.ordersExcludeStoreIds) {
+    $oex = @($cfg.modules.ordersExcludeStoreIds | ForEach-Object { [string]$_ })
+    $before = $selected.Count
+    $selected = @($selected | Where-Object { $oex -notcontains $_.storeId })
+    if ($before -ne $selected.Count) {
+      Write-Step ("ordersExcludeStoreIds removed {0} store(s): {1}" -f ($before - $selected.Count), ($oex -join ','))
+    }
+  }
+  if ($cfg.modules.ordersExcludePlatformContains) {
+    $pex = @($cfg.modules.ordersExcludePlatformContains | ForEach-Object { [string]$_ })
+    $before = $selected.Count
+    $selected = @($selected | Where-Object {
+      $p = [string]$_.platform
+      $hit = $false
+      foreach ($k in $pex) { if ($k -and $p -like ("*{0}*" -f $k)) { $hit = $true } }
+      -not $hit
+    })
+    if ($before -ne $selected.Count) {
+      Write-Step ("ordersExcludePlatformContains removed {0} store(s)" -f ($before - $selected.Count))
+    }
+  }
+}
+
+Write-Step ("stores selected: {0}" -f $selected.Count)
+foreach ($s in $selected) {
+  Write-Step ("  - {0} | {1} | {2}" -f $s.storeId, $s.storeName, $s.platform)
+}
+if ($ListOnly) { Write-Step 'ListOnly done'; return }
+if ($selected.Count -eq 0) { throw 'No stores matched' }
+
+$dryParsed = Convert-DryRunFlag $DryRun
+$useDryRun = if ($null -ne $dryParsed) { [bool]$dryParsed } else {
+  if ($cfg.options -and $null -ne $cfg.options.dryRun) { [bool]$cfg.options.dryRun } else { $true }
+}
+$waitOpen = 28000
+$waitVisit = 35000
+$retries = 3
+$productMaxPages = 1
+$productPageWaitMs = 5000
+if ($cfg.options.waitAfterOpenMs) { $waitOpen = [Math]::Max(20000, [int]$cfg.options.waitAfterOpenMs) }
+if ($cfg.options.waitAfterVisitMs) { $waitVisit = [Math]::Max(25000, [int]$cfg.options.waitAfterVisitMs) }
+if ($cfg.options.scrapeRetries) { $retries = [Math]::Max(2, [int]$cfg.options.scrapeRetries) }
+if ($null -ne $cfg.options.productMaxPages) { $productMaxPages = [Math]::Max(1, [int]$cfg.options.productMaxPages) }
+if ($null -ne $cfg.options.productPageWaitMs) { $productPageWaitMs = [Math]::Max(1500, [int]$cfg.options.productPageWaitMs) }
+$scrapeOneLine = ConvertTo-ScrapeOneLine $scrapeJs
+$clickNextOneLine = ''
+if ($clickNextJs) { $clickNextOneLine = ConvertTo-ScrapeOneLine $clickNextJs }
+Write-Step ("dryRun={0} scrapeLen={1} productMaxPages={2} pageWaitMs={3}" -f $useDryRun, $scrapeOneLine.Length, $productMaxPages, $productPageWaitMs)
+
+$summary = @()
+foreach ($store in $selected) {
+  $sid = $store.storeId
+  $sname = $store.storeName
+  $display = Get-DisplayName $store $cfg.storeNameMap
+  $productUrl = Get-ProductsUrl $store $cfg
+  $item = [ordered]@{
+    storeId = $sid; storeName = $sname; displayName = $display
+    ok = $false; rows = 0; qingquanAccepted = 0; qingquanDup = 0; error = $null
+  }
+  Write-Step ("==== PRODUCTS {0} ({1}) => {2} ====" -f $sname, $sid, $display)
+  try {
+    Write-Step '  open + settle product page...'
+    Open-ProductStore -sid $sid -productUrl $productUrl -cfg $cfg -waitOpenMs $waitOpen
+
+    $payload = $null
+    $rawRows = @()
+    $lastErr = $null
+    $pagesDone = 0
+    $seenIds = @{}
+
+    for ($attempt = 1; $attempt -le $retries; $attempt++) {
+      Write-Step ("  scrape attempt {0}/{1} (page 1)..." -f $attempt, $retries)
+      $execOut = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $scrapeOneLine, '--timeout', '90000')
+      if (Test-ZiniaoBridgeError $execOut) {
+        $lastErr = 'Bridge disconnected on page exec'
+        Write-Step ("  attempt fail: {0}" -f $lastErr)
+        if ($attempt -lt $retries) {
+          Start-Sleep -Seconds 12
+          [void](Wait-ZiniaoBridgeReady -MaxSec 40)
+          Write-Step '  re-open store (no visit) after Bridge fail...'
+          try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+          Start-Sleep -Seconds 4
+          Open-ProductStore -sid $sid -productUrl $productUrl -cfg $cfg -waitOpenMs ([Math]::Max($waitOpen, 45000))
+        }
+        continue
+      }
+      if ([string]::IsNullOrWhiteSpace($execOut)) {
+        $lastErr = 'page exec empty stdout'
+        Write-Step ("  attempt fail: {0}" -f $lastErr)
+        if ($attempt -lt $retries) {
+          Start-Sleep -Seconds 15
+        }
+        continue
+      }
+      $payload = Get-ScrapePayload $execOut
+      if ($payload -and $payload.ok -and $payload.rows) {
+        $pageRows = @($payload.rows)
+        foreach ($r in $pageRows) {
+          $prodKey = ''
+          if ($r.productId) { $prodKey = [string]$r.productId }
+          elseif ($r.product_id) { $prodKey = [string]$r.product_id }
+          elseif ($r.sellerSku) { $prodKey = "sku:$([string]$r.sellerSku)" }
+          elseif ($r.seller_sku) { $prodKey = "sku:$([string]$r.seller_sku)" }
+          if (-not $prodKey -or $seenIds.ContainsKey($prodKey)) { continue }
+          $seenIds[$prodKey] = $true
+          $rawRows += $r
+        }
+        if ($rawRows.Count -gt 0) { $lastErr = $null; $pagesDone = 1; break }
+        $lastErr = '0 product rows'
+        Write-Step '  attempt: 0 product rows after parse'
+      } else {
+        $lastErr = if ($payload -and $payload.error) { [string]$payload.error } else { 'scrape failed / unparseable exec' }
+        Write-Step ("  attempt fail: {0}" -f $lastErr)
+        try {
+          $rawPath = Join-Path $script:logsDir ("products-exec-raw-{0}-a{1}.txt" -f $sid, $attempt)
+          Set-Content -LiteralPath $rawPath -Value $execOut -Encoding UTF8
+        } catch { }
+        if ($lastErr -match 'about:blank' -or ($payload -and "$($payload.url)" -match 'about:blank')) {
+          Write-Step '  about:blank — full reopen'
+          try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+          Start-Sleep -Seconds 4
+          Open-ProductStore -sid $sid -productUrl $productUrl -cfg $cfg -waitOpenMs ([Math]::Max($waitOpen, 35000))
+          continue
+        }
+      }
+      if ($attempt -lt $retries -and $rawRows.Count -eq 0) {
+        Write-Step '  wait 18s and retry scrape (no visit)'
+        Start-Sleep -Seconds 18
+      }
+    }
+    if ($lastErr -or $rawRows.Count -eq 0) { throw $(if ($lastErr) { $lastErr } else { '0 rows' }) }
+
+    Write-Step ("  page 1 unique products={0}" -f $rawRows.Count)
+
+    # 翻页（可选）
+    if ($productMaxPages -gt 1 -and $clickNextOneLine) {
+      for ($page = 2; $page -le $productMaxPages; $page++) {
+        Write-Step ("  click next for page {0}..." -f $page)
+        $nextOut = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $clickNextOneLine, '--timeout', '30000')
+        $nextPayload = Get-ScrapePayload $nextOut
+        $hasNext = $false
+        if ($nextPayload -and $nextPayload.ok -and $nextPayload.clicked) { $hasNext = $true }
+        elseif ($nextPayload -and $nextPayload.hasNext -eq $false) {
+          Write-Step ("  no more pages: {0}" -f $(if ($nextPayload.error) { $nextPayload.error } else { 'end' }))
+          break
+        } else {
+          if ($nextOut -match '"clicked"\s*:\s*true') { $hasNext = $true }
+          else {
+            Write-Step '  stop paging: cannot click next'
+            break
+          }
+        }
+        if (-not $hasNext) { break }
+
+        Start-Sleep -Milliseconds $productPageWaitMs
+        $execOut = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $scrapeOneLine, '--timeout', '60000')
+        $pagePayload = Get-ScrapePayload $execOut
+        if (-not ($pagePayload -and $pagePayload.ok -and $pagePayload.rows)) {
+          Write-Step ("  page {0} scrape empty — stop paging" -f $page)
+          break
+        }
+        $added = 0
+        foreach ($r in @($pagePayload.rows)) {
+          $prodKey = ''
+          if ($r.productId) { $prodKey = [string]$r.productId }
+          elseif ($r.product_id) { $prodKey = [string]$r.product_id }
+          elseif ($r.sellerSku) { $prodKey = "sku:$([string]$r.sellerSku)" }
+          if (-not $prodKey -or $seenIds.ContainsKey($prodKey)) { continue }
+          $seenIds[$prodKey] = $true
+          $rawRows += $r
+          $added++
+        }
+        $pagesDone++
+        $payload = $pagePayload
+        Write-Step ("  page {0} new={1} unique total={2}" -f $page, $added, $rawRows.Count)
+        if ($added -eq 0) { break }
+      }
+    } elseif ($productMaxPages -gt 1 -and -not $clickNextOneLine) {
+      Write-Step '  WARN products-click-next.js missing — only first page'
+    }
+
+    $item.rows = $rawRows.Count
+    Write-Step ("  scraped {0} product rows source={1} pages={2}" -f $rawRows.Count, $(if ($payload.source) { $payload.source } else { '?' }), $pagesDone)
+
+    # save debug（完整 rows，便于校准）
+    $dbg = Join-Path $script:logsDir ("products-debug-{0}-{1}.json" -f $sid, $script:runStamp)
+    (@{
+      storeId = $sid; displayName = $display; url = $productUrl
+      rowCount = $rawRows.Count; pages = $pagesDone
+      payloadMeta = @{
+        ok = $(if ($payload) { $payload.ok } else { $null })
+        source = $(if ($payload) { $payload.source } else { $null })
+        headers = $(if ($payload) { $payload.headers } else { $null })
+        colMap = $(if ($payload) { $payload.colMap } else { $null })
+        currency = $(if ($payload) { $payload.currency } else { $null })
+      }
+      sampleRows = @($rawRows | Select-Object -First 5)
+    } | ConvertTo-Json -Depth 12) | Set-Content -LiteralPath $dbg -Encoding UTF8
+
+    $currency = 'GBP'
+    if ($payload.currency) { $currency = [string]$payload.currency }
+    $srcUrl = $productUrl
+    if ($payload.url) { $srcUrl = [string]$payload.url }
+
+    if ((Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue) -and $cfg.qingquan -and $cfg.qingquan.enabled) {
+      if ($useDryRun) {
+        Write-Step ("  qingquan dryRun: would report {0} products" -f $rawRows.Count)
+      } else {
+        $collectedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+        $qqItems = ConvertTo-QingquanProductIngestItems -Rows $rawRows -CollectedAt $collectedAt `
+          -StoreId $sid -StoreName $display -Currency $currency -SourceUrl $srcUrl
+        Write-Step ("  report Qingquan tiktok_products items={0}..." -f $qqItems.Count)
+        $qq = Send-QingquanIngest -Config $cfg -Items $qqItems -Source 'tiktok_products'
+        $item.qingquanAccepted = $qq.accepted
+        $item.qingquanDup = $qq.duplicated
+        if ($qq.error) { $item.error = [string]$qq.error }
+        Write-Step ("  qingquan accepted={0} dup={1} failed={2} ok={3}" -f $qq.accepted, $qq.duplicated, $qq.failed, $qq.ok)
+      }
+    } else {
+      Write-Step '  skip qingquan (disabled or client missing)'
+    }
+    $item.ok = $true
+  } catch {
+    $item.error = [string]$_
+    Write-Step ("  FAIL: {0}" -f $item.error)
+  } finally {
+    if ($cfg.options -and $null -ne $cfg.options.closeAfter -and -not [bool]$cfg.options.closeAfter) {
+      Write-Step '  leave store open'
+    } else {
+      try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+    }
+  }
+  $summary += [pscustomobject]$item
+  if ($cfg.options.delayBetweenStoresMs) { Start-Sleep -Milliseconds ([int]$cfg.options.delayBetweenStoresMs) }
+}
+
+Write-Step '======== PRODUCTS SUMMARY ========'
+$summary | Format-Table storeName, displayName, ok, rows, qingquanAccepted, qingquanDup, error -AutoSize
+$okN = @($summary | Where-Object { $_.ok }).Count
+Write-Step ("OK {0}/{1}" -f $okN, $summary.Count)
+$sumPath = Join-Path $script:logsDir ("products-summary-{0}.json" -f $script:runStamp)
+($summary | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $sumPath -Encoding UTF8
+Write-Step ("summary: {0}" -f $sumPath)
+Write-Step '===== products multi-store END ====='

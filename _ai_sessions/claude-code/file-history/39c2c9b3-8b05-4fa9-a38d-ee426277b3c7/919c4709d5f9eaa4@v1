@@ -1,0 +1,89 @@
+import { launchBrowser, isLoggedIn } from './browser.js';
+import { listStores, switchStore } from './stores.js';
+import { scanStore } from './monitor.js';
+import { closePopups } from './popups.js';
+import { loadState, saveState, diffStore } from './state.js';
+import { sendFeishu } from './feishu.js';
+import { log } from './logger.js';
+
+/** 执行一轮完整监测 */
+export async function runOnce(cfg) {
+  const { context, page } = await launchBrowser(cfg);
+  try {
+    if (!(await isLoggedIn(page, cfg))) {
+      throw new Error('未登录。请先运行 `npm run login` 完成一次人工登录。');
+    }
+    await closePopups(page);
+
+    // 确定店铺清单
+    let stores = cfg.stores === 'all' && cfg.storeList.length === 0
+      ? await listStores(page)
+      : cfg.storeList;
+    if (!stores || stores.length === 0) {
+      log.warn('未能获取店铺清单；仅监测当前店铺。可在 config.storeList 手动填写店铺名。');
+      stores = [null]; // null = 当前店铺，不切换
+    }
+
+    const state = loadState();
+    state.stores = state.stores || {};
+    const allEvents = [];
+    const summaries = [];
+
+    for (const store of stores) {
+      const label = store || '(当前店铺)';
+      try {
+        if (store) {
+          const ok = await switchStore(page, store, cfg);
+          if (!ok) { log.warn(`切换到「${store}」失败，跳过`); continue; }
+        }
+        const result = await scanStore(page, label, cfg);
+        log.info('扫描结果：', result);
+        summaries.push(result);
+
+        const prev = state.stores[label];
+        const events = diffStore(prev, result, cfg.alerts);
+        for (const ev of events) allEvents.push({ store: label, ...ev });
+
+        // 更新快照
+        state.stores[label] = {
+          onSaleCount: result.onSaleCount,
+          trafficWatchCount: result.trafficWatchCount,
+          trafficDeclineCount: result.trafficDeclineCount,
+          trafficAnomalyTotal: result.trafficAnomalyTotal,
+          updatedAt: new Date().toISOString(),
+        };
+      } catch (e) {
+        log.error(`店铺「${label}」监测出错：`, e.message);
+      }
+    }
+
+    saveState(state);
+
+    // 汇总告警：有事件才发
+    if (allEvents.length > 0) {
+      const lines = [];
+      const byStore = {};
+      for (const ev of allEvents) (byStore[ev.store] ||= []).push(ev);
+      for (const [store, evs] of Object.entries(byStore)) {
+        lines.push(`**🏬 ${store}**`);
+        for (const ev of evs) {
+          const icon = ev.type === 'onSaleDrop' ? '📉' : '⚠️';
+          lines.push(`${icon} ${ev.text}`);
+        }
+        lines.push('');
+      }
+      lines.push(`_扫描时间：${new Date().toLocaleString('zh-CN')}_`);
+      await sendFeishu(cfg, {
+        title: '🔔 Temu 店铺监测告警',
+        template: 'red',
+        lines,
+      });
+    } else {
+      log.info('本轮无异常，未发送告警。');
+    }
+
+    return { summaries, events: allEvents };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}

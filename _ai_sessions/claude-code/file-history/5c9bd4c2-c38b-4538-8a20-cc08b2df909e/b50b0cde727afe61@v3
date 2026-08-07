@@ -1,0 +1,47 @@
+# -*- coding: utf-8 -*-
+"""
+账号凭据（敏感！请勿提交到公开仓库、勿泄露）。
+建议将本文件加入 .gitignore。
+"""
+
+# ---- Sellfox ERP ----
+ERP = {
+    "url": "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html",
+    "user": "17312292726",
+    "password": "Xy147258",
+}
+
+# ---- 海外仓WMS（两个账号 = 两个店铺）----
+WMS_URL = "http://193.112.93.60:9999/index.html#"
+
+WMS_ACCOUNTS = [
+    # display = 登录后页面顶部 "Hi，XXX" 显示的名字，用于校验会话确实切到本账号
+    # （2026-07-10 实测：金猫显示中文店铺名"金猫商贸"，黑猫显示登录名"JMCAT"）。
+    {"shop": "金猫", "login": "JMSM",  "password": "JMSMjmsm888", "display": "金猫商贸"},
+    {"shop": "黑猫", "login": "JMCAT", "password": "111111Aa",    "display": "JMCAT"},
+]
+
+# ---- 飞书（Feishu/Lark）运行汇总通知 ----
+# 每次运行 / 每轮循环结束，发一张"运行汇总"卡片到飞书。支持两种方式，填了 webhook 就优先用它。
+#
+# 方式A【群自定义机器人 Webhook】(当前使用，最简单)：
+#   飞书群 -> 设置 -> 群机器人 -> 添加"自定义机器人" -> 复制 Webhook 地址填到 webhook。
+#   若创建时勾了"签名校验"，把密钥填 webhook_secret；若设了"自定义关键词"，卡片标题已含"海外仓"。
+# 方式B【企业自建应用】(留空即不用)：填 app_id/app_secret/receive_id，跑 `python notify.py` 可列群取 chat_id。
+#
+# level: all=每次运行都发汇总；fail_only=只在有失败/异常时才发（发货循环嫌吵可设它）。
+# 也可用环境变量覆盖(优先)：HWC_FEISHU_WEBHOOK / _WEBHOOK_SECRET / _LEVEL(all|fail_only) /
+#   _ENABLE(0=关) / _APP_ID / _APP_SECRET / _RECEIVE_ID / _RECEIVE_ID_TYPE / _BASE_URL
+FEISHU = {
+    "enable": True,             # False 或 HWC_FEISHU_ENABLE=0 可临时关掉通知
+    "level": "all",            # all=每次运行都发汇总；fail_only=只在有失败/异常时才发
+    # 方式A：群自定义机器人 Webhook
+    "webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/1856578d-f69d-43c1-91a4-ba76d2dc192d",
+    "webhook_secret": "",      # 机器人开了"签名校验"才填
+    # 方式B：企业自建应用（不用可留空）
+    "app_id": "",
+    "app_secret": "",
+    "receive_id": "",
+    "receive_id_type": "chat_id",
+    # "base_url": "https://open.feishu.cn",   # 国际版 Lark 改 https://open.larksuite.com
+}

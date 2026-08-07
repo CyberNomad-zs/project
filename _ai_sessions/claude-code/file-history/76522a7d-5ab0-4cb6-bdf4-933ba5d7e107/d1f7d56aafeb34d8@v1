@@ -1,0 +1,418 @@
+"""飞书 tenant token 与 Bitable 写入（Phase0 MVP）。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from typing import Any
+
+import httpx
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+BASE = "https://open.feishu.cn/open-apis"
+
+
+class FeishuError(RuntimeError):
+    pass
+
+
+async def get_tenant_access_token() -> str | None:
+    settings = get_settings()
+    if not settings.feishu_app_id or not settings.feishu_app_secret:
+        return None
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{BASE}/auth/v3/tenant_access_token/internal",
+            json={"app_id": settings.feishu_app_id, "app_secret": settings.feishu_app_secret},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"token failed: {data}")
+        return data["tenant_access_token"]
+
+
+def content_hash(fields: dict[str, Any]) -> str:
+    raw = json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def batch_create_records(
+    token: str,
+    app_token: str,
+    table_id: str,
+    records: list[dict[str, Any]],
+) -> list[str]:
+    """返回 record_id 列表。"""
+    if not records:
+        return []
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"records": [{"fields": r} for r in records]},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"batch_create failed: {data}")
+        return [item["record_id"] for item in data.get("data", {}).get("records", [])]
+
+
+async def batch_update_records(
+    token: str,
+    app_token: str,
+    table_id: str,
+    items: list[tuple[str, dict[str, Any]]],
+) -> None:
+    if not items:
+        return
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "records": [
+                    {"record_id": rid, "fields": fields} for rid, fields in items
+                ]
+            },
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"batch_update failed: {data}")
+
+
+def task_to_fields(task: dict[str, Any]) -> dict[str, Any]:
+    """映射到飞书列名（需与多维表一致，可按环境改别名）。"""
+    return {
+        "平台": task.get("platform") or "",
+        "业务ID": task.get("biz_id") or "",
+        "异常类型": task.get("anomaly_type") or "",
+        "标题": task.get("title") or "",
+        "状态": task.get("status") or "",
+        "进度": task.get("progress_note") or "",
+        "去重键": task.get("dedupe_key") or "",
+    }
+
+
+def _feishu_date(value: Any) -> int | None:
+    """多维表日期/日期时间字段：Unix 毫秒。"""
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        # 已是 ms 或 s
+        v = int(value)
+        return v if v > 10_000_000_000 else v * 1000
+    if hasattr(value, "timestamp"):
+        # date/datetime
+        from datetime import date, datetime, timezone
+
+        if isinstance(value, datetime):
+            dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        if isinstance(value, date):
+            dt = datetime(value.year, value.month, value.day, tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+    s = str(value).strip()
+    if not s:
+        return None
+    from datetime import date, datetime, timezone
+
+    try:
+        if "T" in s or " " in s:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000)
+        d = date.fromisoformat(s[:10])
+        dt = datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _num(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _omit_none(fields: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in fields.items() if v is not None and v != ""}
+
+
+def amz_shop_daily_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """fact_amz_shop_daily → 飞书 T1「店铺日经营」列名。"""
+    return _omit_none(
+        {
+            "日期": _feishu_date(row.get("biz_date")),
+            "店铺": row.get("shop_name") or "",
+            "店铺ID": row.get("shop_external_id") or "",
+            "站点": row.get("marketplace") or "",
+            "币种": row.get("currency") or "",
+            "销售额": _num(row.get("sales_amount")),
+            "订单量": _num(row.get("orders_cnt")),
+            "销量": _num(row.get("units")),
+            "访客数": _num(row.get("sessions")),
+            "加购数": _num(row.get("add_to_cart")),
+            "客单价": _num(row.get("aov")),
+            "退货量": _num(row.get("refund_units")),
+            "退货率": _num(row.get("refund_rate")),
+            "毛利": _num(row.get("gross_profit")),
+            "广告花费": _num(row.get("ad_spend")),
+            "广告销售额": _num(row.get("ad_sales")),
+            "ACoS": _num(row.get("acos")),
+            "广告贡献毛利": _num(row.get("ad_contrib_margin")),
+            "净利润": _num(row.get("net_profit")),
+            "净利率": _num(row.get("net_margin")),
+            "ROI": _num(row.get("roi")),
+            "销售额环比": _num(row.get("sales_mom_ratio")),
+            "利润环比": _num(row.get("profit_mom_ratio")),
+            "销售额同比": _num(row.get("sales_yoy_ratio")),
+            "数据状态": row.get("row_status") or "success",
+            "抓取时间": _feishu_date(row.get("collected_at")),
+            "数据源": row.get("source_url") or "",
+            "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+def amz_link_daily_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """fact_amz_link_daily → 飞书 T3「链接日指标」列名。"""
+    return _omit_none(
+        {
+            "日期": _feishu_date(row.get("biz_date")),
+            "店铺ID": row.get("shop_external_id") or "",
+            "ASIN": row.get("asin") or "",
+            "SKU": row.get("seller_sku") or "",
+            "标题": row.get("title") or "",
+            "类目": row.get("category") or "",
+            "销量": _num(row.get("units")),
+            "销售额": _num(row.get("sales_amount")),
+            "币种": row.get("currency") or "",
+            "访客数": _num(row.get("sessions")),
+            "广告花费": _num(row.get("ad_spend")),
+            "ACoS": _num(row.get("acos")),
+            "单品净利润": _num(row.get("unit_net_profit")),
+            "FBA可售": _num(row.get("fba_fulfillable")),
+            "可售天数": _num(row.get("days_of_supply")),
+            "退货率": _num(row.get("refund_rate")),
+            "销量环比": _num(row.get("units_mom_ratio")),
+            "销售额环比": _num(row.get("sales_mom_ratio")),
+            "问题标签": row.get("problem_tags") or "",
+            "第一负责人": row.get("owner_name") or "",
+            "抓取时间": _feishu_date(row.get("collected_at")),
+            "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+_RISK_STATUS_CN = {
+    "open": "未处理",
+    "in_progress": "处理中",
+    "resolved": "已闭环",
+    "ignored": "忽略",
+}
+
+
+def amz_risk_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """fact_amz_risk_alert → 飞书 T6「风险告警」列名。"""
+    st = row.get("status") or "open"
+    return _omit_none(
+        {
+            "告警ID": row.get("alert_key") or "",
+            "发现日期": _feishu_date(row.get("detected_on")),
+            "店铺": row.get("shop_name") or "",
+            "店铺ID": row.get("shop_external_id") or "",
+            "对象": row.get("object_ref") or "",
+            "风险类型": row.get("risk_type") or "",
+            "优先级": row.get("priority") or "P1",
+            "摘要": row.get("summary") or "",
+            "指标快照": row.get("metric_snapshot") or "",
+            "状态": _RISK_STATUS_CN.get(str(st), str(st)),
+            "第一负责人": row.get("owner_name") or "",
+            "关联任务ID": str(row.get("task_id") or "") if row.get("task_id") else "",
+            "更新时间": _feishu_date(row.get("updated_at")),
+            "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+_PLAN_STATUS_CN = {
+    "on": "投放中",
+    "off": "已关闭",
+    "unknown": "未知",
+    "投放中": "投放中",
+    "已关闭": "已关闭",
+    "未知": "未知",
+}
+
+
+def _profit_tag(roi: float | None, spend: float | None, revenue: float | None, target_roi: float | None) -> str:
+    """高ROI / 正常 / 低效亏损（写入前打标，阈值默认 3 或目标 ROI）。"""
+    sp = float(spend or 0)
+    rev = float(revenue or 0)
+    if sp > 0 and rev <= 0:
+        return "低效亏损"
+    if roi is None and sp > 0:
+        roi = rev / sp if sp else None
+    if roi is None:
+        return "正常"
+    thr = float(target_roi) if target_roi is not None and float(target_roi) > 0 else 3.0
+    if float(roi) >= thr:
+        return "高ROI"
+    if float(roi) > 0:
+        return "低效亏损"
+    return "低效亏损"
+
+
+def tk_shop_daily_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """店日宽表（shop + ads rollup + health/finance）→ 飞书 T1「店铺日经营」。"""
+    gmv = _num(row.get("gmv"))
+    orders = _num(row.get("orders_cnt"))
+    ad_spend = _num(row.get("ad_spend")) or 0.0
+    ad_revenue = _num(row.get("ad_revenue")) or 0.0
+    ad_orders = _num(row.get("ad_orders")) or 0.0
+    aov = None
+    if gmv is not None and orders and orders > 0:
+        aov = gmv / orders
+    ad_roi = None
+    if ad_spend and ad_spend > 0:
+        ad_roi = ad_revenue / ad_spend
+    shop_cur = (row.get("currency") or "").strip()
+    ad_cur = (row.get("ad_currency") or "").strip()
+    organic_orders = None
+    organic_sales = None
+    if orders is not None:
+        organic_orders = max(orders - ad_orders, 0.0)
+    # 自然销售额仅同币种时估算，避免 USD 广告销售与 GBP GMV 相减
+    if gmv is not None and shop_cur and ad_cur and shop_cur.upper() == ad_cur.upper():
+        organic_sales = max(gmv - ad_revenue, 0.0)
+
+    return _omit_none(
+        {
+            "日期": _feishu_date(row.get("biz_date")),
+            "店铺": row.get("shop_name") or "",
+            "店铺ID": row.get("shop_external_id") or "",
+            "币种": shop_cur,
+            "销售额": gmv,
+            "订单量": orders,
+            "买家数": _num(row.get("buyers_cnt")),
+            "退款金额": _num(row.get("refund_amount")),
+            "客单价": aov,
+            "广告花费": ad_spend,
+            "广告销售额": ad_revenue,
+            "广告订单": ad_orders,
+            "广告ROI": ad_roi,
+            "广告币种": ad_cur or None,
+            "自然订单(估)": organic_orders,
+            "自然销售额(估)": organic_sales,
+            "健康分": _num(row.get("health_score")),
+            "健康状态": row.get("health_status") or "",
+            "延迟发货率": _num(row.get("late_dispatch_rate")),
+            "负面反馈率": _num(row.get("negative_feedback_rate")),
+            "结算金额": _num(row.get("settlement_amount")),
+            "待结算": _num(row.get("pending_amount")),
+            "财务退款": _num(row.get("finance_refund")),
+            "财务币种": row.get("finance_currency") or "",
+            "销售额环比": _num(row.get("sales_mom_ratio")),
+            "广告花费环比": _num(row.get("ad_spend_mom_ratio")),
+            "数据状态": row.get("row_status") or "success",
+            "抓取时间": _feishu_date(row.get("collected_at")),
+            "数据源": row.get("source_url") or "",
+            "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+def tk_ads_campaign_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """fact_ads_campaign_daily → 飞书 T2「广告活动日明细」。"""
+    spend = _num(row.get("spend")) or 0.0
+    revenue = _num(row.get("revenue")) or 0.0
+    roi = _num(row.get("roi"))
+    if roi is None and spend > 0:
+        roi = revenue / spend
+    budget = _num(row.get("daily_budget"))
+    burn = None
+    if budget is not None and budget > 0:
+        burn = spend / budget
+    plan_raw = str(row.get("plan_status") or "").strip().lower() or "unknown"
+    plan_cn = _PLAN_STATUS_CN.get(plan_raw) or _PLAN_STATUS_CN.get(str(row.get("plan_status") or "").strip()) or "未知"
+    target = _num(row.get("target_roi"))
+    tag = _profit_tag(roi, spend, revenue, target)
+
+    return _omit_none(
+        {
+            "日期": _feishu_date(row.get("biz_date")),
+            "店铺": row.get("shop_name") or "",
+            "店铺ID": row.get("shop_external_id") or "",
+            "品名": row.get("campaign_name") or "",
+            "广告花费": spend,
+            "销量": _num(row.get("orders")),
+            "ROI": roi,
+            "销售额": revenue,
+            "币种": row.get("currency") or "USD",
+            "计划状态": plan_cn,
+            "投放状态": row.get("delivery_status") or "",
+            "日预算": budget,
+            "目标ROI": target,
+            "净成本": _num(row.get("net_cost")),
+            "平均下单成本": _num(row.get("avg_order_cost")),
+            "预算消耗率": burn,
+            "盈亏标签": tag,
+            "抓取时间": _feishu_date(row.get("collected_at")),
+            "数据源URL": row.get("source_url") or "",
+            "状态": row.get("row_status") or "success",
+            "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+_TK_TASK_STATUS_CN = {
+    "open": "未处理",
+    "in_progress": "处理中",
+    "resolved": "已闭环",
+    "cancelled": "已取消",
+    "ignored": "忽略",
+}
+
+
+def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """tk.fact_tk_anomaly_task → 飞书「异常任务」列名（对齐 AMZ ASIN健康度监控·异常任务）。"""
+    st = row.get("status") or "open"
+    # 商品 ID 列：飞书 AMZ 用 ASIN；TK 用同一列名兼容，或「商品ID」
+    product_id = row.get("product_id") or ""
+    return _omit_none(
+        {
+            "主键": row.get("task_key") or "",
+            "日期": _feishu_date(row.get("biz_date")),
+            "店铺": row.get("shop_name") or "",
+            "店铺ID": row.get("shop_external_id") or "",
+            "ASIN": product_id,  # 兼容 AMZ 表头；值=TK product_id
+            "商品ID": product_id,
+            "SKU": row.get("seller_sku") or "",
+            "产品": row.get("product_name") or "",
+            "中文名称": row.get("product_name_cn") or "",
+            "对象": row.get("object_ref") or product_id or "",
+            "对象类型": row.get("object_type") or "product",
+            "异常类型": row.get("anomaly_type") or "",
+            "异常码": row.get("anomaly_code") or "",
+            "优先级": row.get("priority") or "P1",
+            "摘要": row.get("summary") or "",
+            "指标快照": row.get("metric_snapshot") or "",
+            "状态": _TK_TASK_STATUS_CN.get(str(st), str(st)),
+            "第一负责人": row.get("owner_name") or "",
+            "进度": row.get("progress_note") or "",
+            "截止时间": _feishu_date(row.get("due_at")),
+            "关联任务ID": str(row.get("center_task_id") or "") if row.get("center_task_id") else "",
+            "去重键": row.get("dedupe_key") or "",
+            "更新时间": _feishu_date(row.get("updated_at")),
+            "抓取时间": _feishu_date(row.get("collected_at")),
+            "本地ID": str(row.get("id") or ""),
+        }
+    )

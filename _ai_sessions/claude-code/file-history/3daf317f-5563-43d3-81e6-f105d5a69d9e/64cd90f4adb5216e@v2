@@ -1,0 +1,155 @@
+# TikTok 异常任务 · PG 建表说明
+
+> 日期：2026-08-04  
+> 对齐飞书：`ASIN健康度监控` · **异常任务**  
+> Base 参考：`https://dcnkj1up67d5.feishu.cn/base/TkW0bXEAAa3Fo3sdKagcL9fTn2b?table=tblXnUm9VSmyQ2AC`  
+> 迁移：`backend/migrations/010_tk_anomaly_task.sql`
+
+---
+
+## 1. 目标
+
+仿 AMZ 飞书「异常任务」在 **PostgreSQL `tk` schema** 建同形态事实表，作为 SoT：
+
+```text
+规则 / 人工 / 采集
+  → POST /api/v1/ingest/tiktok_anomaly_task
+  → tk.fact_tk_anomaly_task
+  →（可选）投影 public.task / anomaly_event
+  → export table_key=tk_anomaly_task → 飞书「TK异常任务」
+```
+
+---
+
+## 2. 飞书列 ↔ PG 字段
+
+| 飞书列（AMZ 异常任务） | PG `tk.fact_tk_anomaly_task` | 说明 |
+|------------------------|------------------------------|------|
+| 主键 | `task_key` | 如 `T20260804-a1b2c3d4`；UNIQUE |
+| 日期 | `biz_date` | 业务发现日 |
+| 店铺 | `shop_name` / `shop_external_id` | |
+| ASIN | `product_id` | **TK 用商品 ID**；同步时「ASIN」「商品ID」双写兼容 |
+| 产品 | `product_name` | 英文/原标题 |
+| 中文名称 | `product_name_cn` | |
+| 异常类型 | `anomaly_type`（中文）+ `anomaly_code` | 字典见 `dim_tk_anomaly_type` |
+| （建议补）优先级 | `priority` P0/P1/P2 | |
+| （建议补）状态 | `status` | 未处理/处理中/已闭环… |
+| （建议补）第一负责人 | `owner_name` | |
+| （建议补）进度 | `progress_note` | |
+| （建议补）指标快照 | `metric_snapshot` | 如「库存 3 / ROI 1.2」 |
+| （建议补）摘要 | `summary` | |
+
+协作字段与中心 `public.task` 对齐，可挂 `center_task_id`。
+
+---
+
+## 3. 异常类型字典（种子）
+
+| code | 中文（飞书选项） | 对象 |
+|------|------------------|------|
+| stock_low | 库存不足 | product |
+| stock_high | 库存过高 | product |
+| sales_drop | 销量骤降 | product |
+| zero_sales | 零销 | product |
+| roi_low | ROI异常 | campaign（对标 ACOS异常） |
+| ads_waste | 广告低效 | campaign |
+| review_risk | 评价异常 | product |
+| health_risk | 健康分异常 | shop |
+| price_anomaly | 价格异常 | product |
+| other | 其它 | other |
+
+---
+
+## 4. 去重
+
+| 键 | 规则 |
+|----|------|
+| `task_key` | 全局唯一（飞书主键） |
+| `dedupe_key` | 未闭环唯一：`tiktok:{object}:{anomaly_code}`（部分索引） |
+
+与 AMZ / `task_engine` 一致：**同对象同类型仅一张未闭环单**；闭环后再命中可新建。
+
+---
+
+## 5. Ingest
+
+```http
+POST /api/v1/ingest/tiktok_anomaly_task
+X-Api-Key: <INGEST_KEY>
+```
+
+```json
+{
+  "idempotency_key": "tiktok_anomaly:27501502216807:17298…:stock_low:2026-08-03",
+  "platform": "tiktok",
+  "shop_id": "27501502216807",
+  "shop_name": "Deal to deal",
+  "biz_date": "2026-08-03",
+  "payload": {
+    "product_id": "1729855816746506755",
+    "product_name": "2 Tier Dish Drying Rack…",
+    "product_name_cn": "双层沥水架",
+    "seller_sku": "JMCATCJCT",
+    "anomaly_type": "库存不足",
+    "priority": "P0",
+    "summary": "可售库存 3，低于阈值 10",
+    "metric_snapshot": "stock=3 threshold=10",
+    "owner_name": "张帅",
+    "status": "open"
+  }
+}
+```
+
+别名 source：`tk_anomaly_task` / `tiktok_risk_alert`。
+
+---
+
+## 6. 飞书同步
+
+| env | 含义 |
+|-----|------|
+| `FEISHU_BITABLE_APP_TOKEN_TK` | TK Base（可与驾驶舱同 Base） |
+| `FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK` | 异常任务 table_id |
+
+```http
+POST /api/v1/export/feishu
+{"table_key":"tk_anomaly_task","run_inline":true,"lookback_days":30}
+```
+
+建字段可参考 `scripts/feishu-tk-create-fields.ps1` 扩展，或飞书 UI 按上表手工建「TK异常任务」。
+
+---
+
+## 7. 迁移
+
+```bash
+psql "$DATABASE_URL_SYNC" -v ON_ERROR_STOP=1 -f backend/migrations/010_tk_anomaly_task.sql
+# 或
+psql -U qingquan -d qingquan -f backend/migrations/010_tk_anomaly_task.sql
+```
+
+验收：
+
+```sql
+SELECT count(*) FROM tk.dim_tk_anomaly_type;  -- >= 10
+\d tk.fact_tk_anomaly_task
+```
+
+---
+
+## 8. 与中心 task 的关系
+
+| 层 | 用途 |
+|----|------|
+| `tk.fact_tk_anomaly_task` | **飞书异常任务宽表**（运营看的字段全在） |
+| `public.anomaly_event` + `public.task` | 中心任务引擎、人维 API、通用去重 |
+
+规则 Job 建议：写 fact 宽表 **并** `upsert_task_from_anomaly`（`platform=tiktok`），`center_task_id` 回填。首期可只写 fact，任务引擎后接。
+
+---
+
+## 9. 未做（后续）
+
+- 自动规则扫描 Job（库存/ROI/健康分 → 建单）  
+- 飞书 Base 自动建表脚本  
+- 与 AMZ 同一「异常任务」表混平台（当前 TK 独立表更清晰）

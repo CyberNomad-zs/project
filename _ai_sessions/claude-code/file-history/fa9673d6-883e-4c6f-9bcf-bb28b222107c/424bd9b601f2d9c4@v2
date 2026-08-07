@@ -1,0 +1,384 @@
+<style>
+  :root{
+    --bg:#EBEEF2; --panel:#FBFCFD; --panel-2:#F0F3F6; --panel-3:#E9EDF1;
+    --ink:#131A22; --ink-2:#4A5563; --ink-3:#8A94A2;
+    --line:#D6DDE5; --line-2:#E6EBF0;
+    --accent:#1B7FC4; --accent-2:#1C9BB8;
+    --crit:#D23B43; --crit-bg:rgba(210,59,67,.11); --crit-line:rgba(210,59,67,.4);
+    --warn:#BC7714; --warn-bg:rgba(200,130,20,.13); --warn-line:rgba(200,130,20,.4);
+    --good:#2A9666; --good-bg:rgba(42,150,102,.12); --good-line:rgba(42,150,102,.38);
+    --shadow:0 1px 2px rgba(19,26,34,.05),0 6px 20px rgba(19,26,34,.07);
+    --font-sans:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC",-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:"Cascadia Code","JetBrains Mono","SF Mono","Consolas",ui-monospace,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0C1117; --panel:#141A22; --panel-2:#1A212B; --panel-3:#212a35;
+      --ink:#E9EEF3; --ink-2:#99A5B3; --ink-3:#5E6A78;
+      --line:#242D38; --line-2:#1D2530;
+      --accent:#3AA4E6; --accent-2:#3FC0D4;
+      --crit:#EF565C; --crit-bg:rgba(239,86,92,.15); --crit-line:rgba(239,86,92,.5);
+      --warn:#E0A63B; --warn-bg:rgba(224,166,59,.15); --warn-line:rgba(224,166,59,.45);
+      --good:#41BF89; --good-bg:rgba(65,191,137,.14); --good-line:rgba(65,191,137,.45);
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.36);
+    }
+  }
+  :root[data-theme="light"]{--bg:#EBEEF2;--panel:#FBFCFD;--panel-2:#F0F3F6;--panel-3:#E9EDF1;--ink:#131A22;--ink-2:#4A5563;--ink-3:#8A94A2;--line:#D6DDE5;--line-2:#E6EBF0;--accent:#1B7FC4;--accent-2:#1C9BB8;--crit:#D23B43;--crit-bg:rgba(210,59,67,.11);--crit-line:rgba(210,59,67,.4);--warn:#BC7714;--warn-bg:rgba(200,130,20,.13);--warn-line:rgba(200,130,20,.4);--good:#2A9666;--good-bg:rgba(42,150,102,.12);--good-line:rgba(42,150,102,.38);--shadow:0 1px 2px rgba(19,26,34,.05),0 6px 20px rgba(19,26,34,.07);}
+  :root[data-theme="dark"]{--bg:#0C1117;--panel:#141A22;--panel-2:#1A212B;--panel-3:#212a35;--ink:#E9EEF3;--ink-2:#99A5B3;--ink-3:#5E6A78;--line:#242D38;--line-2:#1D2530;--accent:#3AA4E6;--accent-2:#3FC0D4;--crit:#EF565C;--crit-bg:rgba(239,86,92,.15);--crit-line:rgba(239,86,92,.5);--warn:#E0A63B;--warn-bg:rgba(224,166,59,.15);--warn-line:rgba(224,166,59,.45);--good:#41BF89;--good-bg:rgba(65,191,137,.14);--good-line:rgba(65,191,137,.45);--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.36);}
+
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+  .app{max-width:1280px;margin:0 auto;padding:clamp(12px,2vw,22px);display:flex;flex-direction:column;gap:14px;}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+  button{font-family:inherit;cursor:pointer;}
+
+  /* topbar */
+  .top{display:flex;align-items:center;gap:14px 18px;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px 18px;box-shadow:var(--shadow);}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .brand .logo{width:38px;height:38px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;color:#fff;font-size:19px;position:relative;overflow:hidden;}
+  .brand .logo::after{content:"";position:absolute;inset:0;background:conic-gradient(from 0deg,transparent 0deg,rgba(255,255,255,.35) 40deg,transparent 80deg);animation:sweep 3.4s linear infinite;}
+  @keyframes sweep{to{transform:rotate(360deg);}}
+  .brand .bt{font-weight:800;font-size:1.12rem;letter-spacing:-.01em;}
+  .brand .bs{font-family:var(--font-mono);font-size:.62rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);}
+  .sources{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;}
+  .src{display:flex;align-items:center;gap:7px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:6px 11px;font-size:.78rem;}
+  .src .dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px var(--good-bg);}
+  .src b{font-weight:700;}
+  .src .c{font-family:var(--font-mono);color:var(--ink-3);font-size:.72rem;}
+  .sync{font-size:.72rem;color:var(--ink-3);font-family:var(--font-mono);display:flex;align-items:center;gap:6px;}
+  .demo-badge{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.14em;color:var(--warn);border:1px solid var(--warn-line);background:var(--warn-bg);border-radius:6px;padding:3px 8px;font-weight:700;}
+
+  /* AI summary */
+  .ai{display:flex;gap:13px;align-items:flex-start;background:linear-gradient(100deg,var(--crit-bg),transparent 60%);border:1px solid var(--line);border-left:3px solid var(--crit);border-radius:12px;padding:14px 18px;}
+  .ai .ic{font-size:17px;flex-shrink:0;margin-top:1px;}
+  .ai .txt{font-size:.92rem;color:var(--ink);line-height:1.6;}
+  .ai .txt b{color:var(--crit);font-weight:800;}
+  .ai .txt .g{color:var(--warn);font-weight:700;}
+
+  /* KPI */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:11px;}
+  @media (max-width:900px){.kpis{grid-template-columns:repeat(3,1fr);}}
+  @media (max-width:520px){.kpis{grid-template-columns:repeat(2,1fr);}}
+  .kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 15px;box-shadow:var(--shadow);position:relative;overflow:hidden;}
+  .kpi .l{font-size:.75rem;color:var(--ink-3);display:flex;align-items:center;gap:6px;}
+  .kpi .v{font-family:var(--font-mono);font-size:1.85rem;font-weight:700;letter-spacing:-.02em;margin-top:5px;line-height:1;}
+  .kpi .s{font-size:.68rem;color:var(--ink-3);margin-top:6px;font-family:var(--font-mono);}
+  .kpi.crit{border-color:var(--crit-line);} .kpi.crit .v{color:var(--crit);}
+  .kpi.warn{border-color:var(--warn-line);} .kpi.warn .v{color:var(--warn);}
+  .kpi .tick{position:absolute;top:0;right:0;width:34px;height:34px;}
+  .kpi .tick::before{content:"";position:absolute;top:11px;right:11px;width:7px;height:7px;border-radius:50%;}
+  .kpi.crit .tick::before{background:var(--crit);animation:pulse 1.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1;box-shadow:0 0 0 0 var(--crit-bg);}50%{opacity:.6;box-shadow:0 0 0 6px transparent;}}
+
+  /* controls */
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 14px;box-shadow:var(--shadow);}
+  .nl{flex:1 1 300px;display:flex;align-items:center;gap:9px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:8px 12px;min-width:220px;}
+  .nl svg{flex-shrink:0;color:var(--accent);}
+  .nl input{flex:1;border:none;background:transparent;color:var(--ink);font-family:inherit;font-size:.88rem;outline:none;}
+  .nl input::placeholder{color:var(--ink-3);}
+  .chips{display:flex;gap:7px;flex-wrap:wrap;}
+  .chip{font-size:.76rem;border:1px solid var(--line);background:var(--panel-2);color:var(--ink-2);border-radius:99px;padding:5px 12px;transition:.14s;}
+  .chip:hover{border-color:var(--accent);color:var(--ink);}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .chip.pf{display:flex;align-items:center;gap:6px;}
+  .chip .pd{width:7px;height:7px;border-radius:50%;}
+  .toggle{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:.8rem;color:var(--ink-2);}
+  .sw{width:38px;height:22px;border-radius:99px;background:var(--panel-3);border:1px solid var(--line);position:relative;transition:.16s;}
+  .sw::after{content:"";position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--ink-3);transition:.16s;}
+  .sw.on{background:var(--crit);border-color:var(--crit);}
+  .sw.on::after{left:18px;background:#fff;}
+
+  /* anomaly rail */
+  .rail{display:flex;gap:10px;overflow-x:auto;padding-bottom:2px;}
+  .acard{flex:1 1 0;min-width:172px;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:13px 14px;box-shadow:var(--shadow);cursor:pointer;transition:.14s;border-top:3px solid var(--line);}
+  .acard:hover{transform:translateY(-2px);}
+  .acard.on{outline:2px solid var(--accent);outline-offset:1px;}
+  .acard.sev-crit{border-top-color:var(--crit);}
+  .acard.sev-warn{border-top-color:var(--warn);}
+  .acard.sev-info{border-top-color:var(--accent);}
+  .acard .an{font-size:.8rem;color:var(--ink-2);display:flex;align-items:center;gap:6px;}
+  .acard .av{font-family:var(--font-mono);font-size:1.6rem;font-weight:700;margin-top:4px;line-height:1;}
+  .acard.sev-crit .av{color:var(--crit);} .acard.sev-warn .av{color:var(--warn);} .acard.sev-info .av{color:var(--accent);}
+  .acard .ad{font-size:.68rem;color:var(--ink-3);margin-top:5px;line-height:1.4;}
+
+  /* table */
+  .tablewrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);overflow:hidden;}
+  .thead-bar{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line);gap:12px;flex-wrap:wrap;}
+  .thead-bar h2{margin:0;font-size:1rem;font-weight:800;letter-spacing:-.01em;display:flex;align-items:center;gap:9px;}
+  .thead-bar .cnt{font-family:var(--font-mono);font-size:.76rem;color:var(--ink-3);background:var(--panel-2);border:1px solid var(--line-2);border-radius:7px;padding:3px 9px;}
+  .btn{font-size:.78rem;border:1px solid var(--line);background:var(--panel-2);color:var(--ink-2);border-radius:8px;padding:7px 13px;display:inline-flex;align-items:center;gap:6px;transition:.14s;}
+  .btn:hover{border-color:var(--accent);color:var(--ink);}
+  .scroll{overflow-x:auto;}
+  table{border-collapse:collapse;width:100%;min-width:1000px;font-size:.83rem;}
+  thead th{position:sticky;top:0;background:var(--panel-2);text-align:left;padding:10px 12px;font-size:.7rem;letter-spacing:.03em;color:var(--ink-3);font-weight:700;border-bottom:1px solid var(--line);white-space:nowrap;text-transform:uppercase;}
+  tbody td{padding:11px 12px;border-bottom:1px solid var(--line-2);vertical-align:middle;white-space:nowrap;}
+  tbody tr{transition:background .12s;}
+  tbody tr:hover{background:var(--panel-2);}
+  tbody tr.sev-crit{box-shadow:inset 3px 0 0 var(--crit);}
+  tbody tr.sev-warn{box-shadow:inset 3px 0 0 var(--warn);}
+  tbody tr.sev-info{box-shadow:inset 3px 0 0 var(--accent);}
+  .oid{font-family:var(--font-mono);font-size:.8rem;color:var(--ink);}
+  .buyer{font-size:.7rem;color:var(--ink-3);margin-top:1px;}
+  .pf-cell{display:flex;align-items:center;gap:7px;font-size:.8rem;}
+  .pf-cell .pd{width:8px;height:8px;border-radius:50%;flex-shrink:0;}
+  .sku{max-width:180px;overflow:hidden;text-overflow:ellipsis;}
+  .qty{font-family:var(--font-mono);color:var(--ink-2);}
+  .pill{display:inline-flex;align-items:center;gap:5px;font-size:.72rem;border-radius:7px;padding:3px 9px;font-weight:600;border:1px solid transparent;white-space:nowrap;}
+  .pill.g{background:var(--good-bg);color:var(--good);border-color:var(--good-line);}
+  .pill.w{background:var(--warn-bg);color:var(--warn);border-color:var(--warn-line);}
+  .pill.c{background:var(--crit-bg);color:var(--crit);border-color:var(--crit-line);}
+  .pill.n{background:var(--panel-3);color:var(--ink-3);border-color:var(--line);}
+  .clock{font-family:var(--font-mono);font-weight:700;font-size:.82rem;display:inline-flex;align-items:center;gap:5px;}
+  .clock.ok{color:var(--ink-2);} .clock.near{color:var(--warn);} .clock.over{color:var(--crit);}
+  .track{font-family:var(--font-mono);font-size:.76rem;color:var(--ink-2);}
+  .track.none{color:var(--crit);font-weight:600;}
+  .flags{display:flex;gap:4px;flex-wrap:wrap;}
+  .flag{font-size:.66rem;border-radius:6px;padding:2px 7px;font-weight:600;white-space:nowrap;}
+  .flag.c{background:var(--crit-bg);color:var(--crit);}
+  .flag.w{background:var(--warn-bg);color:var(--warn);}
+  .flag.i{background:var(--panel-3);color:var(--accent);}
+  .empty{padding:40px;text-align:center;color:var(--ink-3);font-size:.9rem;}
+
+  footer{color:var(--ink-3);font-size:.74rem;text-align:center;padding:6px 0 2px;line-height:1.7;}
+  footer .mono{color:var(--ink-2);}
+
+  @media (prefers-reduced-motion:reduce){*{animation:none !important;transition:none !important;}}
+</style>
+
+<div class="app">
+  <div class="top">
+    <div class="brand">
+      <div class="logo">📡</div>
+      <div><div class="bt">发货哨兵</div><div class="bs">FULFILL · SENTINEL</div></div>
+    </div>
+    <div class="sources" id="sources"></div>
+    <div class="sync"><span class="demo-badge">DEMO 仿真数据</span><span id="syncTime">最后同步 · 刚刚</span></div>
+  </div>
+
+  <div class="ai" id="aiSummary"></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="rail" id="rail"></div>
+
+  <div class="controls">
+    <label class="nl">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <input id="nlInput" type="text" placeholder="用大白话问：今天必须发的还卡在仓？  /  Temu 超时风险  /  已出库未回填运单…" autocomplete="off"/>
+    </label>
+    <div class="chips" id="presets"></div>
+    <div class="chips" id="platforms"></div>
+    <label class="toggle"><span>仅看异常</span><span class="sw" id="onlyAnom" role="switch" tabindex="0" aria-checked="false"></span></label>
+  </div>
+
+  <div class="tablewrap">
+    <div class="thead-bar">
+      <h2>订单全链路 · 跨平台 <span class="cnt" id="rowCnt"></span></h2>
+      <button class="btn" id="exportBtn"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12m0 0 4-4m-4 4-4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>导出催发清单</button>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead><tr>
+          <th>订单号 / 买家</th><th>平台</th><th>商品 SKU</th><th>数量</th><th>应发时效</th>
+          <th>平台状态</th><th>ERP 状态</th><th>WMS 状态</th><th>运单号</th><th>异常</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <footer>
+    <div>发货哨兵 · 只读聚合 Temu / 赛狐ERP / 海外仓WMS，不做任何写操作　·　演示数据均为脱敏仿真</div>
+    <div class="mono">read-only aggregation · anomaly engine · natural-language filter</div>
+  </footer>
+</div>
+
+<script>
+const PF={Temu:{c:"#E8722C"},Amazon:{c:"#2C7BE0"}};
+const ANO={
+  LATE:{label:"履约超时风险",sev:"crit",desc:"临近/超过平台应发时效"},
+  STUCK:{label:"卡在仓",sev:"crit",desc:"已推仓但长时间未出库"},
+  NOTRACK:{label:"已出库未回填运单",sev:"warn",desc:"WMS已出库,平台/ERP无运单号"},
+  NOSYNC:{label:"平台未同步ERP",sev:"warn",desc:"平台有单,ERP未拉取"},
+  STOCK:{label:"库存不一致",sev:"warn",desc:"ERP库存与WMS实际不符"},
+  ADDR:{label:"地址/SKU异常",sev:"info",desc:"需人工确认"}
+};
+// remain: 应发剩余分钟(负=已超时, null=已发货); a=异常代码
+const ORDERS=[
+  {id:"PO-8842…21",pf:"Temu",sku:"无线蓝牙耳机·黑",qty:2,buyer:"DE·尾号8821",remain:-42,p:"待发货",e:"已推仓",w:"待出库",wh:"德国仓",track:null,a:["LATE","STUCK"]},
+  {id:"PO-8840…07",pf:"Temu",sku:"折叠雨伞·藏青",qty:1,buyer:"FR·尾号3307",remain:-15,p:"待发货",e:"已推仓",w:"拣货中",wh:"德国仓",track:null,a:["LATE"]},
+  {id:"113-77…4410",pf:"Amazon",sku:"瑜伽垫·紫 6mm",qty:1,buyer:"US·尾号4410",remain:88,p:"待发货",e:"已拉取",w:"无记录",wh:"美西仓",track:null,a:["STUCK"]},
+  {id:"PO-8839…55",pf:"Temu",sku:"厨房收纳盒·3件套",qty:4,buyer:"DE·尾号9155",remain:36,p:"待发货",e:"已推仓",w:"待出库",wh:"德国仓",track:null,a:["LATE"]},
+  {id:"113-77…9021",pf:"Amazon",sku:"猫抓板·瓦楞",qty:1,buyer:"US·尾号9021",remain:null,p:"已发货",e:"已发货",w:"已出库",wh:"美西仓",track:null,a:["NOTRACK"]},
+  {id:"PO-8837…88",pf:"Temu",sku:"LED小夜灯·暖光",qty:3,buyer:"IT·尾号2788",remain:null,p:"待发货",e:"未同步",w:"无记录",wh:"—",track:null,a:["NOSYNC"]},
+  {id:"113-76…3120",pf:"Amazon",sku:"不锈钢保温杯·500ml",qty:2,buyer:"US·尾号3120",remain:null,p:"已发货",e:"已发货",w:"已出库",wh:"美西仓",track:"1Z…A93120",a:["STOCK"]},
+  {id:"PO-8835…40",pf:"Temu",sku:"宠物毛发梳",qty:6,buyer:"ES·尾号6640",remain:210,p:"待发货",e:"已推仓",w:"拣货中",wh:"德国仓",track:null,a:[]},
+  {id:"113-76…7754",pf:"Amazon",sku:"车载手机支架",qty:1,buyer:"US·尾号7754",remain:340,p:"待发货",e:"已拉取",w:"待出库",wh:"美西仓",track:null,a:[]},
+  {id:"PO-8833…12",pf:"Temu",sku:"硅胶冰格·带盖",qty:2,buyer:"DE·尾号5512",remain:null,p:"已发货",e:"已发货",w:"已出库",wh:"德国仓",track:"CNE…772312",a:[]},
+  {id:"PO-8831…09",pf:"Temu",sku:"儿童绘画套装",qty:1,buyer:"NL·尾号4409",remain:-120,p:"待发货",e:"已推仓",w:"待出库",wh:"德国仓",track:null,a:["LATE","STUCK"]},
+  {id:"113-75…6688",pf:"Amazon",sku:"折叠收纳箱·大",qty:3,buyer:"US·尾号6688",remain:null,p:"已发货",e:"已发货",w:"已出库",wh:"美西仓",track:"1Z…B76688",a:[]},
+  {id:"PO-8829…33",pf:"Temu",sku:"防滑浴室垫",qty:1,buyer:"DE·尾号1033",remain:24,p:"待发货",e:"已推仓",w:"拣货中",wh:"德国仓",track:null,a:["LATE"]},
+  {id:"113-75…2091",pf:"Amazon",sku:"USB-C 快充线 2m",qty:5,buyer:"US·尾号2091",remain:null,p:"待发货",e:"未同步",w:"无记录",wh:"—",track:null,a:["NOSYNC","ADDR"]},
+  {id:"PO-8827…70",pf:"Temu",sku:"迷你加湿器",qty:2,buyer:"FR·尾号8870",remain:420,p:"待发货",e:"已拉取",w:"待出库",wh:"德国仓",track:null,a:[]},
+  {id:"113-74…5540",pf:"Amazon",sku:"蓝牙音箱·防水",qty:1,buyer:"US·尾号5540",remain:null,p:"已发货",e:"已发货",w:"已出库",wh:"美西仓",track:"1Z…C74554",a:["NOTRACK"]}
+];
+
+const $=s=>document.querySelector(s);
+const stateClass=(t)=>{
+  if(["已出库","已发货","已推仓"].includes(t))return "g";
+  if(["拣货中","待出库","已拉取"].includes(t))return "w";
+  if(["未同步","无记录"].includes(t))return t==="未同步"?"c":"n";
+  return "n";
+};
+const maxSev=o=>{let s=null;o.a.forEach(c=>{const v=ANO[c].sev;if(v==="crit")s="crit";else if(v==="warn"&&s!=="crit")s="warn";else if(v==="info"&&!s)s="info";});return s;};
+const fmtRemain=m=>{
+  if(m===null)return {t:"已发货",cls:"ok"};
+  const over=m<0, abs=Math.abs(m), h=Math.floor(abs/60), mm=abs%60;
+  const txt=(h>0?h+"h":"")+mm+"m";
+  return {t:(over?"超 ":"")+txt,cls:over?"over":(m<=60?"near":"ok")};
+};
+
+// filters
+let F={anom:null,pf:null,onlyAnom:false,q:""};
+
+// ---- sources ----
+$("#sources").innerHTML=[
+  {n:"Temu 欧区",c:ORDERS.filter(o=>o.pf==="Temu").length+" 单"},
+  {n:"赛狐 ERP",c:ORDERS.length+" 单"},
+  {n:"海外仓 WMS",c:ORDERS.filter(o=>o.w!=="无记录").length+" 单"}
+].map(s=>`<div class="src"><span class="dot"></span><b>${s.n}</b><span class="c">${s.c}</span></div>`).join("");
+
+// ---- KPI ----
+function renderKPIs(){
+  const total=ORDERS.length;
+  const waiting=ORDERS.filter(o=>o.p==="待发货").length;
+  const stuck=ORDERS.filter(o=>o.a.includes("STUCK")).length;
+  const late=ORDERS.filter(o=>o.a.includes("LATE")).length;
+  const notrack=ORDERS.filter(o=>o.a.includes("NOTRACK")).length;
+  const anom=ORDERS.filter(o=>o.a.length).length;
+  const k=[
+    {l:"总订单",v:total,s:"近 24h",cls:""},
+    {l:"待发货",v:waiting,s:"进行中",cls:""},
+    {l:"卡在仓",v:stuck,s:"已推仓未出库",cls:"crit"},
+    {l:"超时风险",v:late,s:"临近/已超时效",cls:"crit"},
+    {l:"已出未回填",v:notrack,s:"缺运单号",cls:"warn"},
+    {l:"异常合计",v:anom,s:`占比 ${Math.round(anom/total*100)}%`,cls:anom?"warn":""}
+  ];
+  $("#kpis").innerHTML=k.map(x=>`<div class="kpi ${x.cls}"><div class="tick"></div><div class="l">${x.l}</div><div class="v mono">${x.v}</div><div class="s">${x.s}</div></div>`).join("");
+}
+
+// ---- AI summary ----
+function renderAI(){
+  const late=ORDERS.filter(o=>o.a.includes("LATE")).length;
+  const stuck=ORDERS.filter(o=>o.a.includes("STUCK")).length;
+  const anom=ORDERS.filter(o=>o.a.length).length;
+  const over=ORDERS.filter(o=>o.remain!==null&&o.remain<0).length;
+  const whs={};ORDERS.filter(o=>o.a.includes("STUCK")).forEach(o=>whs[o.wh]=(whs[o.wh]||0)+1);
+  const topWh=Object.keys(whs).sort((a,b)=>whs[b]-whs[a])[0]||"德国仓";
+  $("#aiSummary").innerHTML=`<div class="ic">🤖</div><div class="txt">今日共 <b>${anom} 单</b>存在履约风险 —— 其中 <b>${over} 单已超时</b>、<span class="g">${stuck} 单卡在仓未出库</span>、<span class="g">${late} 单临近平台时效</span>。建议优先催 <b>${topWh}</b> 出库，并回填 Temu 运单号以免降权。<span style="color:var(--ink-3)">（点下方预警卡片可下钻）</span></div>`;
+}
+
+// ---- anomaly rail ----
+function renderRail(){
+  const counts={};Object.keys(ANO).forEach(c=>counts[c]=ORDERS.filter(o=>o.a.includes(c)).length);
+  $("#rail").innerHTML=Object.keys(ANO).map(c=>{
+    const a=ANO[c];
+    return `<div class="acard sev-${a.sev} ${F.anom===c?"on":""}" data-a="${c}" role="button" tabindex="0">
+      <div class="an">${a.label}</div><div class="av mono">${counts[c]}</div><div class="ad">${a.desc}</div></div>`;
+  }).join("");
+  document.querySelectorAll(".acard").forEach(el=>{
+    const h=()=>{F.anom=F.anom===el.dataset.a?null:el.dataset.a;render();};
+    el.onclick=h;el.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();h();}};
+  });
+}
+
+// ---- presets & platforms ----
+const PRESETS=[
+  {t:"超时风险",f:o=>o.a.includes("LATE")},
+  {t:"卡在仓",f:o=>o.a.includes("STUCK")},
+  {t:"未回填运单",f:o=>o.a.includes("NOTRACK")},
+  {t:"未同步ERP",f:o=>o.a.includes("NOSYNC")}
+];
+let activePreset=null;
+function renderPresets(){
+  $("#presets").innerHTML=PRESETS.map((p,i)=>`<button class="chip ${activePreset===i?"on":""}" data-p="${i}">${p.t}</button>`).join("");
+  document.querySelectorAll("#presets .chip").forEach(el=>el.onclick=()=>{
+    const i=+el.dataset.p;activePreset=activePreset===i?null:i;$("#nlInput").value=activePreset!==null?PRESETS[i].t:"";render();
+  });
+  $("#platforms").innerHTML=Object.keys(PF).map(p=>`<button class="chip pf ${F.pf===p?"on":""}" data-pf="${p}"><span class="pd" style="background:${PF[p].c}"></span>${p}</button>`).join("");
+  document.querySelectorAll("#platforms .chip").forEach(el=>el.onclick=()=>{F.pf=F.pf===el.dataset.pf?null:el.dataset.pf;render();});
+}
+
+// ---- table ----
+function applyFilters(){
+  return ORDERS.filter(o=>{
+    if(F.onlyAnom&&!o.a.length)return false;
+    if(F.anom&&!o.a.includes(F.anom))return false;
+    if(F.pf&&o.pf!==F.pf)return false;
+    if(activePreset!==null&&!PRESETS[activePreset].f(o))return false;
+    if(F.q){
+      const q=F.q.toLowerCase();
+      const kw=[["超时","LATE"],["卡仓","STUCK"],["卡在仓","STUCK"],["运单","NOTRACK"],["回填","NOTRACK"],["同步","NOSYNC"],["库存","STOCK"]];
+      let hit=false;
+      kw.forEach(([k,c])=>{if(q.includes(k)&&o.a.includes(c))hit=true;});
+      if(q.includes("temu")&&o.pf==="Temu")hit=true;
+      if(q.includes("amazon")&&o.pf==="Amazon")hit=true;
+      if(q.includes("仓")&&o.wh.includes(q.replace(/[的还在卡]/g,"").slice(0,2)))hit=true;
+      if(o.sku.toLowerCase().includes(q)||o.id.toLowerCase().includes(q))hit=true;
+      if(!hit)return false;
+    }
+    return true;
+  });
+}
+function renderTable(){
+  const rows=applyFilters();
+  $("#rowCnt").textContent=rows.length+" / "+ORDERS.length+" 单";
+  if(!rows.length){$("#tbody").innerHTML=`<tr><td colspan="10" class="empty">没有符合条件的订单 —— 试试点掉筛选或清空搜索</td></tr>`;return;}
+  $("#tbody").innerHTML=rows.map(o=>{
+    const sev=maxSev(o), r=fmtRemain(o.remain);
+    const flags=o.a.map(c=>{const s=ANO[c].sev;return `<span class="flag ${s==="crit"?"c":s==="warn"?"w":"i"}">${ANO[c].label}</span>`;}).join("");
+    return `<tr class="${sev?"sev-"+sev:""}">
+      <td><div class="oid">${o.id}</div><div class="buyer">${o.buyer} · ${o.wh}</div></td>
+      <td><div class="pf-cell"><span class="pd" style="background:${PF[o.pf].c}"></span>${o.pf}</div></td>
+      <td><div class="sku" title="${o.sku}">${o.sku}</div></td>
+      <td class="qty">×${o.qty}</td>
+      <td>${o.remain===null?'<span class="pill g">已发货</span>':`<span class="clock ${r.cls}" data-remain="${o.remain}">${r.cls==="over"?"⚠ ":"⏱ "}${r.t}</span>`}</td>
+      <td><span class="pill ${stateClass(o.p)}">${o.p}</span></td>
+      <td><span class="pill ${stateClass(o.e)}">${o.e}</span></td>
+      <td><span class="pill ${stateClass(o.w)}">${o.w}</span></td>
+      <td>${o.track?`<span class="track">${o.track}</span>`:`<span class="track none">缺运单号</span>`}</td>
+      <td><div class="flags">${flags||'<span style="color:var(--ink-3);font-size:.72rem">—</span>'}</div></td>
+    </tr>`;
+  }).join("");
+}
+
+function render(){renderRail();renderPresets();renderTable();}
+renderKPIs();renderAI();render();
+
+// nl input
+let qt;$("#nlInput").addEventListener("input",e=>{clearTimeout(qt);qt=setTimeout(()=>{F.q=e.target.value.trim();if(!F.q)activePreset=activePreset;render();},160);});
+// only-anomaly toggle
+$("#onlyAnom").addEventListener("click",e=>{F.onlyAnom=!F.onlyAnom;e.currentTarget.classList.toggle("on",F.onlyAnom);e.currentTarget.setAttribute("aria-checked",F.onlyAnom);render();});
+$("#onlyAnom").addEventListener("keydown",e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();$("#onlyAnom").click();}});
+// export (demo)
+$("#exportBtn").addEventListener("click",()=>{
+  const rows=applyFilters().filter(o=>o.a.length);
+  const head=["订单号","平台","SKU","数量","仓库","应发剩余分钟","平台状态","ERP状态","WMS状态","运单号","异常"];
+  const lines=rows.map(o=>[o.id,o.pf,o.sku,o.qty,o.wh,o.remain===null?"":o.remain,o.p,o.e,o.w,o.track||"",o.a.map(c=>ANO[c].label).join("|")].join(","));
+  const csv="﻿"+head.join(",")+"\n"+lines.join("\n");
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8"});
+  const url=URL.createObjectURL(blob);const link=document.createElement("a");link.href=url;link.download="催发货清单_demo.csv";link.click();URL.revokeObjectURL(url);
+});
+
+// live countdown tick
+const reduce=window.matchMedia("(prefers-reduced-motion:reduce)").matches;
+if(!reduce){
+  setInterval(()=>{
+    document.querySelectorAll(".clock[data-remain]").forEach(el=>{
+      let m=+el.dataset.remain-(1/60);el.dataset.remain=m;
+      const r=fmtRemain(Math.round(m));el.className="clock "+r.cls;el.textContent=(r.cls==="over"?"⚠ ":"⏱ ")+r.t;
+    });
+  },1000);
+}
+</script>

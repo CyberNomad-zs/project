@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+
+START = r"""@echo off
+rem Local PC traffic launcher only. No Sellfox menu.
+cd /d "%~dp0."
+title Temu Traffic Monitor
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [ERR] Node.js not found. Install LTS: https://nodejs.org
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [First run] npm install ...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   npm install failed.
+    pause
+    exit /b 1
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo      Temu Traffic Monitor - local PC
+echo   Delist/onshelf runs on company server
+echo   Docs: usage.txt
+echo ============================================
+echo.
+echo    1.  Login Temu
+echo    2.  Traffic once
+echo    3.  Traffic loop
+echo    4.  Enable auto-start
+echo    5.  Disable auto-start
+echo    0.  Exit
+echo.
+set /p "c=Choice: "
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_once
+if "%c%"=="3" goto do_start
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="0" exit /b 0
+goto menu
+
+:do_login
+echo.
+echo Browser will open. Log in to Temu Seller Central.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+echo Traffic only. Need Temu login in .userdata.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo Traffic loop. Keep window open. Ctrl+C to stop.
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "uninstall-autostart.ps1"
+echo.
+pause
+goto menu
+"""
+
+GUI = r"""@echo off
+rem Graphical launcher - opens gui.py
+cd /d "%~dp0."
+where pythonw >nul 2>nul && ( start "" pythonw "gui.py" & goto :eof )
+if exist "%LocalAppData%\Programs\Python\Python312\pythonw.exe" (
+  start "" "%LocalAppData%\Programs\Python\Python312\pythonw.exe" "gui.py"
+  goto :eof
+)
+where python >nul 2>nul && ( start "" python "gui.py" & goto :eof )
+if exist "%LocalAppData%\Programs\Python\Python312\python.exe" (
+  start "" "%LocalAppData%\Programs\Python\Python312\python.exe" "gui.py"
+  goto :eof
+)
+py -3.12 "gui.py"
+if errorlevel 1 (
+  echo.
+  echo  [ERR] Python not found. Install Python 3.12 or use start-menu.bat
+  echo.
+  pause
+)
+"""
+
+root = Path(r"E:/project/temu/temu-monitor")
+for name, body in [
+    ("start-menu.bat", START),
+    ("启动.bat", START),
+    ("launch-gui.bat", GUI),
+    ("美化启动器.bat", GUI),
+]:
+    data = body.replace("\n", "\r\n").encode("ascii")
+    (root / name).write_bytes(data)
+    print(name, len(data), "ascii_ok", all(b < 128 for b in data))
+
+usage = """Temu Traffic Monitor - local PC
+
+WHAT THIS PC DOES
+  - traffic watch / decline badges / on-sale count
+  - Feishu alerts for traffic changes
+  - multi-store browser scan
+
+WHAT THIS PC DOES NOT DO
+  - delist / onshelf (company server)
+  - do NOT set fullRun=true
+  - do NOT add sellfox.config.json
+
+FIRST RUN
+  1) Install Node.js LTS + Chrome
+  2) copy config.example.json config.json
+  3) Edit config.json: feishuWebhooks + storeList; keep fullRun false
+  4) npm install
+  5) Double-click start-menu.bat  (or 启动.bat / 美化启动器.bat)
+  6) Menu 1 = login; 2 = test once; 3 or 4 = keep running
+
+If black window says random words are not recognized:
+  old bat bug. Use this new package (line: cd /d "%~dp0.").
+
+Chinese guide: 使用说明.txt
+"""
+(root / "usage.txt").write_text(usage, encoding="utf-8")
+print("usage.txt ok")

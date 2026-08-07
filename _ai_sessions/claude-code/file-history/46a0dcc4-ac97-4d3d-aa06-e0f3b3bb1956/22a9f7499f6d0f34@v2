@@ -1,0 +1,59 @@
+# -*- coding: utf-8 -*-
+"""探查 WMS 关联ASIN ↔ 赛狐订单 ASIN 的可桥接量。"""
+import os, sys
+from collections import Counter
+BK = r"E:\project\AIc\ship-sentinel\backend"
+sys.path.insert(0, BK)
+from xlsx_reader import read_records
+
+SAMPLES = r"E:\project\AIc\ship-sentinel\samples"
+WMS = os.path.join(SAMPLES, "wms", "商品导出.xlsx")
+SELLFOX = os.path.join(SAMPLES, "sellfox", "Package2026_07_16(0).xlsx")
+
+# WMS: 关联ASIN -> 仓库代码
+whdr, wrecs = read_records(WMS)
+print("WMS columns:", whdr[:30])
+asin2code = {}
+multi = 0
+for r in wrecs:
+    code = str(r.get("仓库代码", "")).strip()
+    asin_raw = str(r.get("关联ASIN", "")).strip()
+    if not code or not asin_raw:
+        continue
+    # 可能多ASIN分隔
+    parts = [p.strip() for p in asin_raw.replace("，", ",").replace(";", ",").replace(" ", ",").split(",") if p.strip()]
+    if len(parts) > 1:
+        multi += 1
+    for a in parts:
+        asin2code.setdefault(a, code)
+print("WMS 记录数:", len(wrecs), " 带关联ASIN的:", sum(1 for r in wrecs if str(r.get('关联ASIN','')).strip()))
+print("asin2code 桥表大小:", len(asin2code), " 多ASIN记录:", multi)
+print("样例 asin2code:", list(asin2code.items())[:8])
+
+# 订单侧
+ohdr, orecs = read_records(SELLFOX)
+plat_counter = Counter()
+asin_present = 0
+asin_bridged = 0
+amazon_total = 0
+amazon_bridged = 0
+sample_bridged = []
+for r in orecs:
+    plat = str(r.get("平台", "")).strip()
+    asin = str(r.get("ASIN", "")).strip()
+    sku = str(r.get("SKU", "")).strip()
+    if asin:
+        asin_present += 1
+    if plat == "Amazon":
+        amazon_total += 1
+    if asin and asin in asin2code:
+        asin_bridged += 1
+        if plat == "Amazon":
+            amazon_bridged += 1
+        if len(sample_bridged) < 10:
+            sample_bridged.append((plat, asin, "->", asin2code[asin], "sku=", sku))
+print("\n订单总数:", len(orecs), " 带ASIN:", asin_present, " Amazon:", amazon_total)
+print("经ASIN桥接可命中:", asin_bridged, " 其中Amazon:", amazon_bridged)
+print("桥接样例:")
+for s in sample_bridged:
+    print("  ", s)

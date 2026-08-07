@@ -1,0 +1,97 @@
+"""飞书 tenant token 与 Bitable 写入（Phase0 MVP）。"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from typing import Any
+
+import httpx
+
+from app.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+BASE = "https://open.feishu.cn/open-apis"
+
+
+class FeishuError(RuntimeError):
+    pass
+
+
+async def get_tenant_access_token() -> str | None:
+    settings = get_settings()
+    if not settings.feishu_app_id or not settings.feishu_app_secret:
+        return None
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{BASE}/auth/v3/tenant_access_token/internal",
+            json={"app_id": settings.feishu_app_id, "app_secret": settings.feishu_app_secret},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"token failed: {data}")
+        return data["tenant_access_token"]
+
+
+def content_hash(fields: dict[str, Any]) -> str:
+    raw = json.dumps(fields, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def batch_create_records(
+    token: str,
+    app_token: str,
+    table_id: str,
+    records: list[dict[str, Any]],
+) -> list[str]:
+    """返回 record_id 列表。"""
+    if not records:
+        return []
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"records": [{"fields": r} for r in records]},
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"batch_create failed: {data}")
+        return [item["record_id"] for item in data.get("data", {}).get("records", [])]
+
+
+async def batch_update_records(
+    token: str,
+    app_token: str,
+    table_id: str,
+    items: list[tuple[str, dict[str, Any]]],
+) -> None:
+    if not items:
+        return
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(
+            f"{BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update",
+            headers={"Authorization": f"Bearer {token}"},
+            json={
+                "records": [
+                    {"record_id": rid, "fields": fields} for rid, fields in items
+                ]
+            },
+        )
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(f"batch_update failed: {data}")
+
+
+def task_to_fields(task: dict[str, Any]) -> dict[str, Any]:
+    """映射到飞书列名（需与多维表一致，可按环境改别名）。"""
+    return {
+        "平台": task.get("platform") or "",
+        "业务ID": task.get("biz_id") or "",
+        "异常类型": task.get("anomaly_type") or "",
+        "标题": task.get("title") or "",
+        "状态": task.get("status") or "",
+        "进度": task.get("progress_note") or "",
+        "去重键": task.get("dedupe_key") or "",
+    }

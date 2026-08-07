@@ -1,0 +1,121 @@
+# -*- coding: utf-8 -*-
+"""实测：用 ddddocr 识别 Sellfox 图形验证码，自动登录。成功则抓取 订单发货 页。"""
+import sys, os, time, io, re, base64
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+import ddddocr
+
+LOGIN = "https://www.sellfox.com/amzup-web-main/login.html"
+OCR = ddddocr.DdddOcr(show_ad=False)
+
+
+def clean_code(s):
+    """只保留字母数字，去掉噪点被误读的字符。"""
+    return re.sub(r"[^A-Za-z0-9]", "", s or "")
+
+
+def find_captcha_img(page, cap_input):
+    box = cap_input.bounding_box()
+    if not box:
+        return None
+    best, bestd = None, 1e9
+    for img in page.query_selector_all("img"):
+        try:
+            b = img.bounding_box()
+            if not b or b["width"] < 30 or b["height"] < 15:
+                continue
+            # 垂直中心接近验证码输入框
+            d = abs((b["y"] + b["height"] / 2) - (box["y"] + box["height"] / 2))
+            # 且在输入框右侧附近
+            if b["x"] >= box["x"] - 5 and d < bestd:
+                best, bestd = img, d
+        except Exception:
+            pass
+    return best
+
+
+def read_captcha(page):
+    """直接解码验证码 base64 原图做 OCR，返回清洗后的 code。"""
+    src = page.eval_on_selector_all("img", """els=>{for(const e of els){const b=e.getBoundingClientRect();
+        if(b.width>=60&&b.width<=200&&b.height>=20&&b.height<=50&&e.src.startsWith('data:image'))return e.src;}return null;}""")
+    if not src:
+        return None
+    raw = base64.b64decode(re.sub(r"^data:image/\w+;base64,", "", src))
+    return clean_code(OCR.classification(raw))
+
+
+def refresh_captcha(page):
+    page.eval_on_selector_all("img", """els=>{for(const e of els){const b=e.getBoundingClientRect();
+        if(b.width>=60&&b.width<=200&&b.height>=20&&b.height<=50&&e.src.startsWith('data:image')){e.click();return;}}}""")
+
+
+def try_login(page):
+    code = read_captcha(page)
+    print("  OCR 验证码(清洗后) =", repr(code))
+    if not code or len(code) != 4:
+        print("  长度!=4，跳过提交，刷新重试（省一次尝试，降低锁号风险）")
+        refresh_captcha(page); time.sleep(1.2)
+        return None  # None = 未真正提交
+    page.fill("#username", secrets.ERP["user"])
+    page.fill("#password", secrets.ERP["password"])
+    page.get_by_placeholder("请输入图形验证码").fill(code)
+    btn = page.query_selector("button:has-text('登 录')") or page.query_selector("button:has-text('登录')")
+    if not btn:
+        for b in page.query_selector_all("button.el-button--primary, button"):
+            if (b.inner_text() or "").replace(" ", "") == "登录":
+                btn = b; break
+    btn.click()
+    # 等待跳转或错误提示
+    try:
+        page.wait_for_url(lambda u: "login.html" not in u, timeout=7000)
+        return True
+    except Exception:
+        pass
+    # 读取错误提示
+    try:
+        msg = page.query_selector(".el-message--error, .el-message")
+        if msg:
+            print("  提示:", (msg.inner_text() or "").strip())
+    except Exception:
+        pass
+    refresh_captcha(page); time.sleep(1.2)
+    return False
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+        page.goto(LOGIN, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_selector("#password", timeout=20000)
+        time.sleep(2)
+
+        ok = False
+        submits = 0            # 真正提交次数（防锁号，最多 5 次）
+        cycles = 0            # 总循环（含 len!=4 的跳过）
+        while submits < 5 and cycles < 20:
+            cycles += 1
+            try:
+                r = try_login(page)
+            except Exception as e:
+                print("  异常:", e); r = False
+            if r is True:
+                ok = True; break
+            if r is False:      # 真正提交但失败
+                submits += 1
+                print(f"  已提交失败 {submits}/5")
+            time.sleep(1.0)
+
+        print("登录结果:", "成功" if ok else "失败")
+        if ok:
+            page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_after_login.png"), full_page=True)
+            # 保存登录态，供后续复用
+            ctx.storage_state(path=os.path.join(config.BASE_DIR, "erp_state.json"))
+            print("  已保存 erp_state.json")
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

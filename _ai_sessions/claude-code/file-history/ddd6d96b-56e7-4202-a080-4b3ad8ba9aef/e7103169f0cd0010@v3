@@ -1,0 +1,138 @@
+// 常驻驱动：浏览器一直开着，轮询 cmd.txt 执行命令，结果写 result.json。
+// 命令：
+//   inputs            —— 枚举页面所有 input[placeholder*='渠道']（判断有几个/哪个是工具栏那个）
+//   click:N           —— 点第 N 个渠道输入框的 popover_trigger，dump 弹出的下拉+选项+按钮
+//   dumpopen          —— 不点击，dump 当前所有可见弹层/疑似选项
+//   esc               —— 派发 Escape 关弹层
+//   close             —— 关闭浏览器退出
+const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
+const DIR = __dirname;
+const USER_DIR = path.join(DIR, "profile");
+const CMD = path.join(DIR, "cmd.txt");
+const OUT = path.join(DIR, "result.json");
+const LOG = path.join(DIR, "run2.log");
+const logln = (s) => { const l = `[${new Date().toISOString()}] ${s}\n`; fs.appendFileSync(LOG, l); process.stdout.write(l); };
+const write = (o) => fs.writeFileSync(OUT, JSON.stringify(o, null, 2));
+
+// 页面上下文里可复用的工具函数（每次 evaluate 前拼进去）。
+const HELPERS = `
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const vis=el=>{ if(!el) return false; const s=getComputedStyle(el); if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0') return false; return el.offsetParent!==null||s.position==='fixed'; };
+  const realClick=el=>{ try{el.scrollIntoView({block:'center'})}catch(e){} const r=el.getBoundingClientRect(); const b={bubbles:true,cancelable:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2,button:0,buttons:1}; for(const t of['pointerover','pointerenter','pointerdown','mousedown','pointerup','mouseup','click']){ let ev; try{ev=t.startsWith('pointer')?new PointerEvent(t,{...b,pointerId:1,isPrimary:true}):new MouseEvent(t,b)}catch(e){ev=new MouseEvent(t.replace('pointer','mouse'),b)} el.dispatchEvent(ev);} };
+  const info=el=>el?('<'+el.tagName.toLowerCase()+' class="'+((el.getAttribute('class')||'').slice(0,90))+'">'):'null';
+  const chainOf=(el,n=8)=>{ const a=[]; let p=el; for(let i=0;i<n&&p;i++){ a.push(info(p)+' "'+((p.innerText||'').trim().slice(0,24))+'"'); p=p.parentElement; } return a; };
+`;
+
+const PROBES = {
+  inputs: `async()=>{ ${HELPERS}
+    const ins=[...document.querySelectorAll("input[placeholder*='渠道']")];
+    return { 数量:ins.length, 明细: ins.map((e,i)=>{ const r=e.getBoundingClientRect(); return {
+      i, ph:e.placeholder, 可见:vis(e), y:Math.round(r.top), x:Math.round(r.left),
+      有popover_trigger祖先:!!e.closest('.popover_trigger'),
+      在筛选模板里:!!e.closest('.search_more_temp_new, .search_more_temp_reference'),
+      祖先链:chainOf(e,6),
+    };}) };
+  }`,
+  dumpopen: `async()=>{ ${HELPERS}
+    const pops=[...document.querySelectorAll('[class*=popover],[class*=dropdown],[class*=select-menu],.el-select-dropdown,.el-popper')].filter(vis);
+    const opts=[...document.querySelectorAll('*')].filter(e=>vis(e)&&e.children.length===0&&/(海外仓|BLACKCAT|DPD|-RM|-EH)/.test(e.innerText||'')&&!e.closest('.vxe-table')&&!e.closest('.vxe-body--row'));
+    return { 可见弹层:pops.map(info).slice(0,15), 选项候选数:opts.length, 选项样本:[...new Set(opts.slice(0,10).map(e=>(e.innerText||'').trim()))], 首选项祖先链:opts[0]?chainOf(opts[0],8):[] };
+  }`,
+  esc: `async()=>{ try{document.body.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))}catch(e){} document.body.click(); return {esc:'done'}; }`,
+};
+
+function clickProbe(n) {
+  return `async()=>{ ${HELPERS}
+    const ins=[...document.querySelectorAll("input[placeholder*='渠道']")];
+    const input=ins[${n}];
+    if(!input) return {error:'没有第 ${n} 个渠道输入框，共 '+ins.length+' 个'};
+    const out={ 目标输入框:info(input), 祖先链:chainOf(input,6) };
+    const before=new Set([...document.querySelectorAll('[class*=popover],[class*=dropdown],[class*=select-menu],.el-popper')].filter(vis));
+    const trig=input.closest('.popover_trigger')||input.closest('.select-container')||input;
+    out.点击层=info(trig);
+    realClick(trig); await sleep(2000);
+    const after=[...document.querySelectorAll('[class*=popover],[class*=dropdown],[class*=select-menu],.el-popper')].filter(vis);
+    out.新增弹层=after.filter(e=>!before.has(e)).map(info).slice(0,12);
+    // 选项：可见叶子、含渠道特征词、排除订单表
+    let opts=[...document.querySelectorAll('*')].filter(e=>vis(e)&&e.children.length===0&&/(海外仓|BLACKCAT|DPD|-RM|-EH|全选)/.test(e.innerText||'')&&!e.closest('.vxe-table')&&!e.closest('.vxe-body--row'));
+    out.选项候选数=opts.length;
+    out.选项样本=[...new Set(opts.slice(0,12).map(e=>(e.innerText||'').trim()))];
+    // 排除"全选"后取第一个真选项
+    const real=opts.find(e=>!/^全选$/.test((e.innerText||'').trim()));
+    if(real){ out.选项元素=info(real); out.选项祖先链=chainOf(real,8);
+      // 下拉容器：往上找同时含"全选"和"确定"的最近祖先
+      let box=real; for(let i=0;i<10&&box.parentElement;i++){ box=box.parentElement; const t=box.innerText||''; if(/全选/.test(t)&&/确定|确认/.test(t)) break; }
+      out.疑似下拉容器=info(box);
+      out.容器class分布=(()=>{const m={};[...box.querySelectorAll('*')].forEach(e=>{const k=(typeof e.className==='string'?e.className:'').trim().split(/\\s+/)[0]; if(k)m[k]=(m[k]||0)+1;}); return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,22).map(([k,v])=>k+':'+v);})();
+    }
+    const btns=[...document.querySelectorAll('button,[class*=btn],.el-button')].filter(e=>vis(e)&&['确定','确认','取消'].includes((e.innerText||'').replace(/\\s/g,'')));
+    out.按钮=btns.map(b=>info(b)+' "'+(b.innerText||'').trim()+'"').slice(0,8);
+    return out;
+  }`;
+}
+
+async function findFrame(ctx) {
+  for (const pg of ctx.pages()) {
+    for (const f of pg.frames()) {
+      try { if (await f.evaluate(() => !!document.querySelector("input[placeholder*='渠道']"))) return f; } catch (e) {}
+    }
+  }
+  return null;
+}
+
+(async () => {
+  try { fs.unlinkSync(CMD); } catch (e) {}
+  logln("启动常驻 Chrome…");
+  const ctx = await chromium.launchPersistentContext(USER_DIR, { channel: "chrome", headless: false, viewport: null, args: ["--start-maximized"] });
+  const page = ctx.pages()[0] || (await ctx.newPage());
+  await page.goto("https://www.sellfox.com/", { waitUntil: "domcontentloaded" }).catch(() => {});
+  logln("★ 浏览器已开。请进入【订单→待处理】页。之后我会下发命令探测。常驻中，直到收到 close。");
+  fs.writeFileSync(path.join(DIR, "ready.txt"), "ready");
+
+  while (true) {
+    let cmd = "";
+    try { cmd = fs.readFileSync(CMD, "utf8").trim(); } catch (e) {}
+    if (cmd) {
+      try { fs.unlinkSync(CMD); } catch (e) {}
+      logln("收到命令: " + cmd);
+      if (cmd === "close") { await ctx.close(); logln("已关闭。"); process.exit(0); }
+      const f = await findFrame(ctx);
+      if (!f) { write({ error: "未找到含渠道输入框的 frame，请先进到待处理页" }); logln("无目标 frame"); }
+      else if (cmd.startsWith("nclick") || cmd === "trymany") {
+        // 原生可信点击（Playwright 真人级），比合成事件靠谱。点完用 dumpopen 探测是否弹出选项。
+        try {
+          const layers = cmd === "trymany"
+            ? [".select-container", ".popover_trigger", ".popover_box", "input"]
+            : [cmd.includes(":") ? cmd.split(":")[1] : "input"];
+          const report = [];
+          for (const sel of layers) {
+            // 先 Esc 清场
+            await f.evaluate(() => { try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {} document.body.click(); });
+            await new Promise((r) => setTimeout(r, 600));
+            const target = sel === "input"
+              ? f.locator("input[placeholder*='渠道']").first()
+              : f.locator("input[placeholder*='渠道']").first().locator("xpath=ancestor::*[contains(@class,'" + sel.slice(1) + "')][1]");
+            let clickErr = null;
+            try { await target.click({ force: true, timeout: 4000 }); } catch (e) { clickErr = e.message; }
+            await new Promise((r) => setTimeout(r, 1800));
+            const dump = await f.evaluate(eval("(" + PROBES.dumpopen + ")"));
+            report.push({ 点击层: sel, 点击报错: clickErr, 选项候选数: dump.选项候选数, 选项样本: dump.选项样本, 可见弹层: dump.可见弹层, 首选项祖先链: dump.首选项祖先链 });
+            if (dump.选项候选数 > 0) break;   // 命中就停
+          }
+          write({ 原生点击探测: report }); logln("原生点击探测完成");
+        } catch (e) { write({ error: "nclick 失败: " + e.message }); logln("nclick 失败:" + e.message); }
+      }
+      else {
+        const key = cmd.startsWith("click:") ? clickProbe(parseInt(cmd.split(":")[1], 10) || 0) : PROBES[cmd];
+        if (!key) { write({ error: "未知命令: " + cmd }); }
+        else {
+          try { const r = await f.evaluate(eval("(" + key + ")")); write(r); logln("结果已写 result.json"); }
+          catch (e) { write({ error: "evaluate 失败: " + e.message }); logln("evaluate 失败:" + e.message); }
+        }
+      }
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+})();

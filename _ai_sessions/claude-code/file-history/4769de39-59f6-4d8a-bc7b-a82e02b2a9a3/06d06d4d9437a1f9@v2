@@ -1,0 +1,268 @@
+/**
+ * 赛狐 Temu 在售集合 diff → 下架 / 上架
+ * 在售定义：selectStatus === "12"（已加入站点）
+ *
+ * 2026-07-31 防误报（服务器实锤）：
+ * 某轮 getParentPageList 漏拉（unique 954→918），HomeCove 在售被算成 10，
+ * 飞书误报「下架 5」；下一轮拉全又「上架 5」。半降护栏(50%)挡不住 15→10。
+ *
+ * 规则：
+ *  1) 本店 allMap 相对上轮 allCount 掉太多 → 整轮 skip（接口不全）
+ *  2) 「下架」必须：上轮在售，且本轮仍出现在 allMap 里、selectStatus ≠ 12
+ *     （常见变 13）。完全从本轮结果消失的 SKC = 漏数，不告警、不从基准剔除
+ *  3) 上架：本轮 12 且上轮不在 onSaleMap（首轮只建基准）
+ */
+import { SELECT_STATUS } from './products.js';
+
+/**
+ * @param {object|null} prevSnap { onSaleMap, allCount, statusCounts, ts }
+ * @param {{ onSaleMap: object, allMap?: object, statusCounts?: object, pullUnique?: number, prevPullUnique?: number }} curr
+ */
+export function diffOnSale(prevSnap, curr) {
+  const prevMap = (prevSnap && prevSnap.onSaleMap) || null;
+  const currMap = curr.onSaleMap || {};
+  const allMap = curr.allMap || {};
+  const currIds = Object.keys(currMap);
+  const events = [];
+  let skipUpdate = false;
+
+  const prevAllCount =
+    typeof prevSnap?.allCount === 'number'
+      ? prevSnap.allCount
+      : null;
+  const currAllCount = Object.keys(allMap).length;
+
+  // —— 全店商品数骤降：赛狐分页/限流漏数（实锤 954→918 级）——
+  if (prevAllCount != null && prevAllCount >= 30 && currAllCount > 0) {
+    if (currAllCount < Math.floor(prevAllCount * 0.92)) {
+      skipUpdate = true;
+      events.push({
+        type: 'scan_incomplete',
+        severity: 'warn',
+        message: `本店商品列表疑似不全：上轮 all=${prevAllCount} → 本轮 ${currAllCount}，跳过上下架`,
+      });
+    }
+  }
+
+  // —— 全局 unique 骤降（monitor 传入）——
+  if (
+    !skipUpdate &&
+    typeof curr.prevPullUnique === 'number' &&
+    typeof curr.pullUnique === 'number' &&
+    curr.prevPullUnique >= 100 &&
+    curr.pullUnique < Math.floor(curr.prevPullUnique * 0.95)
+  ) {
+    skipUpdate = true;
+    events.push({
+      type: 'scan_incomplete',
+      severity: 'warn',
+      message: `全量 unique 疑似不全：${curr.prevPullUnique} → ${curr.pullUnique}，跳过上下架`,
+    });
+  }
+
+  // —— 在售腰斩（旧护栏，保留）——
+  if (!skipUpdate && prevMap) {
+    const prevN = Object.keys(prevMap).length;
+    const currN = currIds.length;
+    if (prevN >= 5 && currN < Math.floor(prevN * 0.5)) {
+      skipUpdate = true;
+      events.push({
+        type: 'scan_incomplete',
+        severity: 'warn',
+        message: `在售疑似不全：基准 ${prevN} → 本轮 ${currN}，跳过上下架判定`,
+      });
+    }
+  }
+
+  let delisted = [];
+  let listed = [];
+  let ghosts = []; // 上轮在售、本轮 allMap 都没有 → 漏数，不当下架
+
+  if (prevMap && !skipUpdate) {
+    const prevIds = Object.keys(prevMap);
+
+    for (const id of prevIds) {
+      if (id in currMap) continue; // 仍在售
+      const row = allMap[id];
+      if (row && String(row.selectStatus) !== SELECT_STATUS.ON_SALE) {
+        // 仍在本轮结果里，但已不是 12 → 真下架/离在售
+        delisted.push(id);
+      } else if (!row) {
+        ghosts.push(id);
+      } else {
+        // row 存在且 status 仍是 12 但不在 currMap——不应发生；当 ghost 处理
+        ghosts.push(id);
+      }
+    }
+
+    // 大量 ghost = 本轮漏拉，整轮作废（比误报下架安全）
+    if (ghosts.length >= 3 || (prevIds.length >= 5 && ghosts.length >= 2 && ghosts.length >= Math.ceil(prevIds.length * 0.15))) {
+      skipUpdate = true;
+      delisted = [];
+      events.push({
+        type: 'scan_incomplete',
+        severity: 'warn',
+        message: `在售商品本轮失踪 ${ghosts.length} 个（未在结果中出现，疑似接口漏数），跳过上下架；样例 SKC ${ghosts.slice(0, 5).join(',')}`,
+      });
+    } else if (ghosts.length) {
+      // 少数失踪：不告警，基准里先保留（nextSnap 合并 carry）
+      events.push({
+        type: 'scan_ghost',
+        severity: 'warn',
+        message: `在售商品本轮未出现 ${ghosts.length} 个（保留基准、不报下架）：${ghosts.slice(0, 8).join(',')}`,
+        items: ghosts.map((id) => ({
+          skcId: id,
+          parentId: prevMap[id]?.parentId || '',
+          name: prevMap[id]?.name || '',
+        })),
+      });
+    }
+
+    listed = currIds.filter((id) => !(id in prevMap));
+
+    if (!skipUpdate && delisted.length) {
+      events.push({
+        type: 'delist',
+        severity: 'alert',
+        items: delisted.map((id) => ({
+          skcId: id,
+          parentId: (allMap[id] || prevMap[id])?.parentId || '',
+          name: (allMap[id] || prevMap[id])?.name || '',
+          selectStatus: allMap[id]?.selectStatus || prevMap[id]?.selectStatus || '',
+        })),
+        from: prevIds.length,
+        to: currIds.length,
+      });
+    }
+    if (!skipUpdate && listed.length) {
+      events.push({
+        type: 'onshelf',
+        severity: 'alert',
+        items: listed.map((id) => ({
+          skcId: id,
+          parentId: currMap[id]?.parentId || '',
+          name: currMap[id]?.name || '',
+          selectStatus: currMap[id]?.selectStatus || SELECT_STATUS.ON_SALE,
+        })),
+        from: prevIds.length,
+        to: currIds.length,
+      });
+    }
+  }
+
+  const isFirst = !prevMap;
+
+  // next onSaleMap：
+  //  - skip → 整表沿用 prev
+  //  - 否则用 curr，并把 ghost（漏数未证实下架）从 prev 带回来，避免下一轮假上架
+  let nextOnSaleMap;
+  if (skipUpdate && prevMap) {
+    nextOnSaleMap = prevMap;
+  } else if (prevMap && ghosts.length && !skipUpdate) {
+    nextOnSaleMap = { ...currMap };
+    for (const id of ghosts) {
+      if (prevMap[id]) nextOnSaleMap[id] = prevMap[id];
+    }
+  } else {
+    nextOnSaleMap = currMap;
+  }
+
+  const nextSnap = {
+    onSaleMap: nextOnSaleMap,
+    statusCounts: skipUpdate && prevSnap?.statusCounts ? prevSnap.statusCounts : (curr.statusCounts || {}),
+    onSaleCount: Object.keys(nextOnSaleMap).length,
+    // 不全时 allCount 也不抬/砸，避免护栏失准
+    allCount:
+      skipUpdate && prevAllCount != null
+        ? prevAllCount
+        : currAllCount || prevAllCount || 0,
+    ts: Date.now(),
+  };
+
+  return {
+    events,
+    nextSnap,
+    isFirst,
+    skipUpdate,
+    delistedCount: delisted.length,
+    listedCount: skipUpdate ? 0 : listed.length,
+    ghostCount: ghosts.length,
+  };
+}
+
+export function editLink(editBaseUrl, parentIdOrProductId) {
+  const base = String(editBaseUrl || 'https://agentseller.temu.com').replace(/\/$/, '');
+  // 后台编辑页参数多为 productId；赛狐 parentId 实测常等于商品父 ID，可点
+  return `${base}/goods/edit?from=productList&productId=${parentIdOrProductId}`;
+}
+
+function itemBullet(it, editBaseUrl) {
+  const nm = String(it.name || '商品').replace(/[[\]]/g, '').slice(0, 36);
+  const pid = it.parentId || it.skcId;
+  const st = it.selectStatus ? ` status=${it.selectStatus}` : '';
+  return `• [${nm}](${editLink(editBaseUrl, pid)})  SKC ${it.skcId || '-'}${st}`;
+}
+
+/**
+ * 把 delist / onshelf 告警拼成飞书 lark_md 行
+ * @param {string} storeName
+ * @param {Array} events
+ * @param {{ editBaseUrl?: string }} [opts]
+ */
+export function formatChangeLines(storeName, events, { editBaseUrl } = {}) {
+  const lines = [`**🏬 ${storeName}**（赛狐 OpenAPI）`];
+  let any = false;
+  for (const ev of events) {
+    if (ev.severity !== 'alert') continue;
+    if (ev.type === 'delist' && ev.items?.length) {
+      any = true;
+      lines.push(
+        `📉 在售商品**下架** ${ev.items.length} 个（在售 ${ev.from} → ${ev.to}，离开 selectStatus=12）：`,
+      );
+      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
+    }
+    if (ev.type === 'onshelf' && ev.items?.length) {
+      any = true;
+      lines.push(
+        `📈 在售商品**上架** ${ev.items.length} 个（在售 ${ev.from} → ${ev.to}，进入 selectStatus=12）：`,
+      );
+      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
+    }
+  }
+  if (!any) lines.push('_本轮无上下架_');
+  lines.push('', `_检查时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}_`);
+  return lines;
+}
+
+/** @deprecated 用 formatChangeLines；保留别名避免外部引用断裂 */
+export function formatDelistLines(storeName, events, opts) {
+  return formatChangeLines(storeName, events, opts);
+}
+
+/**
+ * 飞书卡片颜色：仅下架 red；仅上架 green；混合 orange
+ * @param {Array} events
+ */
+export function alertTemplate(events) {
+  const types = new Set(
+    (events || []).filter((e) => e.severity === 'alert').map((e) => e.type),
+  );
+  const hasD = types.has('delist');
+  const hasO = types.has('onshelf');
+  if (hasD && hasO) return 'orange';
+  if (hasO) return 'green';
+  return 'red';
+}
+
+export function alertTitle(events) {
+  const types = new Set(
+    (events || []).filter((e) => e.severity === 'alert').map((e) => e.type),
+  );
+  const hasD = types.has('delist');
+  const hasO = types.has('onshelf');
+  if (hasD && hasO) return '🔔 Temu 在售变动（赛狐）';
+  if (hasO) return '🔔 Temu 上架监测（赛狐）';
+  return '🔔 Temu 下架监测（赛狐）';
+}

@@ -1,0 +1,50 @@
+# 一键把本插件打包成 .crx，方便发给同事。
+# 用 Chrome 自带的 --pack-extension 功能：首次生成 .crx + .pem 密钥文件，
+# 之后复用同一 .pem，保证每次打包出的扩展 ID 不变。
+# 用法：右键“用 PowerShell 运行”，或在本文件夹执行  powershell -ExecutionPolicy Bypass -File 打包crx.ps1
+$ErrorActionPreference = 'Stop'
+
+$src = $PSScriptRoot                        # 待打包的插件文件夹（本脚本所在目录）
+$parent = Split-Path $src -Parent
+$name = Split-Path $src -Leaf
+$crx = Join-Path $parent ($name + '.crx')  # Chrome 会把产物输出到父目录、以文件夹名命名
+$pem = Join-Path $parent ($name + '.pem')  # ⚠️密钥必须放在插件文件夹【外面】，否则会被打进 .crx 泄露私钥
+
+# 定位 chrome.exe
+$candidates = @(
+  "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+  "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
+  "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe"
+)
+$chrome = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $chrome) {
+  try { $chrome = (Get-Command chrome.exe -ErrorAction Stop).Source } catch {}
+}
+if (-not $chrome) { Write-Host '[错误] 找不到 chrome.exe，请确认已安装 Google Chrome。' -ForegroundColor Red; Read-Host '回车退出'; exit 1 }
+Write-Host ("Chrome: " + $chrome)
+Write-Host ("打包源: " + $src)
+
+# 组装参数：有密钥就复用（ID 不变），没有则首次生成
+$args = @("--pack-extension=$src")
+if (Test-Path $pem) {
+  $args += "--pack-extension-key=$pem"
+  Write-Host ("复用密钥: " + $pem)
+} else {
+  Write-Host '首次打包，将生成新密钥 key.pem（请妥善保存，之后更新插件要用它）。'
+}
+
+# Chrome 首次打包会把 .pem 输出到父目录、名为 <文件夹名>.pem —— 正是 $pem 的位置，无需搬动。
+& $chrome @args
+Start-Sleep -Seconds 2
+
+if (Test-Path $crx) {
+  Write-Host ''
+  Write-Host ('[成功] 已生成: ' + $crx) -ForegroundColor Green
+  Write-Host '把这个 .crx 发给同事即可。'
+  Write-Host ''
+  Write-Host '提醒：新版 Chrome 常拒装“从外部拖入的 .crx”。若对方装不上，' -ForegroundColor Yellow
+  Write-Host '让他改用“加载已解压”方式（把整个插件文件夹发过去，见 使用说明.txt）。' -ForegroundColor Yellow
+} else {
+  Write-Host '[失败] 未生成 .crx，请检查上面的 Chrome 输出。' -ForegroundColor Red
+}
+Read-Host '回车退出'

@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "== env in container (masked) =="
+docker exec qingquan-api-1 printenv | grep -E 'FEISHU_|ADMIN_|APP_ENV' | sed -E 's/(SECRET|PASSWORD|TOKEN|KEY)=.+/\1=***/' | sort
+
+echo "== settings via python file =="
+docker exec qingquan-api-1 python -c 'from app.config import get_settings; s=get_settings(); print(s.feishu_app_id); print(bool(s.feishu_app_secret)); print(s.feishu_bitable_app_token_tk); print(s.feishu_bitable_table_tk_shop_daily); print(s.feishu_bitable_table_tk_ads_campaign); print(s.admin_username); print(len(s.admin_password or ""))'
+
+echo "== host admin user =="
+grep -E '^ADMIN_' /opt/qingquan/.env | sed -E 's/(PASSWORD)=.+/\1=***/'
+
+echo "== try login variants =="
+# dump exact lengths without printing secrets
+python3 - <<'PY'
+from pathlib import Path
+env={}
+for line in Path('/opt/qingquan/.env').read_text(encoding='utf-8').splitlines():
+    line=line.strip()
+    if not line or line.startswith('#') or '=' not in line: continue
+    k,v=line.split('=',1)
+    env[k.strip()]=v.strip().strip('"').strip("'")
+print('host_admin_user', repr(env.get('ADMIN_USERNAME')))
+print('host_admin_pass_len', len(env.get('ADMIN_PASSWORD') or ''))
+print('host_admin_pass_has_space', ' ' in (env.get('ADMIN_PASSWORD') or ''))
+PY
+
+USER=$(grep -E '^ADMIN_USERNAME=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+PASS=$(grep -E '^ADMIN_PASSWORD=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+echo "using user=[$USER] pass_len=${#PASS}"
+
+# try localhost
+code=$(curl -sS -o /tmp/login.json -w '%{http_code}' -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" || true)
+echo "login_http=$code"
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/tmp/login.json')
+print(p.read_text(encoding='utf-8')[:300] if p.exists() else 'no body')
+PY
+
+# inspect auth code path quickly
+docker exec qingquan-api-1 python -c 'import inspect, app.api.auth as a; print(a.__file__)'
+docker exec qingquan-api-1 sed -n '1,120p' /app/app/api/auth.py 2>/dev/null | head -80 || true

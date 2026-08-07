@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 320px; font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; color: #1f2329; }
+    h1 { font-size: 14px; margin: 0 0 4px; }
+    .sub { color: #8a9099; font-size: 12px; margin-bottom: 10px; }
+    .store { border: 1px solid #eceef1; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+    .store .name { font-weight: 700; margin-bottom: 4px; display: flex; justify-content: space-between; }
+    .store .name .t { color: #8a9099; font-weight: 400; font-size: 11px; }
+    .kv { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+    .kv span b { color: #1456f0; }
+    .empty { color: #8a9099; font-size: 12px; padding: 14px 4px; text-align: center; background: #f6f7f9; border-radius: 8px; }
+    .btns { display: flex; gap: 8px; margin-top: 10px; }
+    button { flex: 1; padding: 7px 0; border: 1px solid #dcdfe6; background: #fff; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    button.primary { background: #1456f0; color: #fff; border-color: #1456f0; }
+    #msg { margin-top: 8px; font-size: 12px; min-height: 16px; }
+    .ok { color: #16a34a; } .err { color: #d92d20; }
+    .foot { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+    a { color: #1456f0; text-decoration: none; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Temu 店铺监测</h1>
+  <div class="sub" id="cfg">—</div>
+  <div id="stores"></div>
+  <div class="btns">
+    <button class="primary" id="cycle">轮巡所有店</button>
+    <button id="check">刷新当前</button>
+    <button id="test">测试飞书</button>
+  </div>
+  <div id="msg"></div>
+  <div id="diagWrap" style="display:none;margin-top:8px;">
+    <div class="sub" style="margin:0 0 4px;">轮巡诊断（复制发给开发）：</div>
+    <textarea id="diag" readonly style="width:100%;height:90px;box-sizing:border-box;font-size:11px;font-family:monospace;"></textarea>
+  </div>
+  <div class="foot">
+    <span class="sub" id="hint" style="margin:0;">切到各店的商品列表页即可分别监测</span>
+    <a href="#" id="opt">⚙ 设置</a>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

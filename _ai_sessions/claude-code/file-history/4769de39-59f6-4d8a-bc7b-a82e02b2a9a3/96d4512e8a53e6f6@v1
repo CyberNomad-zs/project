@@ -1,0 +1,122 @@
+import { chromium } from 'playwright';
+import { mkdirSync } from 'node:fs';
+import { log } from './logger.js';
+
+/**
+ * 启动持久化浏览器上下文（复用登录态）。
+ * 首次需有头人工登录一次，之后 session 保存在 userDataDir 中复用。
+ */
+export async function launchBrowser(cfg, { headless } = {}) {
+  mkdirSync(cfg.userDataDir, { recursive: true });
+  const launchOpts = {
+    headless: headless ?? cfg.headless,
+    viewport: null, // 用真实窗口尺寸，配合 --start-maximized 更像真人
+    locale: 'zh-CN',
+    timezoneId: 'Asia/Shanghai',
+    args: ['--disable-blink-features=AutomationControlled', '--start-maximized'],
+    // 去掉「Chrome 正受到自动测试软件的控制」信息栏 + navigator.webdriver 触发源
+    ignoreDefaultArgs: ['--enable-automation'],
+  };
+  // 用系统真实 Chrome（channel:'chrome' 或显式 exe 路径）——指纹与真人一致，最不易被 Temu 风控识别。
+  // executablePath 优先级高于 channel；两者都空则回落 Playwright 内置 Chromium。
+  if (cfg.executablePath) launchOpts.executablePath = cfg.executablePath;
+  else if (cfg.channel) launchOpts.channel = cfg.channel;
+
+  // 代理策略：
+  //  - cfg.proxy 非空 → 走指定代理；
+  //  - cfg.proxy 空   → 强制直连。⚠️必须显式覆盖：复用真实 Chrome profile 时，profile/系统里配的
+  //    代理（如 Clash 7897）会被真实 Chrome 读取，导致海外网关 net::ERR_CONNECTION_CLOSED
+  //    （实测：内置 Chromium 无 profile 代理→直连 6/6 200；真实 Chrome 带 profile 代理→12/12 失败）。
+  if (cfg.proxy) {
+    launchOpts.proxy = { server: cfg.proxy };
+    log.info(`使用代理：${cfg.proxy}`);
+  } else {
+    // 强制直连：不设 Playwright 的 proxy 选项——direct:// 在部分 Chrome 版本会被当成
+    // 代理地址去连接，连不上就报 net::ERR_PROXY_CONNECTION_FAILED（同事机器有系统代理时尤甚）。
+    // 改用 Chrome 命令行开关 --no-proxy-server，明确「不使用任何代理」，优先级最高，
+    // 可盖住系统/profile 里的一切代理设置。
+    launchOpts.args.push('--no-proxy-server');
+    launchOpts.args.push('--proxy-bypass-list=*');
+  }
+
+  const reusingRealChrome = /Google[\\/]+Chrome[\\/]+User Data/i.test(cfg.userDataDir);
+  if (reusingRealChrome) {
+    log.info('复用真实 Chrome 登录态目录；请确保 Chrome 已【完全退出】（含托盘/后台进程），否则目录被占用会启动失败。');
+  }
+
+  let context;
+  try {
+    context = await chromium.launchPersistentContext(cfg.userDataDir, launchOpts);
+  } catch (e) {
+    const msg = e.message || String(e);
+    if (/ProcessSingleton|SingletonLock|being used|in use|locked|DevToolsActivePort/i.test(msg)) {
+      log.error('启动失败：Chrome 用户目录被占用。请完全退出系统 Chrome 后重试（任务管理器里结束所有 chrome.exe）。');
+    }
+    throw e;
+  }
+  context.setDefaultNavigationTimeout(cfg.navTimeoutMs);
+  context.setDefaultTimeout(15000);
+  const page = context.pages()[0] || await context.newPage();
+  return { context, page };
+}
+
+/**
+ * 带重试+退避的导航。Temu 网关（Azure Traffic Manager → gw-sg）会偶发重置连接
+ * （ERR_CONNECTION_CLOSED / ERR_NETWORK_CHANGED 等），前 1-2 次常被重置，重试几次
+ * 连接「热」起来后即稳定 200。诊断（netdiag.mjs）已证实：
+ *  - waitUntil:'commit' 重试 2-3 次即可穿过间歇性重置；
+ *  - waitUntil:'domcontentloaded' 因商品列表是重型 SPA、网络长期不空闲，事件永不触发 → 必超时。
+ * 故这里只等 'commit'（连接建立、首字节到达），DOM/内容渲染交由调用方显式等待选择器。
+ * @returns {Promise<boolean>} 是否成功导航到目标页
+ */
+export async function gotoWithRetry(page, url, cfg, { attempts = 12 } = {}) {
+  for (let i = 0; i < attempts; i++) {
+    if (page.isClosed()) return false;
+    try {
+      // 单次 goto（commit）——netdiag 实测此写法最稳；双 goto/预热在重置阵发期易触发 frame detached。
+      await page.goto(url, { waitUntil: 'commit', timeout: cfg.navTimeoutMs });
+      return true;
+    } catch (e) {
+      const msg = e.message || String(e);
+      log.warn(`导航失败（第 ${i + 1}/${attempts} 次）：${msg.split('\n')[0]}`);
+      if (page.isClosed()) return false;
+      // 阵发性重置：固定短退避快速重试
+      await page.waitForTimeout(1500).catch(() => {});
+    }
+  }
+  return false;
+}
+
+/**
+ * 等待商品列表页真正渲染出关键内容（不依赖 domcontentloaded/networkidle）。
+ * @returns {Promise<boolean>}
+ */
+export async function waitForGoodsList(page, { timeout = 30000 } = {}) {
+  return page
+    .getByText(/在售中|商品列表|全部\s*\d+/)
+    .first()
+    .waitFor({ state: 'visible', timeout })
+    .then(() => true)
+    .catch(() => false);
+}
+
+/**
+ * 判断当前是否已登录：访问商品列表页，若被重定向到登录页或出现登录表单则未登录。
+ */
+export async function isLoggedIn(page, cfg) {
+  const navOk = await gotoWithRetry(page, cfg.goodsListUrl, cfg);
+  if (!navOk) log.warn('多次尝试后仍无法打开商品列表页（网关重置或网络问题）。');
+  // commit 后 DOM 尚未渲染，先等关键内容或登录表单出现
+  const ok = await waitForGoodsList(page, { timeout: cfg.navTimeoutMs });
+  const url = page.url();
+  // 登录页通常包含 login 关键字，或出现「登录」「密码」输入
+  if (/login|signin|account/i.test(url)) return false;
+  const loginForm = await page
+    .locator('input[type="password"], text=账号登录, text=扫码登录')
+    .first()
+    .isVisible()
+    .catch(() => false);
+  if (loginForm) return false;
+  // 已登录时商品列表页应能看到「商品列表」或状态标签
+  return ok;
+}

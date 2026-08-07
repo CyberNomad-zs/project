@@ -1,0 +1,21 @@
+---
+name: sellfox-delist-monitor
+description: temu-monitor 基于赛狐 OpenAPI 的 Temu 下架监测
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: a4e09619-43de-4c7b-9c4c-1a79355fc2d2
+  modified: 2026-07-24T06:40:04.316Z
+---
+
+在 `E:\project\temu\temu-monitor\src\sellfox\` 用赛狐多平台 API 做下架监测（与 sellfox-bridge 共用 client 凭证思路）。
+
+- 接口：`POST /api/multiplatform/temu/product/getParentPageList.json`，`dateType=updateDate`，窗口≤30天滑窗。
+- 在售：`selectStatus=12`；已下架常见 `13`。首轮建 `data/sellfox-state.json` 基准不告警。
+- 配置：`sellfox.config.json`（gitignore），shopId 396706/398202/398203。
+- 命令：`npm run sellfox:probe|once|start|dry`。限流 40019 需退避。
+- 限流/待关注仍用 Chrome 插件；赛狐无流量标签字段。
+- 实调：三店在售 13/15/13，unique 父体约 948（30d updateDate）。
+
+**Why:** 半托管店 Partner Local 商品权限不确定；赛狐已授权三店且字段对齐。
+**How to apply:** 下架主路径优先 sellfox 模块；限流继续插件。

@@ -1,0 +1,296 @@
+### Page
+- Page URL: https://business-api.tiktok.com/portal/docs/about-the-guide/v1.3
+- Page Title: Docs | TikTok API for Business
+- Console: 11 errors, 3 warnings
+### Snapshot
+```yaml
+- generic [active] [ref=e1]:
+  - main [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - link [ref=e6] [cursor=pointer]:
+          - /url: https://business-api.tiktok.com/portal
+          - img "tt4b logo" [ref=e7]
+        - generic [ref=e8]:
+          - link "Discover API Products" [ref=e61] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "Solutions" [ref=e62] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "Docs" [ref=e63] [cursor=pointer]:
+            - /url: https://business-api.tiktok.com/portal/docs/
+          - link "Support" [ref=e64] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "Blog" [ref=e65] [cursor=pointer]:
+            - /url: https://business-api.tiktok.com/portal/blog
+      - generic [ref=e14]:
+        - link [ref=e15] [cursor=pointer]:
+          - /url: https://business-api.tiktok.com/portal/search
+        - button [ref=e23] [cursor=pointer]
+        - button "Log in" [ref=e66] [cursor=pointer]
+    - generic [ref=e30]:
+      - generic [ref=e97]:
+        - text: We have launched
+        - link "TikTok for Business MCP" [ref=e98] [cursor=pointer]:
+          - /url: https://business-api.tiktok.com/portal/docs/tiktok-ads-mcp-server/v1.3
+        - text: and
+        - link "Agentic Hub" [ref=e99] [cursor=pointer]:
+          - /url: https://ads.tiktok.com/apps_and_agents/agentic-hub
+        - text: . Connect, build, and scale AI-powered advertising solutions on TikTok.
+      - iframe [ref=e33]:
+        - generic [ref=f1e4]:
+          - generic [ref=f1e6]:
+            - generic "About the Guide" [ref=f1e8] [cursor=pointer]
+            - generic "Overview" [ref=f1e10] [cursor=pointer]
+            - generic "What's New" [ref=f1e15] [cursor=pointer]
+            - generic "Get Started" [ref=f1e17] [cursor=pointer]
+            - generic "TikTok for Business MCP Server" [ref=f1e22] [cursor=pointer]
+            - generic "Skill management" [ref=f1e27] [cursor=pointer]
+            - generic "FAQs" [ref=f1e32] [cursor=pointer]
+            - generic "Use Cases" [ref=f1e34] [cursor=pointer]
+            - generic "Marketing API" [ref=f1e39] [cursor=pointer]
+            - generic "Organic API" [ref=f1e44] [cursor=pointer]
+            - generic "Business Messaging API" [ref=f1e49] [cursor=pointer]
+            - generic "API Reference" [ref=f1e54] [cursor=pointer]
+            - generic "API Playground" [ref=f1e59] [cursor=pointer]
+            - generic "API Service Status Page" [ref=f1e64] [cursor=pointer]
+            - generic "SDK" [ref=f1e66] [cursor=pointer]
+            - generic "Appendix" [ref=f1e68] [cursor=pointer]
+          - generic [ref=f1e74]:
+            - generic [ref=f1e81]:
+              - link "Documentation organization" [ref=f1e83] [cursor=pointer]:
+                - /url: "#item-link-Documentation organization"
+              - link "Recommended paths for different scenarios" [ref=f1e85] [cursor=pointer]:
+                - /url: "#item-link-Recommended paths for different scenarios"
+            - generic [ref=f1e86]:
+              - generic [ref=f1e87]: About the Guide
+              - generic [ref=f1e88]:
+                - paragraph [ref=f1e89]: Welcome to our comprehensive TikTok API for Business guide! Understanding how to effectively use a new tool or resource can sometimes be a little bit challenging, especially when there's a wealth of information at your disposal. That's why we've put together this introductory document to assist you in becoming familiar with our guide. This document aims to provide you with an overview and strategies to navigate through the extensive information available, ensuring you have a smooth and productive experience with TikTok API for Business.
+                - heading "Documentation organization" [level=2] [ref=f1e90]
+                - paragraph [ref=f1e91]: "The documentation is structured to help you navigate and find the information you need. Here's an overview of the main sections:"
+                - list [ref=f1e92]:
+                  - listitem [ref=f1e93]:
+                    - link "Overview" [ref=f1e94] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1735712062490625
+                    - text: ": Gain a high-level understanding of TikTok API for Business and its capabilities. This section introduces the platform and its benefits."
+                  - listitem [ref=f1e95]:
+                    - link "What's New" [ref=f1e96] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1740029165513730
+                    - text: ": Stay updated on a weekly basis with the latest features, enhancements, and changes to TikTok API for Business. This section highlights recent updates and helps you stay informed about the evolving TikTok API for Business."
+                  - listitem [ref=f1e97]:
+                    - link "Get Started" [ref=f1e98] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1735713609895937
+                    - text: ": Dive into the details of integrating with TikTok API for Business. This section includes concept clarifications and step-by-step instructions on setting up your developer account and developer app, obtaining API access, and making your first API calls."
+                  - listitem [ref=f1e99]:
+                    - link "FAQs" [ref=f1e100] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1740029175352322
+                    - text: ": Find answers to frequently asked questions about TikTok API for Business. This section addresses common queries and provides helpful explanations to support your development process."
+                  - listitem [ref=f1e101]:
+                    - link "Use Cases" [ref=f1e102] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1735713713137730
+                    - text: ": Explore various implementation guides that demonstrate how to leverage the capabilities of TikTok API for Business in different contexts. This section provides practical resources to inspire and guide you in effectively implementing TikTok API for Business for your specific use cases, such as campaign creation, audience integration, and reporting."
+                  - listitem [ref=f1e103]:
+                    - link "Marketing API" [ref=f1e104] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1781891416235009
+                    - text: ": Focus specifically on the Marketing API product. This section covers the features and functionalities of the Marketing API, empowering businesses to fully optimize their advertising efforts, including campaign management, Business Center management, creative management, and audience management. With powerful tools and data insights, businesses can achieve better performance, increase return on investment, and reach their target audience more effectively."
+                  - listitem [ref=f1e105]:
+                    - link "Organic API" [ref=f1e106] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1825101624331329
+                    - text: ": Focus specifically on the Organic API product. This section covers the features and functionalities of the Organic API, enabling brands to manage their organic presence on TikTok and scale their TikTok efforts. The Organic API includes tools for Accounts, Mentions, TikTok One (TTO), Discovery, and Spark Ads Recommendation. By leveraging these tools, brands can refine their organic strategies, collaborate with creators, and amplify content through paid media. The Organic API bridges the gap between organic success and paid growth, maximizing impact and ROI on TikTok."
+                  - listitem [ref=f1e107]:
+                    - link "Business Messaging API" [ref=f1e108] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1832183871604753
+                    - text: ": Focus specifically on the Business Messaging API product. This section covers the features and functionalities of the Business Messaging API, allowing businesses to integrate direct messaging capabilities to connect directly with TikTok users. The API enables real-time messaging, automated replies, and efficient message thread management. By optimizing messaging strategies, businesses can strengthen relationships with users, enhance customer engagement, and support paid media campaigns. The Business Messaging API empowers developers to create comprehensive solutions that drive brand growth on TikTok and bridge the gap between organic interactions and paid advertising initiatives."
+                  - listitem [ref=f1e109]:
+                    - link "API Reference" [ref=f1e110] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1735713875563521
+                    - text: ": Access comprehensive technical documentation for TikTok API for Business. This section provides detailed information on endpoints, request/response structures, and parameters. Developers of all levels can refer to this section for in-depth technical information."
+                  - listitem [ref=f1e111]:
+                    - link "SDK" [ref=f1e112] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1764231376750658
+                    - text: ": Find SDK-specific documentation and resources. This section provides guidance on using the SDK (software development kit) to simplify integration and streamline the development process."
+                  - listitem [ref=f1e113]:
+                    - link "Appendix" [ref=f1e114] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/docs?id=1737172315193346
+                    - text: ": Access supplementary materials, such as return codes and enumeration value lists. This section complements the main documentation and offers further support for developers seeking additional information."
+                    - strong [ref=f1e115]: Additional resources
+                - paragraph [ref=f1e116]: "In addition to the main documentation sections, the following resources are also available:"
+                - list [ref=f1e117]:
+                  - listitem [ref=f1e118]:
+                    - link "Developer Blog" [ref=f1e119] [cursor=pointer]:
+                      - /url: https://business-api.tiktok.com/portal/blog
+                    - text: ": Explore announcements and how-to guides related to TikTok API for Business and best practices. This resource offers valuable insights and additional resources for developers."
+                  - listitem [ref=f1e120]:
+                    - link "Success Stories" [ref=f1e121] [cursor=pointer]:
+                      - /url: https://www.tiktok.com/business/en-US/inspiration
+                    - text: ": Discover real-world success stories of businesses or developers who have achieved remarkable results using TikTok API for Business. This resource provides inspiration and insights into the potential of TikTok API for Business."
+                  - listitem [ref=f1e122]:
+                    - link "TikTok Business Help Center" [ref=f1e123] [cursor=pointer]:
+                      - /url: https://ads.tiktok.com/help/
+                    - text: ": Access additional clarifications about the specific features you want to integrate with and find best practices to maximize your API usage."
+                - heading "Recommended paths for different scenarios" [level=2] [ref=f1e124]
+                - paragraph [ref=f1e125]: "To streamline your browsing experience, we recommend the following paths based on your scenario:"
+                - table [ref=f1e126]:
+                  - rowgroup [ref=f1e130]:
+                    - row [ref=f1e131]:
+                      - columnheader "Scenario" [ref=f1e132]
+                      - columnheader "Recommendation" [ref=f1e133]
+                  - rowgroup [ref=f1e134]:
+                    - row [ref=f1e135]:
+                      - cell "I am a new developer who wants to get onboarded quickly and integrate with the API." [ref=f1e136]
+                      - cell [ref=f1e138]:
+                        - generic [ref=f1e139]:
+                          - text: See
+                          - link "Get Started" [ref=f1e140] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1735713609895937
+                          - text: .
+                    - row [ref=f1e141]:
+                      - cell "I am a new developer and I want to know the maximum number of developer apps allowed for each developer account, the relationship between developer account and advertiser account, and the maximum number of campaigns, ad groups and ads within an advertiser account." [ref=f1e142]
+                      - cell [ref=f1e144]:
+                        - generic [ref=f1e145]:
+                          - text: See
+                          - link "Account structure" [ref=f1e146] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1740029179343874
+                          - text: and
+                          - link "Ads structure" [ref=f1e147] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1739381193120770
+                          - text: .
+                    - row [ref=f1e148]:
+                      - cell "I am a developer interested in learning about the request and response schemas of endpoints." [ref=f1e149]
+                      - cell [ref=f1e151]:
+                        - generic [ref=f1e152]:
+                          - text: See
+                          - link "API Reference" [ref=f1e153] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1735713875563521
+                          - text: .
+                    - row [ref=f1e154]:
+                      - cell "I am a product manager and I want to explore all API offerings." [ref=f1e155]
+                      - cell [ref=f1e157]:
+                        - generic [ref=f1e158]:
+                          - text: See
+                          - link "API Reference" [ref=f1e159] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1735713875563521
+                          - text: .
+                    - row [ref=f1e160]:
+                      - cell "I am a marketing professional looking for success stories." [ref=f1e161]
+                      - cell [ref=f1e163]:
+                        - generic [ref=f1e164]:
+                          - text: See
+                          - link "Success Stories" [ref=f1e165] [cursor=pointer]:
+                            - /url: https://www.tiktok.com/business/en-US/inspiration
+                          - text: .
+                    - row [ref=f1e166]:
+                      - cell "I want to stay updated on a weekly basis with the latest enhancements and changes." [ref=f1e167]
+                      - cell [ref=f1e169]:
+                        - generic [ref=f1e170]:
+                          - text: See
+                          - link "What's New" [ref=f1e171] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1740029165513730
+                          - text: and
+                          - link "Developer Blog" [ref=f1e172] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/blog
+                          - text: .
+                    - row [ref=f1e173]:
+                      - cell "I want to subscribe to the weekly newsletter." [ref=f1e174]
+                      - cell [ref=f1e176]:
+                        - generic [ref=f1e177]:
+                          - text: Go to the
+                          - link "homepage" [ref=f1e178] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal
+                          - text: and scroll down to find the Newsletter signup section.
+                    - row [ref=f1e179]:
+                      - cell "I'm integrating with a set of endpoints and want a deeper understanding of the features involved." [ref=f1e180]
+                      - cell [ref=f1e182]:
+                        - generic [ref=f1e183]:
+                          - text: See guides for specific APIs (
+                          - link "Marketing API" [ref=f1e184] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1781891416235009
+                          - text: ","
+                          - link "Organic API" [ref=f1e185] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1825101624331329
+                          - text: ", or"
+                          - link "Business Messaging API" [ref=f1e186] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1832183871604753
+                          - text: ).
+                    - row [ref=f1e187]:
+                      - cell "I've gone through the available documents but still need further clarification on certain features." [ref=f1e188]
+                      - cell [ref=f1e190]:
+                        - generic [ref=f1e191]:
+                          - text: See
+                          - link "TikTok Business Help Center" [ref=f1e192] [cursor=pointer]:
+                            - /url: https://ads.tiktok.com/help/
+                          - text: .
+                    - row [ref=f1e193]:
+                      - cell "I have specific queries during the integration and want to find readily available answers." [ref=f1e194]
+                      - cell [ref=f1e196]:
+                        - generic [ref=f1e197]:
+                          - text: See
+                          - link "FAQs" [ref=f1e198] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1740029175352322
+                          - text: .
+                    - row [ref=f1e199]:
+                      - cell "I want to learn about how to integrate with a specific feature, such as Carousel Ads." [ref=f1e200]
+                      - cell [ref=f1e202]:
+                        - generic [ref=f1e203]:
+                          - text: See
+                          - link "Use Cases" [ref=f1e204] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1735713713137730
+                          - text: .
+                    - row [ref=f1e205]:
+                      - cell "I'm facing technical issues I can't resolve on my own and need technical assistance." [ref=f1e206]
+                      - cell [ref=f1e208]:
+                        - generic [ref=f1e209]:
+                          - text: See
+                          - link "Need support" [ref=f1e210] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1795190020378625
+                          - text: .
+                    - row [ref=f1e211]:
+                      - cell "I'm familiar with TikTok Ads Manager and want to know how to create similar ads using the API." [ref=f1e212]
+                      - cell [ref=f1e214]:
+                        - generic [ref=f1e215]:
+                          - text: See
+                          - link "Mapping between campaign features in TikTok Ads Manager and API configurations" [ref=f1e216] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1740673047618561
+                          - text: and
+                          - link "API Reference" [ref=f1e217] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1735713875563521
+                          - text: .
+                    - row [ref=f1e218]:
+                      - cell "I can't find the information I need, and it seems there is no document for it. I believe many developers would benefit from such a document and would like to request its creation." [ref=f1e219]
+                      - cell [ref=f1e221]:
+                        - generic [ref=f1e222]:
+                          - text: See
+                          - link "Need support" [ref=f1e223] [cursor=pointer]:
+                            - /url: https://business-api.tiktok.com/portal/docs?id=1795190020378625
+                          - text: and provide documentation feedback using the feedback window, providing details about the information you're seeking and explaining how it would benefit a large number of developers. The API documentation team will review your request and consider creating the requested document to provide the necessary information.
+                - generic [ref=f1e230]:
+                  - generic [ref=f1e231]: Was the information helpful?
+                  - generic [ref=f1e232]:
+                    - generic [ref=f1e233] [cursor=pointer]: "Yes"
+                    - generic [ref=f1e238] [cursor=pointer]: "No"
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]: © 2026 TikTok for Business
+        - link "Terms & policies" [ref=e95] [cursor=pointer]:
+          - /url: https://ads.tiktok.com/i18n/official/policy/terms
+        - link "Privacy & cookie policy" [ref=e96] [cursor=pointer]:
+          - /url: https://ads.tiktok.com/i18n/official/policy/privacy?
+      - generic [ref=e49]:
+        - link [ref=e50] [cursor=pointer]:
+          - /url: https://www.tiktok.com/@tiktokforbusiness?lang=en
+          - img "TikTok" [ref=e51]
+        - link [ref=e52] [cursor=pointer]:
+          - /url: https://www.linkedin.com/company/tiktokbusiness/
+          - img "LinkedIn" [ref=e53]
+        - link [ref=e54] [cursor=pointer]:
+          - /url: https://www.facebook.com/TikTokforBusiness/
+          - img "Facebook" [ref=e55]
+        - link [ref=e56] [cursor=pointer]:
+          - /url: https://www.instagram.com/tiktok.forbusiness/
+          - img "Instagram" [ref=e57]
+        - link [ref=e58] [cursor=pointer]:
+          - /url: https://www.twitter.com/TikTokBusiness
+          - img "Twitter" [ref=e59]
+  - alert [ref=e60]: Docs | TikTok API for Business
+```
+### Events
+- New console entries: .playwright-mcp\console-2026-07-29T06-15-59-273Z.log#L18-L21

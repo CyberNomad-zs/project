@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fab7f-7ed9-7553-a471-73b6cca96147",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "清泉跨境系统架构图分析",
+  "created_at": "2026-07-29T01:31:27.337145700Z",
+  "updated_at": "2026-07-30T06:49:27.014186600Z",
+  "num_messages": 2075,
+  "num_chat_messages": 751,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 51,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "f785fdfd17c283e06404f34b3ce250506a7ea2cb",
+  "head_branch": "main",
+  "request_id": "f4b0cc6b-2635-42af-be76-afd88fc8b3a5",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T06:49:27.014186600Z",
+  "generated_title": "清泉跨境系统架构图分析",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

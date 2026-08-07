@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TK广告数据抓取 - 设置</title>
+    <link rel="stylesheet" href="../popup/popup.css" />
+    <style>
+      body {
+        width: auto;
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 20px 16px 40px;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      h2 {
+        margin: 0 0 10px;
+        font-size: 14px;
+      }
+      .grid {
+        display: grid;
+        gap: 8px;
+      }
+      .grid label {
+        display: grid;
+        grid-template-columns: 140px 1fr;
+        gap: 10px;
+        align-items: center;
+      }
+      .grid label span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      textarea {
+        width: 100%;
+        min-height: 100px;
+        resize: vertical;
+      }
+      .footer-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .note {
+        font-size: 12px;
+        color: var(--muted);
+        margin-top: 8px;
+      }
+      #toast {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        background: #1f2937;
+        border: 1px solid var(--border);
+        padding: 10px 14px;
+        border-radius: 8px;
+        display: none;
+      }
+      #toast.show {
+        display: block;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="header" style="padding: 0 0 12px">
+      <div>
+        <h1>插件设置</h1>
+        <p class="sub">凭证仅保存在本机浏览器 storage，不会写入代码仓库</p>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>飞书多维表格</h2>
+      <div class="grid">
+        <label>
+          <span>App ID</span>
+          <input type="text" id="appId" placeholder="cli_xxx" autocomplete="off" />
+        </label>
+        <label>
+          <span>App Secret</span>
+          <input type="password" id="appSecret" placeholder="应用密钥" autocomplete="off" />
+        </label>
+        <label>
+          <span>App Token</span>
+          <input type="text" id="appToken" placeholder="多维表格 app_token" />
+        </label>
+        <label>
+          <span>Table ID</span>
+          <input type="text" id="tableId" placeholder="数据表 table_id" />
+        </label>
+      </div>
+      <p class="note">
+        字段名需与文档《飞书表格建表说明》一致。应用需开通「多维表格」权限并授权到目标表格。
+      </p>
+      <div class="footer-actions">
+        <button id="btnTest" class="btn">测试连接</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>店铺与写入</h2>
+      <div class="grid">
+        <label>
+          <span>默认店铺名</span>
+          <input type="text" id="defaultStoreName" placeholder="无法识别时使用" />
+        </label>
+        <label>
+          <span>写入模式</span>
+          <select id="writeMode">
+            <option value="append">追加（MVP）</option>
+            <option value="replace-day" disabled>覆盖当日（后续）</option>
+          </select>
+        </label>
+        <label style="align-items: start">
+          <span>店铺名称映射</span>
+          <textarea
+            id="storeMappings"
+            placeholder="每行：页面识别名 => 飞书店铺名&#10;Deal to deal => Deal to deal&#10;SHOP INOUT => SHOP INOUT"
+          ></textarea>
+        </label>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>定时抓取</h2>
+      <div class="grid">
+        <label class="row check" style="display: flex">
+          <input type="checkbox" id="scheduleEnabled" />
+          <span style="color: var(--text)">启用每日定时</span>
+        </label>
+        <label>
+          <span>时间（本地）</span>
+          <span style="display: flex; gap: 6px">
+            <input type="number" id="scheduleHour" min="0" max="23" style="width: 80px" />
+            <span>:</span>
+            <input type="number" id="scheduleMinute" min="0" max="59" style="width: 80px" />
+          </span>
+        </label>
+      </div>
+      <p class="note">
+        默认建议中国 17:20（≈ 英国上午，抓「昨天」数据完整）。勿设早上 7–9 点：中国早上 8 点 ≈ 英国 0 点，花费是半截。
+        业务日按英区后台时区 Europe/London。定时依赖紫鸟进程存活；无人值守用 Windows 计划任务 + ziniao-cli。
+      </p>
+    </section>
+
+    <section class="card">
+      <h2>默认抓取选项</h2>
+      <div class="grid">
+        <label>
+          <span>日期模式</span>
+          <select id="dateMode">
+            <option value="yesterday">昨天</option>
+            <option value="today">今天</option>
+            <option value="custom">自定义</option>
+          </select>
+        </label>
+        <label>
+          <span>自定义日期</span>
+          <input type="date" id="customDate" />
+        </label>
+        <label class="row check" style="display: flex">
+          <input type="checkbox" id="dryRun" />
+          <span style="color: var(--text)">默认干跑（不写飞书）</span>
+        </label>
+      </div>
+    </section>
+
+    <div class="footer-actions">
+      <button id="btnSave" class="btn primary">保存设置</button>
+      <button id="btnClearLogs" class="btn">清空日志</button>
+    </div>
+
+    <div id="toast"></div>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

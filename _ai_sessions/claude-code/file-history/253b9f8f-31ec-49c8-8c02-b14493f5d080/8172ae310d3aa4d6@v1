@@ -1,0 +1,206 @@
+/**
+ * 页面内 DOM 扫描（移植自 temu-plugin/content.js）
+ * 全部通过 page.evaluate 执行，避免 Playwright 选择器与 chip 竞态。
+ */
+import { log } from './logger.js';
+
+const DOM_HELPERS = `
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const visible = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const textEls = (re, maxLen = 40) =>
+    [...document.querySelectorAll('*')].filter((e) => {
+      const t = (e.textContent || '').trim();
+      return re.test(t) && t.length <= maxLen;
+    });
+  const clickableAncestor = (el) => {
+    let p = el;
+    for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+      if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button' || p.onclick) return p;
+    }
+    return el;
+  };
+  const realClick = (el) => {
+    if (!el) return;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, opts));
+    }
+  };
+  const waitFor = async (fn, timeout = 8000, step = 300) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const v = fn();
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  };
+  function readChipCount(label) {
+    const re = new RegExp(label);
+    for (const card of document.querySelectorAll('[class*="use-quick-field_tsx_card__"]')) {
+      if (!re.test(card.textContent || '')) continue;
+      const cnt = card.querySelector('[class*="countDistance"]');
+      if (cnt && /\\d/.test(cnt.textContent || '')) {
+        return Number((cnt.textContent || '').replace(/[^\\d]/g, ''));
+      }
+      const m = (card.textContent || '').match(new RegExp(label + '[^\\\\d]{0,3}([\\\\d,]+)'));
+      if (m) return Number(m[1].replace(/,/g, ''));
+    }
+    const all = [...document.querySelectorAll('*')];
+    const labels = all
+      .filter((e) => re.test(e.textContent || '') && (e.textContent || '').trim().length < 24)
+      .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of labels) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(new RegExp(label + '[^\\\\d]{0,3}([\\\\d,]+)'));
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+    }
+    return null;
+  }
+  function countDeclineBadges() {
+    let n = 0;
+    for (const e of document.querySelectorAll('*')) {
+      const t = (e.textContent || '').trim();
+      if (!/商品流量近期有下降/.test(t) || t.length > 20) continue;
+      if ([...e.children].some((c) => /商品流量近期有下降/.test(c.textContent || ''))) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) n++;
+    }
+    return n;
+  }
+  function scanProducts() {
+    const rows = [...document.querySelectorAll('[data-testid="beast-core-table-body-tr"]')];
+    const products = [];
+    let cur = null;
+    for (const tr of rows) {
+      const t = tr.textContent || '';
+      const spu = t.match(/SPU\\s*ID[:：]\\s*(\\d+)/);
+      if (spu) {
+        const infoTd = [...tr.querySelectorAll('td')].find((td) => /SPU\\s*ID/.test(td.textContent || '')) || tr;
+        const name = [...infoTd.querySelectorAll('*')].map((e) => (e.textContent || '').trim())
+          .filter((x) => x.length >= 6 && x.length <= 80 && /[\\u4e00-\\u9fff]/.test(x) && !/^.{0,6}[:：]/.test(x) && !/SPU|SKC/.test(x))
+          .sort((a, b) => b.length - a.length)[0] || '';
+        cur = {
+          productId: spu[1],
+          skc: (t.match(/SKC\\s*ID[:：]\\s*(\\d+)/) || [])[1] || '',
+          name,
+          watch: false,
+          decline: false,
+        };
+        products.push(cur);
+      }
+      if (cur) {
+        if (/商品流量待关注/.test(t)) cur.watch = true;
+        if (/商品流量近期有下降/.test(t)) cur.decline = true;
+      }
+    }
+    return products;
+  }
+  function readTotalCount() {
+    const el = [...document.querySelectorAll('*')].find(
+      (x) => x.children.length === 0 && /共有\\s*[\\d,]+\\s*条/.test(x.textContent || '')
+    );
+    if (!el) return null;
+    const m = (el.textContent || '').match(/共有\\s*([\\d,]+)\\s*条/);
+    return m ? Number(m[1].replace(/,/g, '')) : null;
+  }
+  function findWatchChip() {
+    for (const card of document.querySelectorAll('[class*="use-quick-field_tsx_card__"]')) {
+      if (/商品流量待关注/.test(card.textContent || '')) return card;
+    }
+    return null;
+  }
+  function clickReset() {
+    const btn = textEls(/^重置$/, 6).filter(visible)[0];
+    if (btn) realClick(clickableAncestor(btn));
+  }
+  function readTabCount(reSrc) {
+    const re = new RegExp(reSrc);
+    const labels = [...document.querySelectorAll('[data-testid="beast-core-tab-itemLabel"]')].filter(visible);
+    for (const el of labels) {
+      const t = (el.textContent || '').trim();
+      if (re.test(t)) {
+        const m = t.match(/(\\d[\\d,]*)/);
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+    }
+    return null;
+  }
+`;
+
+/** 被动读：chip 待关注 + 下降徽标数 + 当前页明细 */
+export async function readPassiveTraffic(page) {
+  return page.evaluate((helpers) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    const products = scanProducts();
+    const pick = (p) => ({ productId: p.productId, name: p.name, skc: p.skc });
+    return {
+      trafficWatch: readChipCount('商品流量待关注'),
+      trafficDecline: countDeclineBadges(),
+      watchItems: products.filter((p) => p.watch).map(pick),
+      declineItems: products.filter((p) => p.decline).map(pick),
+      gridReady: !!document.querySelector('[data-testid="beast-core-table-body-tr"]'),
+    };
+  }, DOM_HELPERS);
+}
+
+/**
+ * 主动点「商品流量待关注」筛选捞明细（对齐插件 scanWatchList）
+ */
+export async function scanWatchList(page) {
+  const result = await page.evaluate(async (helpers) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    const chip = findWatchChip();
+    if (!chip) return { items: [], applied: false, total: null, msg: '未找到待关注 chip' };
+    const before = readTotalCount();
+    realClick(clickableAncestor(chip));
+    await waitFor(() => {
+      const t = readTotalCount();
+      return t != null && before != null && t !== before ? t : null;
+    }, 8000, 300);
+    await sleep(1200);
+    const after = readTotalCount();
+    const applied = after != null && before != null && after !== before && after <= before;
+    let items = [];
+    if (applied) {
+      items = scanProducts().map((p) => ({ productId: p.productId, name: p.name, skc: p.skc }));
+    }
+    if (applied) realClick(clickableAncestor(chip));
+    clickReset();
+    await waitFor(() => {
+      const t = readTotalCount();
+      return t != null && before != null && t >= before ? t : null;
+    }, 6000, 300);
+    await sleep(600);
+    return { items, applied, total: after, before };
+  }, DOM_HELPERS);
+  log.info(
+    `scanWatchList: applied=${result.applied} items=${(result.items || []).length} total=${result.total}`,
+  );
+  return result;
+}
+
+/** 读在售 tab 数字 */
+export async function readOnSaleTabCount(page) {
+  return page.evaluate((helpers) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    return readTabCount('^在售中');
+  }, DOM_HELPERS);
+}
+
+export async function waitForGrid(page, timeout = 20000) {
+  await page
+    .locator('[data-testid="beast-core-table-body-tr"]')
+    .first()
+    .waitFor({ state: 'visible', timeout })
+    .catch(() => {});
+}

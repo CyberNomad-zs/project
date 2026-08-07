@@ -1,0 +1,83 @@
+# -*- coding: utf-8 -*-
+"""
+只读实测：验证 vxe-table 全选行为，解决“12 行复选框 is--disabled”之谜。
+流程：进 orderShip（默认=待处理）-> 等 vxe 表格与总数加载 -> 读总数/行数
+      -> 点【表头全选】-> 数实际被勾选的行 -> 读工具栏“物流下单”按钮是否可用。
+不点物流下单，不做任何变更。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        fr = page.main_frame
+
+        # 等 vxe 行渲染出来（总数>0 或出现行）
+        total = 0
+        for _ in range(30):
+            time.sleep(1)
+            total = fr.evaluate(r"""() => {
+                const els=[...document.querySelectorAll('.total_style')].map(e=>parseInt(e.innerText||'0',10)).filter(n=>!isNaN(n));
+                return els.length? Math.max(...els): 0;
+            }""")
+            if total > 0:
+                break
+        rows = fr.evaluate("() => document.querySelectorAll('.vxe-body--row').length")
+        print(f"总数(total_style 最大值)={total}  vxe-body--row 元素数={rows}")
+
+        # 表头全选框状态与定位
+        head = fr.evaluate(r"""() => {
+            const th=document.querySelector('.vxe-header--column.col--checkbox');
+            if(!th) return {found:false};
+            const cb=th.querySelector('.vxe-cell--checkbox');
+            return {found:true, disabled: cb? cb.className.includes('is--disabled'): null,
+                    cls: cb? cb.className: null};
+        }""")
+        print("表头全选框:", head)
+
+        # 行复选框禁用统计
+        cbstat = fr.evaluate(r"""() => {
+            const cells=[...document.querySelectorAll('.vxe-body--column.col--checkbox .vxe-cell--checkbox')];
+            const dis=cells.filter(c=>c.className.includes('is--disabled')).length;
+            return {row_cb_total: cells.length, row_cb_disabled: dis};
+        }""")
+        print("行复选框:", cbstat)
+
+        # 点表头全选
+        checked_before = fr.evaluate("() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length")
+        clicked = False
+        th = fr.query_selector(".vxe-header--column.col--checkbox .vxe-cell--checkbox")
+        if th:
+            try:
+                th.click(); clicked = True
+            except Exception as e:
+                print("点表头全选异常:", e)
+        time.sleep(2)
+        checked_after = fr.evaluate("() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length")
+        print(f"点全选: clicked={clicked}  勾选前={checked_before}  勾选后={checked_after}")
+
+        # 物流下单按钮状态
+        btn = fr.evaluate(r"""() => {
+            const bs=[...document.querySelectorAll('button, .el-button, [class*=btn]')]
+                .filter(b=>(b.innerText||'').replace(/\s+/g,'').includes('物流下单'));
+            return bs.map(b=>({txt:(b.innerText||'').trim().replace(/\s+/g,' '),
+                               disabled: b.disabled || b.className.includes('is-disabled') || b.className.includes('disabled')}));
+        }""")
+        print("物流下单按钮:", btn)
+
+        print("\nDONE，浏览器保持 20 秒（可人工核对勾选状态）。")
+        time.sleep(20)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

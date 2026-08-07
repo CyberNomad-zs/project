@@ -1,0 +1,21 @@
+# -*- coding: utf-8 -*-
+import cv2, os
+VID = r"E:\project\海外仓\2026-07-08 09-47-00.mp4"
+OUT = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\cb8e0d45-d92d-43e4-9eab-a459f923bdd8\scratchpad\frames2"
+os.makedirs(OUT, exist_ok=True)
+cap = cv2.VideoCapture(VID)
+fps = cap.get(cv2.CAP_PROP_FPS)
+total = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+dur = total / fps
+print("fps=", fps, "时长(s)=", round(dur, 1))
+# 4:52 = 292s 到结尾，每 1.5s 一帧
+sec = 288
+while sec <= int(dur):
+    cap.set(cv2.CAP_PROP_POS_MSEC, sec * 1000)
+    ok, frame = cap.read()
+    if ok:
+        p = os.path.join(OUT, f"t{sec:03d}.jpg")
+        cv2.imwrite(p, frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        print("saved", p)
+    sec += 2
+cap.release()

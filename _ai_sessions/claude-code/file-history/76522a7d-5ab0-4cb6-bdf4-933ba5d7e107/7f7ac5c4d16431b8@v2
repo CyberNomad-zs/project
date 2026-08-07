@@ -1,0 +1,156 @@
+# TK 驾驶舱 · 飞书仪表盘搭法（模块 2 / 3）
+
+> 日期：2026-08-03  
+> Base：`C1iHbw6TVad6rUsbZnbc2gSDnHg`  
+> 方案全文：[TK-飞书驾驶舱建表方案](./TK-飞书驾驶舱建表方案.md)
+
+---
+
+## 1. 表与当前数据
+
+| 表 | table_id | 打开 | 当前数据 |
+|----|----------|------|------------------------|
+| T1 店铺日经营 | `tblwh7EVeAFPfvuy` | [链接](https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg?table=tblwh7EVeAFPfvuy) | **5 行**（广告日 rollup 回退；`shop_daily` 仍为 0） |
+| T2 广告活动日明细 | `tblXaQ871ZcrrTPL` | [链接](https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg?table=tblXaQ871ZcrrTPL) | **26 行**（2026-07-26～07-29，真实活动） |
+| 异常任务 | `tblstt4IVNJihCd3` | [链接](https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg?table=tblstt4IVNJihCd3) | **19 行**（PG `fact_tk_anomaly_task`，2026-08-04 起同步） |
+
+仪表盘坏组件重绑步骤见：[TK-飞书驾驶舱-仪表盘重绑清单](./TK-飞书驾驶舱-仪表盘重绑清单.md)。  
+AI 素材 S/A/B/C/D 与 T1/T2 分离说明见：[TK-AI素材分级-数据链路评估](./TK-AI素材分级-数据链路评估.md)。
+
+**PG 现状：**
+
+| 表 | 行数 | 说明 |
+|----|------|------|
+| `tk.fact_ads_campaign_daily` | 26 | SHOP INOUT / Deal to deal（+1 smoke） |
+| `tk.fact_tiktok_shop_daily` | 0 | 需跑 shop-modules 日更 |
+| health / finance | 0 | 同上 |
+
+T1 回退口径：**销售额 ≈ 广告销售额**（仅广告有数时）；跑通 shop-modules 后同步会优先真实 GMV。
+
+---
+
+## 2. 推荐视图（API 可建空视图，筛选在 UI 补）
+
+脚本：`python scripts/feishu-tk-create-views.py`
+
+### T1 店铺日经营
+
+| 视图名 | 建议筛选 / 排序 |
+|--------|-----------------|
+| 昨日全店 | 日期 = 昨天；按「销售额」降序 |
+| 近7日明细 | 日期 在 最近 7 天；按日期、店铺 |
+| 低ROI店 | 广告ROI &lt; 3 且 广告花费 &gt; 0 |
+| 健康预警 | 健康分 有值且 &lt; 阈值（有 health 数据后） |
+
+### T2 广告活动日明细
+
+| 视图名 | 建议筛选 / 排序 |
+|--------|-----------------|
+| 昨日花费Top | 日期 = 昨天；按「广告花费」降序 |
+| 低效亏损 | 盈亏标签 = 低效亏损；按花费降序 |
+| 高ROI | 盈亏标签 = 高ROI |
+| 预算将尽 | 预算消耗率 &gt; 0.8 |
+
+条件格式建议：盈亏标签「低效亏损」红、「高ROI」绿；广告ROI &lt; 3 红。
+
+---
+
+## 3. 仪表盘页（飞书 UI 拖拽）
+
+飞书：**多维表格 → 仪表盘 → 新建**（一个 Base 可多页）。
+
+### D1 · 多店对比（模块 2）
+
+数据源：**T1**
+
+| 组件 | 配置要点 |
+|------|----------|
+| 筛选器 | 日期范围、店铺 |
+| 数字卡 ×4 | 销售额求和、订单量求和、广告花费求和、广告ROI（**勿对 ROI 直接平均**；可用「广告销售额求和/广告花费求和」或只看单日） |
+| 条形图 | 维度=店铺，指标=销售额 / 广告花费 |
+| 折线图 | 维度=日期，指标=销售额或广告花费（可对比多店） |
+| 数据表 | 绑「昨日全店」视图 |
+
+### D2 · 广告投放（模块 3）
+
+数据源：**T1 数字卡 + T2 明细**
+
+| 组件 | 配置要点 |
+|------|----------|
+| 数字卡 | T2：广告花费求和、销售额求和；ROI 用求和重算或单日 |
+| 条形 | T2 花费 Top（维度=品名） |
+| 数据表 | 「低效亏损」「高ROI」视图 |
+| 可选 | 预算消耗率条形 / 条件色 |
+
+---
+
+## 4. 日常同步
+
+```powershell
+# 仓库根（推荐）
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -LookbackDays 30
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -DryRun
+
+# 或直接 Python
+.\backend\.venv\Scripts\python.exe .\scripts\feishu_tk_daily_sync.py --lookback-days 14
+.\backend\.venv\Scripts\python.exe .\scripts\feishu_tk_daily_sync.py --dry-run
+.\backend\.venv\Scripts\python.exe .\scripts\feishu_tk_daily_sync.py --shop-only
+```
+
+顺序：先 `tk_ads_campaign`，再 `tk_shop_daily`（无 shop 行则广告 rollup 回退），再 `tk_anomaly_task`。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AnomalyOnly
+```
+
+或 HTTP（需登录 token）：
+
+```http
+POST /api/v1/export/feishu
+{"table_key":"tk_ads_campaign","run_inline":true,"lookback_days":14,"limit":2000}
+{"table_key":"tk_shop_daily","run_inline":true,"lookback_days":14,"limit":500}
+{"table_key":"tk_anomaly_task","run_inline":true,"lookback_days":90,"limit":2000}
+```
+
+**Windows 计划任务示例（采集完成后）：**
+
+```text
+触发器：每天 19:00（orders/products/shop 之后）
+操作：powershell -ExecutionPolicy Bypass -File E:\project\清泉跨境系统（企业级）\scripts\feishu-tk-daily-sync.ps1 -LookbackDays 7
+```
+
+---
+
+## 5. 补齐真实店 KPI（T1 不再靠广告回退）
+
+```powershell
+cd collectors\tiktok-ads
+.\scripts\run-shop-modules.ps1
+# 确认 PG：
+#   select count(*), min(biz_date), max(biz_date) from tk.fact_tiktok_shop_daily;
+# 再同步：
+cd ..\..
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -ShopOnly -LookbackDays 14
+```
+
+有 `shop_daily` 行后，同步 **不会** 再走 ads fallback（主查询有行即用主查询）。
+
+---
+
+## 6. 验收清单（模块 2 / 3）
+
+| # | 项 | 状态 |
+|---|----|------|
+| 1 | T1/T2 字段齐全 | ✅ 已建 |
+| 2 | T2 有活动明细 | ✅ 26 行 |
+| 3 | T1 有多店日行 | ✅ 5 行（回退） |
+| 4 | 视图名就绪 | ✅ 已建（筛选条件 ⬜ UI） |
+| 5 | D1/D2 仪表盘 | ⬜ 飞书 UI |
+| 6 | 视图筛选条件 | ⬜ 飞书 UI |
+| 7 | shop_daily 真实 GMV | ⬜ 采集 |
+| 8 | 日更计划任务 | ⬜ 装机 |
+
+---
+
+**安全：** App Secret 仅在本机 `.env`；勿提交 Git；泄露则在开放平台重置。

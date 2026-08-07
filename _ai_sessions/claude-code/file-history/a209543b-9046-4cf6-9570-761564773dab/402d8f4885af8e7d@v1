@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Browser login state (cookies / App-Bound encrypted profile — machine-local)
+**/.userdata/
+temu-monitor/.userdata/
+
+# Runtime data, logs, diagnostics
+**/logs/
+temu-monitor/logs/
+temu-monitor/data/
+temu-monitor/capture/
+
+# Local secrets / real config (commit config.example.json instead)
+temu-monitor/config.json
+**/.env
+**/.env.*
+!**/.env.example
+
+# Extension signing key (NEVER commit)
+*.pem
+temu-plugin.pem
+
+# Built extension packages (optional redistribute; not source)
+*.crx
+temu-plugin.crx
+temu-plugin.zip
+_dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log

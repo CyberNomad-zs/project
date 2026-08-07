@@ -1,0 +1,351 @@
+#!/usr/bin/env python
+"""将产品主档案 Excel 导入飞书多维表。
+
+用法:
+  python scripts/import_product_master.py                    # 完整导入
+  python scripts/import_product_master.py --dry-run          # 仅分析不创建
+  python scripts/import_product_master.py --analyze-only     # 仅打印数据摘要
+"""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+import openpyxl
+from app.clients.feishu import FeishuClient
+from app.config import get_settings
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("import_product_master")
+
+# ── 列映射: Excel 列名 → (飞书字段名, 飞书字段类型, property) ──
+# type: 1=文本, 2=数字, 3=单选, 5=日期
+FIELD_DEFS: list[tuple[str, str, int, dict[str, Any] | None]] = [
+    ("主键", "主键", 1, None),
+    ("产品名称", "产品名称", 1, None),
+    ("SKU", "SKU", 1, None),
+    ("ASIN", "ASIN", 1, None),
+    ("店铺", "店铺", 1, None),
+    ("第一负责人（运营）", "第一负责人", 1, None),
+    ("第二负责人（主管）", "第二负责人", 1, None),
+    ("产品等级先不填", "产品等级", 3, {"options": []}),  # 动态收集
+    ("产品状态", "产品状态", 3, {"options": []}),  # 动态收集
+    ("上架日期", "上架日期", 5, None),
+    ("产品角色", "产品角色", 3, {"options": []}),  # 动态收集
+    ("当前目标", "当前目标", 1, None),
+    ("当前售价", "当前售价", 2, None),
+    ("采购成本", "采购成本", 2, None),
+    ("头程成本", "头程成本", 2, None),
+    ("配送FBA/FBM", "配送方式", 3, {"options": []}),  # 动态收集
+    ("毛利率(公式)", "毛利率", 2, None),
+    ("库存天数", "库存天数", 2, None),
+    ("补货预警线", "补货预警线", 2, None),
+    ("供应商编号，暂不填", "供应商编号", 1, None),
+    ("主要竞品ASIN（5个）", "主要竞品ASIN", 1, None),
+    ("竞品价格/评分简述", "竞品价格评分", 1, None),
+    ("核心卖点", "核心卖点", 1, None),
+    ("差异化", "差异化", 1, None),
+    ("核心关键词", "核心关键词", 1, None),
+    ("高转化词", "高转化词", 1, None),
+    ("亏损词/否定词", "亏损词否定词", 1, None),
+    ("广告结构摘要", "广告结构摘要", 1, None),
+    ("ACOS红线", "ACOS红线", 2, None),
+    ("不能随意调整项", "不能随意调整项", 1, None),
+    ("历史坑点", "历史坑点", 1, None),
+    ("操作禁忌", "操作禁忌", 1, None),
+    ("主要差评点", "主要差评点", 1, None),
+    ("当前主要风险", "当前主要风险", 1, None),
+    ("下一步动作", "下一步动作", 1, None),
+    ("最近复盘日期", "最近复盘日期", 5, None),
+    ("档案完整度(公式)", "档案完整度", 2, None),
+]
+
+EXCEL_PATH = Path(r"C:\Users\Administrator\Downloads\日报提交.xlsx")
+SHEET_NAME = "02_产品主档案"
+HEADER_ROW = 3
+DATA_START_ROW = 4
+
+# 单选字段对应的列名（飞书字段名 → Excel 列名）
+SINGLE_SELECT_COLS = {
+    "产品等级": "产品等级先不填",
+    "产品状态": "产品状态",
+    "产品角色": "产品角色",
+    "配送方式": "配送FBA/FBM",
+}
+
+
+def parse_date(val: Any) -> int | None:
+    """Convert Excel date value to Feishu millisecond timestamp."""
+    if val is None:
+        return None
+    if isinstance(val, datetime):
+        return int(val.replace(tzinfo=timezone.utc).timestamp() * 1000)
+    if isinstance(val, str):
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(val.strip(), fmt)
+                return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+            except ValueError:
+                continue
+    return None
+
+
+def safe_num(val: Any) -> float | None:
+    """Convert to float, skip None/empty/formula errors."""
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def read_excel() -> tuple[list[dict[str, Any]], dict[str, set[str]]]:
+    """Read product master from Excel. Returns (rows, single_select_values)."""
+    wb = openpyxl.load_workbook(EXCEL_PATH, data_only=True)
+    ws = wb[SHEET_NAME]
+
+    # Map Excel header -> column index
+    excel_cols: dict[str, int] = {}
+    for c in range(1, ws.max_column + 1):
+        h = ws.cell(row=HEADER_ROW, column=c).value
+        if h:
+            excel_cols[str(h).strip()] = c
+
+    # Collect single-select options from data
+    single_values: dict[str, set[str]] = {k: set() for k in SINGLE_SELECT_COLS}
+
+    rows: list[dict[str, Any]] = []
+    for row_idx in range(DATA_START_ROW, ws.max_row + 1):
+        asin = ws.cell(row=row_idx, column=excel_cols.get("ASIN", 0)).value
+        if not asin:
+            continue
+        shop = str(ws.cell(row=row_idx, column=excel_cols.get("店铺", 0)).value or "").strip()
+        asin_str = str(asin).strip()
+
+        row: dict[str, Any] = {}
+        for excel_name, feishu_name, ftype, _ in FIELD_DEFS:
+            if excel_name == "主键":
+                row["主键"] = f"{shop}|{asin_str}"
+                continue
+
+            col_idx = excel_cols.get(excel_name)
+            if col_idx is None:
+                continue
+            val = ws.cell(row=row_idx, column=col_idx).value
+
+            if ftype == 2:  # number
+                row[feishu_name] = safe_num(val)
+            elif ftype == 5:  # date
+                row[feishu_name] = parse_date(val)
+            elif ftype == 3:  # single select
+                sv = str(val).strip() if val else ""
+                # 过滤 Excel 错误值
+                if sv and sv not in ("#N/A", "#VALUE!", "#REF!", "#DIV/0!", "#NAME?", "#NULL!", "#NUM!"):
+                    single_values[feishu_name].add(sv)
+                else:
+                    sv = ""
+                row[feishu_name] = sv or None
+            else:  # text
+                row[feishu_name] = str(val).strip() if val else None
+
+        rows.append(row)
+
+    wb.close()
+    return rows, single_values
+
+
+def analyze_data(rows: list[dict[str, Any]], single_values: dict[str, set[str]]) -> None:
+    """Print data summary."""
+    print(f"\n{'='*60}")
+    print(f"产品记录数: {len(rows)}")
+
+    # Count by shop
+    shops: dict[str, int] = {}
+    for r in rows:
+        s = r.get("店铺") or "未知"
+        shops[s] = shops.get(s, 0) + 1
+    print(f"\n店铺分布:")
+    for s, c in sorted(shops.items(), key=lambda x: -x[1]):
+        print(f"  {s}: {c}")
+
+    # Count by status
+    statuses: dict[str, int] = {}
+    for r in rows:
+        s = r.get("产品状态") or "未知"
+        statuses[s] = statuses.get(s, 0) + 1
+    print(f"\n产品状态分布:")
+    for s, c in sorted(statuses.items(), key=lambda x: -x[1]):
+        print(f"  {s}: {c}")
+
+    # Count by role
+    roles: dict[str, int] = {}
+    for r in rows:
+        s = r.get("产品角色") or "未知"
+        roles[s] = roles.get(s, 0) + 1
+    print(f"\n产品角色分布:")
+    for s, c in sorted(roles.items(), key=lambda x: -x[1]):
+        print(f"  {s}: {c}")
+
+    # Count by owner
+    owners: dict[str, int] = {}
+    for r in rows:
+        o = r.get("第一负责人") or "未知"
+        owners[o] = owners.get(o, 0) + 1
+    print(f"\n负责人分布:")
+    for o, c in sorted(owners.items(), key=lambda x: -x[1]):
+        print(f"  {o}: {c}")
+
+    # Single select values
+    print(f"\n单选字段可选值:")
+    for fname, vals in single_values.items():
+        print(f"  {fname}: {sorted(vals)}")
+
+
+def create_and_import(
+    rows: list[dict[str, Any]],
+    single_values: dict[str, set[str]],
+    *,
+    dry_run: bool = False,
+) -> str | None:
+    """Create Feishu table and import data. Returns table_id."""
+    settings = get_settings()
+    if not settings.has_feishu:
+        logger.error("缺少飞书凭证")
+        return None
+
+    app_token = settings.feishu_bitable_app_token
+    if not app_token:
+        logger.error("缺少 FEISHU_BITABLE_APP_TOKEN")
+        return None
+
+    TABLE_NAME = "产品主档案"
+
+    # ── Build field definitions with single-select options ──
+    fields_for_create: list[dict[str, Any]] = []
+    for excel_name, feishu_name, ftype, prop in FIELD_DEFS:
+        field_def: dict[str, Any] = {"field_name": feishu_name, "type": ftype}
+        if ftype == 3:
+            options = sorted(single_values.get(feishu_name, set()))
+            field_def["property"] = {"options": [{"name": o} for o in options]}
+        fields_for_create.append(field_def)
+
+    with FeishuClient(settings) as client:
+        # ── Check if table already exists ──
+        existing_tables = client.list_tables(app_token)
+        existing_table_id = None
+        for t in existing_tables:
+            if t.get("name") == TABLE_NAME:
+                existing_table_id = t.get("table_id")
+                break
+
+        if existing_table_id:
+            logger.info("产品主档案表已存在: %s", existing_table_id)
+            if dry_run:
+                return existing_table_id
+        else:
+            if dry_run:
+                logger.info("[DRY-RUN] 将创建表 [%s] 含 %d 字段", TABLE_NAME, len(fields_for_create))
+                return None
+
+            # ── Create table ──
+            logger.info("创建表 [%s] 含 %d 字段...", TABLE_NAME, len(fields_for_create))
+            resp = client.create_table(app_token, TABLE_NAME, fields_for_create)
+            table_id = resp.get("table_id")
+            if not table_id:
+                logger.error("创建表失败: %s", resp)
+                return None
+            logger.info("✅ 表已创建: %s", table_id)
+            time.sleep(1)
+
+            existing_table_id = table_id
+
+        # ── Import data ──
+        logger.info("准备导入 %d 条记录...", len(rows))
+        payload = []
+        for r in rows:
+            fields = {}
+            for _, feishu_name, _, _ in FIELD_DEFS:
+                if feishu_name in r and r[feishu_name] is not None:
+                    fields[feishu_name] = r[feishu_name]
+            # Remove empty fields to avoid Feishu validation errors
+            fields = {k: v for k, v in fields.items() if v is not None and v != ""}
+            if fields:
+                payload.append(fields)
+
+        if dry_run:
+            logger.info("[DRY-RUN] 将导入 %d 条记录", len(payload))
+            return existing_table_id
+
+        # Use smaller batches with error handling
+        total_created = 0
+        total_updated = 0
+        batch_size = 20
+        for i in range(0, len(payload), batch_size):
+            chunk = payload[i : i + batch_size]
+            try:
+                stats = client.upsert_by_text_key(
+                    app_token, existing_table_id, chunk, key_field="主键", batch_size=batch_size
+                )
+                total_created += stats.get("created", 0)
+                total_updated += stats.get("updated", 0)
+                logger.info("  批次 %d/%d: create=%d update=%d",
+                           min(i + batch_size, len(payload)), len(payload),
+                           stats.get("created", 0), stats.get("updated", 0))
+            except Exception as e:
+                logger.error("  批次 %d/%d 失败: %s", min(i + batch_size, len(payload)), len(payload), e)
+                # Try record by record to find the problematic one
+                for record in chunk:
+                    try:
+                        stats = client.upsert_by_text_key(
+                            app_token, existing_table_id, [record], key_field="主键", batch_size=1
+                        )
+                        total_created += stats.get("created", 0)
+                        total_updated += stats.get("updated", 0)
+                    except Exception as e2:
+                        logger.error("    记录 [%s] 失败: %s", record.get("主键", "?"), e2)
+            time.sleep(0.3)
+
+        logger.info("✅ 导入完成: create=%d update=%d", total_created, total_updated)
+
+        return existing_table_id
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="导入产品主档案到飞书")
+    parser.add_argument("--dry-run", action="store_true", help="仅检测")
+    parser.add_argument("--analyze-only", action="store_true", help="仅分析数据")
+    args = parser.parse_args()
+
+    # Read Excel
+    rows, single_values = read_excel()
+    analyze_data(rows, single_values)
+
+    if args.analyze_only:
+        return
+
+    table_id = create_and_import(rows, single_values, dry_run=args.dry_run)
+
+    if table_id:
+        print(f"\n{'='*60}")
+        print(f"飞书产品主档案表 ID: {table_id}")
+        print(f"请将以下配置添加到 .env:")
+        print(f"  FEISHU_TABLE_PRODUCT_MASTER={table_id}")
+        if args.dry_run:
+            print("\n⚠️  DRY-RUN 模式。去掉 --dry-run 执行实际导入。")
+
+
+if __name__ == "__main__":
+    main()

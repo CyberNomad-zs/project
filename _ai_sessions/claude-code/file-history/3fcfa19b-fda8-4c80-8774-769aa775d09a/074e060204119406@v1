@@ -1,0 +1,46 @@
+# 复制为 config.yaml 后填写。config.yaml 含密钥，不要提交到版本库。
+
+customer:
+  name: 经贸商贸            # WMS 客户名，仅用于日志/告警标识
+
+sellfox:
+  base_url: https://openapi.sellfox.com
+  client_id: ""             # 赛狐开放平台申请
+  client_secret: ""
+
+wms:
+  base_url: ""              # WMS 部署地址，如 https://wms.example.com
+  key: 0                    # wms_user_account_info.id（经贸商贸的账号主键）
+  api_secret: ""            # wms_user_account_info.api_secret
+
+run:
+  poll_interval_sec: 300    # 主循环间隔
+  purchase_date_days: 7     # 拉单回看窗口（天）
+  shop_whitelist: []        # 灰度：只处理这些店铺ID；空 = 全部
+  auto_apply_track_no: true # false 则只选渠道+指派，下单仍由人工在赛狐点击
+  ship_confirm_mode: weighing   # weighing=称重发货(需重量) / quick=快速出库(无需重量)
+  default_weight_unit: g
+
+# 渠道决策：按目的国匹配，命中多条时选 cost 最低且未停用的。
+# sellfox_provider_auth_detail_id 从"查询物流渠道列表"接口获取（logisticsType=1）。
+# warehouse_id 从赛狐"查询仓库列表"接口获取。
+warehouse:
+  sellfox_warehouse_id: 0   # 昇新仓库在赛狐里的 warehouseId
+  is_oversea: "1"
+
+channels:
+  - name: BLACKCAT-RM
+    sellfox_provider_auth_detail_id: 0
+    countries: [GB]         # 适用目的国（二字码）
+    max_weight_g: 2000
+    cost_per_kg: 0          # 价卡：本地维护
+    base_cost: 0
+    enabled: true
+  # - name: 其他渠道...
+
+# SKU 预估重量（g），称重发货缺实际重量时的兜底；组合商品按子SKU汇总
+sku_weights: {}
+  # JMCAT4DKQ: 350
+
+notify:
+  feishu_webhook: ""        # 飞书群机器人 webhook，空则只写日志

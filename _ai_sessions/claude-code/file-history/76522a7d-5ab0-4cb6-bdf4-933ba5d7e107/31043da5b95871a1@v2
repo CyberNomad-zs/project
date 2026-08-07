@@ -1,0 +1,479 @@
+"""TK 视频内容异常：从 fact_tiktok_content_daily 窗口快照生成 anomaly task。
+
+规则（P2.3 · ② 视频内容分析）：
+  - content_gmv_drop     归因 GMV 较上一窗口下降 ≥ 阈值
+  - content_play_drop    播放或曝光较上一窗口下降 ≥ 阈值
+  - content_imp_no_order 有曝/有播无归因成交（GMV=0 且 SKU 订单=0）
+
+语义：biz_date 是窗口锚点；对比同一 content_id 在更早 biz_date 的最近一条快照。
+禁止把「近 7 天」拆成 7 日再环比。
+
+跳过：测试店名；基线过低；无 content_id。
+幂等：dedupe = tiktok:{shop_ext}:{content_id}:{code}
+异常域：object_type=content（任务台筛「视频内容」）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings, get_settings
+from app.domain import tk_anomaly
+
+
+def _f(v: Any) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _drop_ratio(curr: float | None, prev: float | None) -> float | None:
+    """返回环比下降比例 (prev-curr)/prev；上涨或无法算返回 None。"""
+    if curr is None or prev is None:
+        return None
+    if prev <= 0:
+        return None
+    if curr >= prev:
+        return None
+    return (prev - curr) / prev
+
+
+def _priority_for_drop(ratio: float, *, p0_ratio: float = 0.5) -> str:
+    if ratio >= p0_ratio:
+        return "P0"
+    if ratio >= 0.2:
+        return "P1"
+    return "P2"
+
+
+def _title_short(title: str | None, n: int = 28) -> str:
+    t = (title or "").strip()
+    if not t:
+        return ""
+    return t if len(t) <= n else t[: n - 1] + "…"
+
+
+def classify_content_pair(
+    curr: dict[str, Any],
+    prev: dict[str, Any] | None,
+    *,
+    gmv_drop_ratio: float,
+    play_drop_ratio: float,
+    min_gmv_base: float,
+    min_play_base: float,
+    min_impressions_for_no_order: float,
+    p0_drop_ratio: float = 0.5,
+) -> list[dict[str, Any]]:
+    """对比当日与上一窗口 content 行，返回命中异常列表。"""
+    shop_ext = str(curr.get("shop_external_id") or "").strip()
+    content_id = str(curr.get("content_id") or "").strip()
+    if not shop_ext or not content_id:
+        return []
+
+    shop_name = str(curr.get("shop_name") or shop_ext).strip()
+    low = shop_name.lower()
+    if "schema-tk-smoke" in low or low.startswith("[test]"):
+        return []
+
+    title = str(curr.get("content_title") or "").strip()
+    title_bit = _title_short(title) or content_id
+    currency = curr.get("currency") or (prev or {}).get("currency") or "GBP"
+    biz = curr.get("biz_date")
+    channel = str(curr.get("channel") or "short_video")
+
+    curr_gmv = _f(curr.get("attributed_gmv")) or 0.0
+    curr_orders = _f(curr.get("attributed_sku_orders")) or 0.0
+    curr_play = _f(curr.get("play_count"))
+    curr_imp = _f(curr.get("impressions"))
+
+    hits: list[dict[str, Any]] = []
+
+    # —— 有曝无单：不依赖 prev ——
+    exp_metric = curr_imp if curr_imp is not None else curr_play
+    if (
+        exp_metric is not None
+        and exp_metric >= min_impressions_for_no_order
+        and curr_gmv <= 0
+        and curr_orders <= 0
+    ):
+        metric = (
+            f"impressions={curr_imp} play={curr_play} gmv=0 orders=0 "
+            f"channel={channel} content_id={content_id}"
+        )
+        hits.append(
+            {
+                "anomaly_code": "content_imp_no_order",
+                "priority": "P1",
+                "summary": f"视频有曝无单 · {shop_name} · {title_bit}",
+                "metric_snapshot": metric,
+                "detail": (
+                    f"{biz} 视频 {content_id} 曝光/播放={exp_metric:.0f} "
+                    f"但归因 GMV/SKU 订单均为 0（阈值曝光≥{min_impressions_for_no_order:.0f}）"
+                ),
+            }
+        )
+
+    if not prev:
+        return hits
+
+    prev_biz = prev.get("biz_date")
+    prev_gmv = _f(prev.get("attributed_gmv"))
+    prev_play = _f(prev.get("play_count"))
+    prev_imp = _f(prev.get("impressions"))
+
+    gmv_ratio = _drop_ratio(curr_gmv if curr.get("attributed_gmv") is not None else None, prev_gmv)
+    # 当 curr attributed_gmv 为 None 时 _f 上面已变 0；用原始是否 None 区分「无字段」
+    if curr.get("attributed_gmv") is None and prev_gmv is not None:
+        gmv_ratio = _drop_ratio(0.0, prev_gmv)
+
+    if (
+        gmv_ratio is not None
+        and prev_gmv is not None
+        and prev_gmv >= min_gmv_base
+        and gmv_ratio >= gmv_drop_ratio
+    ):
+        pri = _priority_for_drop(gmv_ratio, p0_ratio=p0_drop_ratio)
+        pct = gmv_ratio * 100
+        metric = (
+            f"gmv={curr_gmv:.2f} prev_gmv={prev_gmv:.2f} drop={pct:.1f}% "
+            f"currency={currency} prev_date={prev_biz} content_id={content_id}"
+        )
+        hits.append(
+            {
+                "anomaly_code": "content_gmv_drop",
+                "priority": pri,
+                "summary": f"视频归因GMV骤降 · {shop_name} · {title_bit}",
+                "metric_snapshot": metric,
+                "detail": (
+                    f"{biz} 视频 {content_id} 归因 GMV {curr_gmv:.2f}{currency} "
+                    f"较上一窗 {prev_biz} {prev_gmv:.2f} 下降 {pct:.1f}% "
+                    f"（阈值 {gmv_drop_ratio * 100:.0f}%）"
+                ),
+            }
+        )
+
+    # 播放/曝光：取跌幅更大的一侧
+    play_ratio = _drop_ratio(curr_play, prev_play)
+    imp_ratio = _drop_ratio(curr_imp, prev_imp)
+    best_ratio = None
+    best_label = None
+    best_curr = None
+    best_prev = None
+    for label, ratio, c, p in (
+        ("play", play_ratio, curr_play, prev_play),
+        ("impressions", imp_ratio, curr_imp, prev_imp),
+    ):
+        if ratio is None or p is None:
+            continue
+        if p < min_play_base:
+            continue
+        if best_ratio is None or ratio > best_ratio:
+            best_ratio = ratio
+            best_label = label
+            best_curr = c
+            best_prev = p
+
+    if best_ratio is not None and best_ratio >= play_drop_ratio:
+        pri = _priority_for_drop(best_ratio, p0_ratio=p0_drop_ratio)
+        pct = best_ratio * 100
+        metric = (
+            f"{best_label}={best_curr} prev_{best_label}={best_prev} drop={pct:.1f}% "
+            f"prev_date={prev_biz} content_id={content_id}"
+        )
+        hits.append(
+            {
+                "anomaly_code": "content_play_drop",
+                "priority": pri,
+                "summary": f"视频播放/曝光崩 · {shop_name} · {title_bit}",
+                "metric_snapshot": metric,
+                "detail": (
+                    f"{biz} 视频 {content_id} {best_label}={best_curr} "
+                    f"较上一窗 {prev_biz} {best_prev} 下降 {pct:.1f}% "
+                    f"（阈值 {play_drop_ratio * 100:.0f}%）"
+                ),
+            }
+        )
+
+    return hits
+
+
+@dataclass
+class ContentEvalStats:
+    biz_date: str
+    scanned: int = 0
+    hit_gmv_drop: int = 0
+    hit_play_drop: int = 0
+    hit_imp_no_order: int = 0
+    created_or_updated: int = 0
+    skipped: int = 0
+    missing_prev: int = 0
+    errors: list[str] = field(default_factory=list)
+    samples: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "biz_date": self.biz_date,
+            "scanned": self.scanned,
+            "hit_gmv_drop": self.hit_gmv_drop,
+            "hit_play_drop": self.hit_play_drop,
+            "hit_imp_no_order": self.hit_imp_no_order,
+            "created_or_updated": self.created_or_updated,
+            "skipped": self.skipped,
+            "missing_prev": self.missing_prev,
+            "errors": self.errors[:20],
+            "samples": self.samples[:10],
+        }
+
+
+async def resolve_content_biz_date(db: AsyncSession, biz_date: date | None) -> date:
+    if biz_date:
+        return biz_date
+    row = (
+        await db.execute(text("SELECT MAX(biz_date) FROM tk.fact_tiktok_content_daily"))
+    ).first()
+    if row and row[0]:
+        return row[0]
+    return datetime.now(timezone.utc).date()
+
+
+async def fetch_content_daily_rows(
+    db: AsyncSession,
+    *,
+    biz_date: date,
+    shop_external_id: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["biz_date = :biz_date"]
+    params: dict[str, Any] = {"biz_date": biz_date}
+    if shop_external_id:
+        clauses.append("shop_external_id = :shop_external_id")
+        params["shop_external_id"] = shop_external_id
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    id::text,
+                    shop_id::text,
+                    shop_external_id,
+                    shop_name,
+                    biz_date,
+                    channel,
+                    content_id,
+                    content_title,
+                    product_id,
+                    attributed_gmv,
+                    attributed_sku_orders,
+                    attributed_units,
+                    play_count,
+                    impressions,
+                    clicks,
+                    ctr,
+                    cvr,
+                    currency,
+                    source_url
+                FROM tk.fact_tiktok_content_daily
+                WHERE {' AND '.join(clauses)}
+                ORDER BY attributed_gmv DESC NULLS LAST, play_count DESC NULLS LAST, content_id
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def fetch_prev_content_daily_map(
+    db: AsyncSession,
+    *,
+    biz_date: date,
+    keys: list[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    """keys = (shop_external_id, channel, content_id)；取 biz_date 之前最近一条。"""
+    if not keys:
+        return {}
+    shops = sorted({k[0] for k in keys})
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT DISTINCT ON (shop_external_id, channel, content_id)
+                    id::text,
+                    shop_id::text,
+                    shop_external_id,
+                    shop_name,
+                    biz_date,
+                    channel,
+                    content_id,
+                    content_title,
+                    product_id,
+                    attributed_gmv,
+                    attributed_sku_orders,
+                    attributed_units,
+                    play_count,
+                    impressions,
+                    clicks,
+                    ctr,
+                    cvr,
+                    currency,
+                    source_url
+                FROM tk.fact_tiktok_content_daily
+                WHERE shop_external_id = ANY(:shops)
+                  AND biz_date < :biz_date
+                ORDER BY shop_external_id, channel, content_id, biz_date DESC
+                """
+            ),
+            {"shops": shops, "biz_date": biz_date},
+        )
+    ).mappings().all()
+    out: dict[tuple[str, str, str], dict[str, Any]] = {}
+    want = set(keys)
+    for r in rows:
+        k = (
+            str(r["shop_external_id"]),
+            str(r["channel"] or "short_video"),
+            str(r["content_id"]),
+        )
+        if k in want:
+            out[k] = dict(r)
+    return out
+
+
+async def evaluate_content_anomalies(
+    db: AsyncSession,
+    *,
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    project_center_task: bool = True,
+    dry_run: bool = False,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """扫描内容窗口事实并写入/更新 ② 视频内容类异常任务。"""
+    cfg = settings or get_settings()
+    day = await resolve_content_biz_date(db, biz_date)
+    stats = ContentEvalStats(biz_date=day.isoformat())
+    rows = await fetch_content_daily_rows(
+        db, biz_date=day, shop_external_id=shop_external_id
+    )
+    stats.scanned = len(rows)
+
+    gmv_drop_ratio = float(cfg.tk_content_gmv_drop_ratio)
+    play_drop_ratio = float(cfg.tk_content_play_drop_ratio)
+    min_gmv_base = float(cfg.tk_content_min_gmv_base)
+    min_play_base = float(cfg.tk_content_min_play_base)
+    min_imp_no_order = float(cfg.tk_content_min_impressions_no_order)
+    p0_drop_ratio = float(cfg.tk_content_p0_drop_ratio)
+
+    keys = [
+        (
+            str(r.get("shop_external_id") or "").strip(),
+            str(r.get("channel") or "short_video"),
+            str(r.get("content_id") or "").strip(),
+        )
+        for r in rows
+        if r.get("shop_external_id") and r.get("content_id")
+    ]
+    prev_map = await fetch_prev_content_daily_map(db, biz_date=day, keys=keys)
+
+    for row in rows:
+        shop_ext = str(row.get("shop_external_id") or "").strip()
+        content_id = str(row.get("content_id") or "").strip()
+        channel = str(row.get("channel") or "short_video")
+        if not shop_ext or not content_id:
+            stats.skipped += 1
+            continue
+
+        key = (shop_ext, channel, content_id)
+        prev = prev_map.get(key)
+        if not prev:
+            stats.missing_prev += 1
+
+        hits = classify_content_pair(
+            row,
+            prev,
+            gmv_drop_ratio=gmv_drop_ratio,
+            play_drop_ratio=play_drop_ratio,
+            min_gmv_base=min_gmv_base,
+            min_play_base=min_play_base,
+            min_impressions_for_no_order=min_imp_no_order,
+            p0_drop_ratio=p0_drop_ratio,
+        )
+        if not hits:
+            stats.skipped += 1
+            continue
+
+        object_ref = content_id
+        for hit in hits:
+            code = hit["anomaly_code"]
+            if code == "content_gmv_drop":
+                stats.hit_gmv_drop += 1
+            elif code == "content_play_drop":
+                stats.hit_play_drop += 1
+            elif code == "content_imp_no_order":
+                stats.hit_imp_no_order += 1
+
+            sample = {
+                "shop_external_id": shop_ext,
+                "shop_name": row.get("shop_name"),
+                "content_id": content_id,
+                "anomaly_code": code,
+                "priority": hit["priority"],
+                "metric_snapshot": hit["metric_snapshot"],
+                "domain": "视频内容",
+            }
+            if dry_run:
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+                continue
+
+            try:
+                task = await tk_anomaly.create_anomaly_task(
+                    db,
+                    anomaly_code=code,
+                    summary=hit["summary"],
+                    shop_id=row.get("shop_id"),
+                    shop_external_id=shop_ext,
+                    shop_name=row.get("shop_name"),
+                    object_ref=object_ref,
+                    object_type="content",
+                    product_id=row.get("product_id"),
+                    product_name=row.get("content_title"),
+                    priority=hit["priority"],
+                    progress_note=hit["detail"],
+                    metric_snapshot=hit["metric_snapshot"],
+                    biz_date=day,
+                    dedupe_key=f"tiktok:{shop_ext}:{content_id}:{code}",
+                    source_url=row.get("source_url"),
+                    project_center_task=project_center_task,
+                )
+                sample["task_id"] = task.get("id")
+                sample["task_key"] = task.get("task_key")
+                sample["status"] = task.get("status")
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+            except Exception as exc:  # noqa: BLE001 — 单行失败不中断整批
+                stats.errors.append(f"{shop_ext}/{content_id}/{code}: {exc}")
+
+    return {
+        **stats.as_dict(),
+        "thresholds": {
+            "gmv_drop_ratio": gmv_drop_ratio,
+            "play_drop_ratio": play_drop_ratio,
+            "min_gmv_base": min_gmv_base,
+            "min_play_base": min_play_base,
+            "min_impressions_no_order": min_imp_no_order,
+            "p0_drop_ratio": p0_drop_ratio,
+        },
+        "dry_run": dry_run,
+        "domain": "视频内容",
+    }

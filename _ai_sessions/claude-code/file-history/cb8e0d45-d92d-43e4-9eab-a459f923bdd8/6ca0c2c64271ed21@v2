@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""
+只观察：点【物流下单】后弹出的确认/选仓流程长什么样。
+全选 -> 点工具栏物流下单 -> dump 所有可见弹窗文字+按钮 -> 截图。
+【不点任何确认按钮】，看完直接关浏览器 = 放弃提交 = 不产生变更。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def dump_dialogs(fr, tag):
+    print(f"\n===== 弹窗快照 [{tag}] =====")
+    data = fr.evaluate(r"""() => {
+        const sel='.el-dialog__wrapper, .el-message-box__wrapper, .vxe-modal--wrapper, .el-drawer__wrapper';
+        const out=[];
+        document.querySelectorAll(sel).forEach(w=>{
+            const box=w.querySelector('.el-dialog, .el-message-box, .vxe-modal--box, .el-drawer');
+            if(!box) return;
+            if(box.offsetParent===null) return;              // 不可见
+            const title=(w.querySelector('.el-dialog__title, .el-message-box__title, .vxe-modal--header, .el-drawer__title')||{}).innerText||'';
+            const btns=[...box.querySelectorAll('button, .el-button')]
+                .filter(b=>b.offsetParent!==null)
+                .map(b=>({t:(b.innerText||'').trim().replace(/\s+/g,' '),
+                          cls:b.className, dis:b.disabled||/is-disabled|disabled/.test(b.className)}));
+            out.push({title:(title||'').trim(), text:(box.innerText||'').trim().slice(0,500), buttons:btns});
+        });
+        return out;
+    }""")
+    if not data:
+        print("（无可见弹窗）")
+    for i, d in enumerate(data):
+        print(f"[弹窗{i}] 标题={d['title']!r}")
+        print("  正文:", d['text'].replace("\n", " | "))
+        print("  按钮:")
+        for b in d['buttons']:
+            print(f"     - {b['t']!r}  disabled={b['dis']}")
+    return data
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        fr = page.main_frame
+
+        # 等总数加载
+        for _ in range(20):
+            time.sleep(1)
+            n = fr.evaluate("() => {const a=[...document.querySelectorAll('.total_style')].map(e=>parseInt((e.innerText||'0').replace(/\\D/g,''),10)).filter(x=>!isNaN(x)); return a.length?Math.max(...a):0;}")
+            if n > 0:
+                break
+        print("待处理 total =", n)
+
+        # 全选
+        th = fr.query_selector(".vxe-header--column.col--checkbox .vxe-cell--checkbox")
+        th.click(); time.sleep(1.5)
+        checked = fr.evaluate("() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length")
+        print("勾选标记数 =", checked)
+
+        # 点工具栏物流下单（排除行内）
+        clicked = fr.evaluate(r"""() => {
+            const cands=[...document.querySelectorAll('button, .el-button, .base_button_comp, [class*=btn]')]
+              .filter(b => (b.innerText||'').replace(/\s+/g,'')==='物流下单')
+              .filter(b => !b.closest('.vxe-body--row'));
+            if(!cands.length) return false;
+            cands[0].click(); return true;
+        }""")
+        print("点击工具栏物流下单 =", clicked)
+
+        # 分几档时间观察弹窗演变
+        for t in (2, 4, 8):
+            time.sleep(t)
+            dump_dialogs(fr, f"+{t}s")
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_placedialog.png"), full_page=True)
+        print("\n截图:", os.path.join(config.DUMP_DIR, "erp_placedialog.png"))
+        print("【不点确认】保持 25 秒供人工查看，然后关闭放弃提交。")
+        time.sleep(25)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

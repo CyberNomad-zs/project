@@ -1,0 +1,49 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告日更由**同事本机定时**承担。本机 Bridge 已用于 products/orders/finance 实跑。
+
+## 2026-07-31 实跑结果（生产 qingquan.jmzlai.com）
+
+### P2b 商品 ✅
+- 根因1：`run-products` 误用 orderId 去重 → 已修 productId
+- 根因2：商品页 `page visit` 打挂 Bridge → **open+launchUrl，禁止 visit**
+- 根因3：`$PID` 只读变量冲突 → `$prodKey`
+- 价字段：解析 `£76.65促销价：£45.99` 取首个金额；status 截断「在售」
+- 生产：**Gardena 56 + Deal 54**；**price 有值 ≈101/110**，均价 ~£26
+- 入口：`run-products.ps1`（可配 `stores.config.products-one.json`）
+
+### 订单质量 ✅（大体）
+- 采集：不吃物流「送达截止」；只取订单列「星期六 HH:mm」等
+- 客户端：`Resolve-TikTokOrderDateTime` → ISO create_time + biz_date（UTF-8 BOM）
+- 中心：重复幂等键仍 **UPSERT 刷新事实**；SQL 清未来 biz_date + shop_name 对齐主数据
+- 生产：`future_biz=0`；Gardena with_biz≈350/405；Deal≈159/160；店名统一 Gardena / Deal to deal
+- 大批量：ingest **分批 50**；API 已部署
+- 残留：部分订单 createTime 空 → biz_date 仍 null（列表无时间的行）
+
+### P2c/P3 部分
+- **finance_daily**：已 scrape + 入库（Gardena 2026-07-30 pending £4802.64 / refund -159）
+- **shop_daily / health_daily**：URL 通，但 Compass/健康 SPA 常未渲染完（body 只有导航/Key metrics 占位）→ 脚本已加强等待与标签，**待再实页校准**
+- 入口：`run-shop-modules.ps1 -Modules finance_daily`（可先只跑财务）
+
+### 中心 API 已部署
+- `ingest.py`：订单时间解析、shop 主数据名、duplicate refresh UPSERT
+- 健康：`https://qingquan.jmzlai.com/health` ok
+
+## 日常
+
+```powershell
+cd collectors/tiktok-ads
+# 商品（勿对 product/manage 强行 page visit）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1
+# 订单（自动分批上报）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders.ps1
+# 财务先通
+powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1 -Modules finance_daily
+```
+
+## 下一批
+1. Compass / 账号健康：实页等数出齐或换更稳 URL/接口
+2. 订单 null biz_date：详情页或其它时间列
+3. 商品翻页 next（当前多数店一页 ~50）
+4. 提交 `feature/tk-products-kpi` PR

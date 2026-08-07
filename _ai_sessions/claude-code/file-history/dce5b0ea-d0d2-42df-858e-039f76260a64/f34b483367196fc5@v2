@@ -1,0 +1,163 @@
+# -*- coding: utf-8 -*-
+"""
+WMS（海外仓）操作：一件代发 > 平台订单
+流程：筛选未发货 -> 全选 -> 批量修改快递方(按店铺优先级，从上往下) -> 批量发货
+      每个快递方发一轮，失败的留在"未发货"，下一个快递方再发（实现"依次往下试"）。
+DRY_RUN=True 时不真正点击"确认/批量发货"，只记录将要执行的动作。
+"""
+import time
+import config, core
+from core import log, ORDERINFO_WMS
+from rules import courier_priority, ALL_COURIERS
+
+
+def open_platform_orders(page):
+    core.safe_goto(page, ORDERINFO_WMS)
+    time.sleep(4)
+
+
+def count_rows(page):
+    return len(page.query_selector_all(".el-table__row"))
+
+
+def ensure_unshipped_filter(page):
+    """确保状态筛选为'未发货'并查询。页面默认即为未发货，这里点一次查询刷新。"""
+    try:
+        page.click("button:has-text('查询')", timeout=5000)
+        time.sleep(3)
+    except Exception as e:
+        log(f"[WMS] 点击查询失败: {e}")
+
+
+def select_all(page):
+    """勾选表头全选框。无数据时该框禁用，返回 False。"""
+    header_cb = page.query_selector(".el-table__header-wrapper .el-checkbox, .el-table__header .el-checkbox")
+    if not header_cb:
+        return False
+    cls = header_cb.get_attribute("class") or ""
+    if "is-disabled" in cls:
+        return False
+    try:
+        header_cb.click()
+        time.sleep(1)
+        return True
+    except Exception as e:
+        log(f"[WMS] 全选失败: {e}")
+        return False
+
+
+def set_courier(page, courier):
+    """打开'批量修改快递方'弹窗，选择 courier，确认。DRY_RUN 下不点确认。"""
+    try:
+        page.click("button:has-text('批量修改快递方')", timeout=6000)
+    except Exception as e:
+        log(f"[WMS] 打开'批量修改快递方'失败: {e}")
+        return False
+    time.sleep(1.5)
+    # 弹窗内的 快递方 下拉
+    try:
+        page.click(".el-dialog .el-select", timeout=4000)
+        time.sleep(1)
+        # 精确匹配选项文本
+        opt = None
+        for el in page.query_selector_all(".el-select-dropdown__item"):
+            if (el.inner_text() or "").strip() == courier:
+                opt = el; break
+        if not opt:
+            log(f"[WMS] 未找到快递方选项 {courier}")
+            _close_dialog(page)
+            return False
+        opt.click()
+        time.sleep(0.5)
+    except Exception as e:
+        log(f"[WMS] 选择快递方 {courier} 失败: {e}")
+        _close_dialog(page)
+        return False
+
+    if config.DRY_RUN:
+        log(f"[WMS][DRY] 将设置快递方 = {courier}（跳过'确认'）")
+        _close_dialog(page)
+        return True
+    try:
+        page.click(".el-dialog button:has-text('确认')", timeout=4000)
+        time.sleep(2)
+        log(f"[WMS] 已设置快递方 = {courier}")
+        return True
+    except Exception as e:
+        log(f"[WMS] 确认快递方失败: {e}")
+        return False
+
+
+def _close_dialog(page):
+    try:
+        page.click(".el-dialog button:has-text('取消')", timeout=2000)
+    except Exception:
+        try:
+            page.keyboard.press("Escape")
+        except Exception:
+            pass
+    time.sleep(0.5)
+
+
+def batch_ship(page):
+    """点击'批量发货'，处理'预发货成功'提示。DRY_RUN 下不执行。"""
+    if config.DRY_RUN:
+        log("[WMS][DRY] 将点击'批量发货'（已跳过）")
+        return True
+    try:
+        page.click("button:has-text('批量发货')", timeout=6000)
+        time.sleep(2)
+        # 可能的二次确认
+        for t in ["确定", "确认", "ok"]:
+            b = page.query_selector(f".el-message-box__btns button:has-text('{t}'), .el-dialog button:has-text('{t}')")
+            if b:
+                try: b.click(); time.sleep(1)
+                except Exception: pass
+                break
+        # 'Tip: 预发货成功'
+        time.sleep(2)
+        log("[WMS] 已执行批量发货")
+        return True
+    except Exception as e:
+        log(f"[WMS] 批量发货失败: {e}")
+        return False
+
+
+def process_shop(page, account):
+    """处理单个店铺：按快递方优先级逐轮发货。"""
+    priority = courier_priority(account["login"])
+    log(f"[WMS] === 处理店铺 {account['shop']}（{account['login']}），快递方优先级 {priority} ===")
+    if not core.wms_login(page, account):
+        log(f"[WMS] {account['shop']} 登录失败，跳过")
+        return
+    open_platform_orders(page)
+    ensure_unshipped_filter(page)
+
+    total_before = count_rows(page)
+    log(f"[WMS] {account['shop']} 未发货订单 ≈ {total_before} 条")
+    if total_before == 0:
+        log(f"[WMS] {account['shop']} 无未发货订单")
+        return
+
+    limit = config.MAX_ORDERS_PER_RUN
+    for courier in priority:
+        open_platform_orders(page)
+        ensure_unshipped_filter(page)
+        remaining = count_rows(page)
+        if remaining == 0:
+            log(f"[WMS] {account['shop']} 已全部发出")
+            break
+        if limit and remaining > limit:
+            log(f"[WMS][安全] 未发货 {remaining} > 单次上限 {limit}，本轮仅处理需人工确认。建议调大 MAX_ORDERS_PER_RUN 或分批。")
+        log(f"[WMS] 用快递方 [{courier}] 处理剩余 {remaining} 条")
+        if not select_all(page):
+            log("[WMS] 无法全选（可能无数据/禁用）"); break
+        if not set_courier(page, courier):
+            continue
+        batch_ship(page)
+        time.sleep(2)
+
+    open_platform_orders(page)
+    ensure_unshipped_filter(page)
+    left = count_rows(page)
+    log(f"[WMS] {account['shop']} 处理完成，仍未发货 ≈ {left} 条" + ("（DRY_RUN 未真正发货）" if config.DRY_RUN else ""))

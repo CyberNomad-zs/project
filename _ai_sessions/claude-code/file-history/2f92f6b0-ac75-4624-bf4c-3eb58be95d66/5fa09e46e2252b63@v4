@@ -1,0 +1,95 @@
+# 日批定时任务 & 飞书机器人
+
+## 1. Windows 每小时
+
+```powershell
+cd "E:\project\亚马逊平台驾驶舱"
+# 建议管理员 PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1
+```
+
+任务名：`ASIN-Health-Daily`（历史名保留）  
+触发：每小时 1 次  
+实际命令：`scripts\run_daily.ps1` → `python -m app.main once`  
+工作目录：`E:\project\亚马逊平台驾驶舱`（项目搬迁后必须重新注册，否则会指到旧路径）  
+日志：`data\logs\daily_*.log`
+
+### 每小时跑什么 / 不重复发什么
+
+| 步骤 | 每小时 | 说明 |
+|---|---|---|
+| 赛狐 productAnalyze + FBA | ✅ | 默认同步**昨天**业务日 |
+| 规则 → 本地任务 | ✅ | upsert，不重复造同键任务 |
+| 推飞书 ASIN/任务表 | ✅ | 有变更就更新表格 |
+| 负责人推送 | ✅ **新异常及时通知** | 按 `task_id` 去重；只推未通知过的红/橙给对应负责人（可 @） |
+| 群摘要 | ⛔ 同业务日只发 1 次 | 全量摘要防刷屏 |
+| 老板决策通知 | ✅ 按 task_id 去重 | 新勾选才会再发 |
+
+手动试跑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily.ps1
+```
+
+只 dry-run 通知：
+
+```powershell
+$env:ASIN_DAILY_DRY_RUN = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily.ps1
+```
+
+卸载任务：
+
+```powershell
+Unregister-ScheduledTask -TaskName "ASIN-Health-Daily" -Confirm:$false
+```
+
+---
+
+## 2. 飞书群机器人（摘要推送）
+
+1. 打开目标群 → 设置 → 群机器人 → 添加 **自定义机器人**
+2. 安全设置建议：自定义关键词 `ASIN健康度` 或 IP 限制
+3. 复制 Webhook 地址到 `.env`：
+
+```env
+FEISHU_BOT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+```
+
+4. 测试：
+
+```powershell
+python -m app.main notify --date 2026-07-21
+```
+
+未配置 Webhook 时，摘要只写本地 `notify_log`，不报错中断日批。
+
+---
+
+## 3. once 流水线
+
+```text
+productAnalyze V2
+  → FBA 库存合并
+  → 规则 → 异常任务
+  → 推飞书「异常任务」（只更新异常指标列，不覆盖人工动作列）
+  → 按负责人推送待办 + 全量摘要
+  → 负责人在同一任务行补全：是否属实 / 原因 / 采取动作 / 复查日期
+```
+
+> 原「运营动作记录」表已合并进「异常任务」，不再预建独立动作空壳。
+
+对应命令：
+
+```powershell
+python -m app.main once --date 2026-07-21
+python -m app.main once --dry-run-notify   # 不发机器人
+python -m app.main once --no-fba           # 跳过 FBA
+python -m app.main once --no-push-feishu   # 不推任务表
+python -m app.main once --no-owner-notify  # 不按负责人拆分推送
+
+# 仅后半段（任务已生成）
+python -m app.main dispatch --date 2026-07-21 --dry-run-notify
+```
+
+负责人 @：在 `config/config.yaml` → `notify.owner_open_ids` 配置姓名→open_id。

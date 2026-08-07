@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fad98-337a-7e82-8989-ae5a9e1d8f84",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "Ops Knowledge A/B Goal Closing Summary",
+  "created_at": "2026-07-29T11:17:40.885549500Z",
+  "updated_at": "2026-07-29T11:17:51.449526900Z",
+  "num_messages": 27,
+  "num_chat_messages": 17,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 0,
+  "chat_format_version": 1,
+  "session_kind": "subagent",
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "f785fdfd17c283e06404f34b3ce250506a7ea2cb",
+  "head_branch": "main",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-29T11:17:51.449526900Z",
+  "generated_title": "Ops Knowledge A/B Goal Closing Summary",
+  "agent_name": "general-purpose",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

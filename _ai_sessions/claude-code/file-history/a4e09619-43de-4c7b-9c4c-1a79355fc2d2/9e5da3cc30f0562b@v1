@@ -1,0 +1,96 @@
+@echo off
+chcp 936 >nul
+cd /d "%~dp0"
+title Temu 店铺监测助手
+
+rem ---- 检查 Node.js ----
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [错误] 未找到 Node.js。
+  echo   请先安装 Node.js LTS：https://nodejs.org
+  echo   安装后重新运行本程序。
+  echo.
+  pause
+  exit /b
+)
+
+rem ---- 首次运行：安装依赖 ----
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [首次运行] 正在安装依赖，请稍候 1-2 分钟...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   安装失败，请检查网络后重试。
+    pause
+    exit /b
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo               Temu 店铺监测助手
+echo   ( 详细说明见本文件夹内的「使用说明.txt」)
+echo ============================================
+echo.
+echo    1.  登录 Temu     ^(首次使用必须先登录^)
+echo    2.  启动监测       ^(保持窗口开启^)
+echo    3.  立即测试一次
+echo    4.  开启开机自启   ^(推荐^)
+echo    5.  取消开机自启
+echo    0.  退出
+echo.
+set /p "c=请输入数字后按回车："
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_start
+if "%c%"=="3" goto do_once
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="0" exit /b
+goto menu
+
+:do_login
+echo.
+echo 即将打开浏览器，请登录你的 Temu 账号（手机号 + 密码，如需短信验证码请手动输入）。
+echo 看到商品列表即表示成功，无需手动关闭窗口。
+echo.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo 监测已启动，每 15 分钟检查一次。
+echo 保持本窗口开启 = 持续监测；关闭窗口 = 停止。
+echo 想让它后台开机自动运行，请改用选项 4。
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+echo 会弹出 Windows 管理员授权（UAC）窗口，请点「是」。
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-autostart.ps1"
+echo.
+pause
+goto menu

@@ -1,0 +1,31 @@
+---
+name: temu-monitor-project
+description: Temu 多店铺自动化监测项目的背景与关键约束
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 1b77f1dc-3064-4ec9-a485-16b918ac2c52
+---
+
+在 `E:\project\temu` 构建 Temu Seller Central 多店铺监测工具（`temu-monitor/`，Node + Playwright + 飞书告警）。
+
+监测两件事：① 各店铺「在售中 N」数量下降；② 出现「商品流量待关注」/「商品流量近期有下降」的流量异常商品（这两个橙色标签在商品列表「申报价格(USD)」列下方，二者都算流量异常）。切换店铺后自动关闭推广弹窗。决策：账号下全部店铺、15 分钟轮询、飞书 webhook 告警。
+
+需求文档 `需求.docx`（正文仅 3 句 + 4 张截图，2026-07-10 更新）：弹窗要求是「登录成功后 / 切换店铺时一律关闭，**可能还有其他类型的弹窗，都关闭**」。截图确认除营销弹窗外还需关：`您有以下待办任务需要尽快处理` 待办模态框、点「消息」弹出的`全部消息`通知面板 / `商品不合规` 违规通知——均只有右上角 X、无「关闭」文本按钮，且带「去处理」等跳转按钮，关闭时**只能点 X，不能误点跳转按钮**。已在 `src/popups.js` 用 KNOWN_DIALOG_KEYWORDS 按标题定位容器后点其内关闭图标处理。
+
+关键非显然点：
+- 真实后台是 `https://agentseller.temu.com/goods/list`，`账号.txt` 里给的 `agentseller-eu.../mmsos/orders.html` 会跳转过去。
+- 店铺切换器 DOM、商品列表接口字段、部分选择器**需真实登录态下 `npm run calibrate` 校准**后才确定；当前代码用文本/结构容错选择器占位。
+- 首次登录可能需手机短信验证码 → 无法完全自主跑通，需用户手动 `npm run login` 一次。
+- 详细录屏分析见 `E:\project\temu\录屏分析.md`。
+
+2026-07-10 排查结论（网络/导航层）：
+- **代理 `127.0.0.1:7897`（Clash/Mihomo）是有害的**：走它频繁 `net::ERR_CONNECTION_CLOSED`；**直连反而稳**（netdiag 实测 goods/list 6/6 200）。已把 config.proxy 设为 `""`，并改 `config.js` 让"空串=强制直连、不回落系统 HTTPS_PROXY"。原注释里"直连会被重置、要走代理"的假设是反的。
+- 导航策略：`waitUntil:'domcontentloaded'` 对这个重型 SPA **永远超时**（网络长期不空闲）；改用 **`commit` 单次 goto + 显式等 `waitForGoodsList` 选择器**。`gotoWithRetry` 用单次 goto 最稳；双 goto/预热 root 在重置阵发期会触发 `frame detached` 崩上下文。
+- **有头模式在网关重置阵发期易 frame-detached 崩溃；headless 稳定**。calibrate 已默认 headless，`CALIB_HEADED=1` 可强制有头。截图/响应体捕获无头下同样有效。
+- 诊断脚本 `netdiag.mjs`（直连、headless、单 goto 连打）用来判网关当前状态。
+
+2026-07-10 当前卡点（未解决）：
+- 登录、导航都通了，页面确是「**商品列表·全球**」聚合视图，但**商品网格永远停在「加载中…」**，商品列表数据接口在自动化里**从不触发**（calibrate 落盘的 20+ 个 JSON 响应体全是外围接口：仓库弹窗/未读消息/售后计数/建议价 msgbox，无一含 在售/流量/skc/goodsList）。**页面无 iframe**，网格是直接渲染的 React 微前端。
+- 顶部「**全部消息**」通知面板（含"商品不合规"违规通知，右上角仅 ✕）**自动关不掉**——`popups.js` 已放宽容器 class 关键词+多层祖先兜底+补充关闭图标选择器，仍未命中那个 ✕（`calib-after-close.html` 存了面板开着时的整页 HTML 待挖真实选择器）。
+- 待定方向：①网格卡「加载中」是否自动化被检测 / 还是"全球"视图需先选地区(美国/欧区)或具体店铺才触发查询；②是否改走直接调商品列表 API 而非解析渲染网格。需用户确认其真人浏览器里该页是否正常出数据。

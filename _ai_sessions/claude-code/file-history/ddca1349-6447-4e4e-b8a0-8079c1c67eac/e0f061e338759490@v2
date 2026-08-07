@@ -1,0 +1,111 @@
+"""初始化管理员与种子店铺。
+
+用法（容器内）:
+  python -m app.scripts.seed
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from sqlalchemy import text
+
+from app.config import get_settings
+from app.infra.db import SessionLocal
+from app.infra.security import hash_password
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("seed")
+
+SEED_SHOPS = [
+    ("temu", "396706", "Agnis", "GBP"),
+    ("temu", "398202", "HomeCove", "GBP"),
+    ("temu", "398203", "Twilight Cove", "GBP"),
+    ("tiktok", "27501502216807", "Deal to deal", "GBP"),
+    ("tiktok", "27328767468273", "SHOP INOUT", "GBP"),
+    ("tiktok", "27758103898326", "TikTok - Pop", "GBP"),
+    # AMZ 环比样板 mock / 赛狐对接用
+    ("amazon", "AMZ-DEMO-001", "Amazon Demo UK", "GBP"),
+]
+
+
+async def run() -> None:
+    settings = get_settings()
+    async with SessionLocal() as db:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text, password_hash, is_active, is_admin
+                    FROM org_user WHERE username = :u
+                    """
+                ),
+                {"u": settings.admin_username},
+            )
+        ).mappings().first()
+        pwd_hash = hash_password(settings.admin_password)
+        if not row:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO org_user (username, password_hash, display_name, is_admin)
+                    VALUES (:u, :p, '管理员', TRUE)
+                    """
+                ),
+                {
+                    "u": settings.admin_username,
+                    "p": pwd_hash,
+                },
+            )
+            logger.info("created admin user %s", settings.admin_username)
+        else:
+            # 生产以 .env ADMIN_PASSWORD 为准：哈希不一致则重置，并确保可用/管理员
+            from app.infra.security import verify_password
+
+            need_pwd = not verify_password(settings.admin_password, row["password_hash"] or "")
+            need_flags = (not row["is_active"]) or (not row["is_admin"])
+            if need_pwd or need_flags:
+                # 密码不对齐时重写哈希；仅 flags 问题时也写同一哈希（无害）
+                await db.execute(
+                    text(
+                        """
+                        UPDATE org_user
+                        SET password_hash = :p,
+                            is_active = TRUE,
+                            is_admin = TRUE
+                        WHERE username = :u
+                        """
+                    ),
+                    {
+                        "u": settings.admin_username,
+                        "p": pwd_hash,
+                    },
+                )
+                logger.info(
+                    "updated admin user %s (password=%s flags=%s)",
+                    settings.admin_username,
+                    need_pwd,
+                    need_flags,
+                )
+            else:
+                logger.info("admin %s ok, skip", settings.admin_username)
+
+        for platform, eid, name, currency in SEED_SHOPS:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO shop (platform, external_shop_id, name, currency)
+                    VALUES (:platform, :eid, :name, :currency)
+                    ON CONFLICT (platform, external_shop_id) DO UPDATE
+                    SET name = EXCLUDED.name
+                    """
+                ),
+                {"platform": platform, "eid": eid, "name": name, "currency": currency},
+            )
+        await db.commit()
+        logger.info("seeded %d shops", len(SEED_SHOPS))
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

@@ -1,0 +1,273 @@
+﻿# Daily report summary + analysis helpers (dot-source from run-multi-store.ps1)
+# Produces: store rollups, overall KPI, highlights, risks, markdown report
+
+function ConvertTo-DoubleSafe($v) {
+  if ($null -eq $v -or $v -eq '') { return 0.0 }
+  try { return [double]$v } catch { return 0.0 }
+}
+
+function Get-BlendedRoi([double]$spend, [double]$revenue) {
+  if ($spend -le 0) {
+    if ($revenue -gt 0) { return 999.0 }
+    return 0.0
+  }
+  return [Math]::Round($revenue / $spend, 2)
+}
+
+function Build-DailyAnalysis {
+  param(
+    [object[]]$CampaignRows,
+    [object[]]$RunSummary,
+    [string]$BizDate,
+    [double]$LowRoiThreshold = 3.0,
+    [int]$TopN = 5
+  )
+
+  $rows = @($CampaignRows | Where-Object { $_ -and $_.campaign -and ($_.campaign -notmatch '汇总|分析|合计') })
+  $byStore = @{}
+  foreach ($r in $rows) {
+    $key = [string]$r.store
+    if (-not $byStore.ContainsKey($key)) {
+      $byStore[$key] = [ordered]@{
+        store       = $key
+        storeId     = [string]$r.storeId
+        campaigns   = 0
+        spend       = 0.0
+        orders      = 0.0
+        revenue     = 0.0
+        topCampaign = $null
+        topRevenue  = -1.0
+        lowRoiCount = 0
+        zeroRevSpend = 0
+      }
+    }
+    $s = $byStore[$key]
+    $spend = ConvertTo-DoubleSafe $r.spend
+    $orders = ConvertTo-DoubleSafe $r.orders
+    $revenue = ConvertTo-DoubleSafe $r.revenue
+    $roi = ConvertTo-DoubleSafe $r.roi
+    $s.campaigns++
+    $s.spend += $spend
+    $s.orders += $orders
+    $s.revenue += $revenue
+    if ($revenue -gt $s.topRevenue) {
+      $s.topRevenue = $revenue
+      $s.topCampaign = [string]$r.campaign
+    }
+    if ($spend -gt 0 -and $roi -gt 0 -and $roi -lt $LowRoiThreshold) { $s.lowRoiCount++ }
+    if ($spend -gt 0 -and $revenue -le 0) { $s.zeroRevSpend++ }
+    $byStore[$key] = $s
+  }
+
+  $storeRollups = @()
+  foreach ($k in ($byStore.Keys | Sort-Object)) {
+    $s = $byStore[$k]
+    $s.spend = [Math]::Round([double]$s.spend, 2)
+    $s.orders = [Math]::Round([double]$s.orders, 0)
+    $s.revenue = [Math]::Round([double]$s.revenue, 2)
+    $s.roi = Get-BlendedRoi $s.spend $s.revenue
+    $storeRollups += [pscustomobject]$s
+  }
+
+  $totalSpend = [Math]::Round(($storeRollups | Measure-Object -Property spend -Sum).Sum, 2)
+  if (-not $totalSpend) { $totalSpend = 0 }
+  $totalOrders = [Math]::Round(($storeRollups | Measure-Object -Property orders -Sum).Sum, 0)
+  if (-not $totalOrders) { $totalOrders = 0 }
+  $totalRevenue = [Math]::Round(($storeRollups | Measure-Object -Property revenue -Sum).Sum, 2)
+  if (-not $totalRevenue) { $totalRevenue = 0 }
+  $totalCampaigns = ($storeRollups | Measure-Object -Property campaigns -Sum).Sum
+  if (-not $totalCampaigns) { $totalCampaigns = 0 }
+  $overallRoi = Get-BlendedRoi $totalSpend $totalRevenue
+
+  $okStores = @($RunSummary | Where-Object { $_.ok }).Count
+  $failStores = @($RunSummary | Where-Object { -not $_.ok })
+
+  $topByRevenue = @($rows | Sort-Object { ConvertTo-DoubleSafe $_.revenue } -Descending | Select-Object -First $TopN)
+  $topByRoi = @(
+    $rows |
+      Where-Object { (ConvertTo-DoubleSafe $_.spend) -gt 0 -and (ConvertTo-DoubleSafe $_.roi) -gt 0 } |
+      Sort-Object { ConvertTo-DoubleSafe $_.roi } -Descending |
+      Select-Object -First $TopN
+  )
+  $riskRows = @(
+    $rows | Where-Object {
+      $sp = ConvertTo-DoubleSafe $_.spend
+      $rv = ConvertTo-DoubleSafe $_.revenue
+      $ro = ConvertTo-DoubleSafe $_.roi
+      ($sp -gt 0 -and $rv -le 0) -or ($sp -gt 0 -and $ro -gt 0 -and $ro -lt $LowRoiThreshold)
+    } | Select-Object -First 20
+  )
+
+  $highlights = New-Object System.Collections.Generic.List[string]
+  $risks = New-Object System.Collections.Generic.List[string]
+
+  if ($storeRollups.Count -gt 0) {
+    $bestStore = $storeRollups | Sort-Object revenue -Descending | Select-Object -First 1
+    $highlights.Add(("销售额最高店铺：{0}（销售额 {1}，花费 {2}，综合 ROI {3}）" -f $bestStore.store, $bestStore.revenue, $bestStore.spend, $bestStore.roi))
+    $eff = @($storeRollups | Where-Object { $_.spend -gt 0 }) | Sort-Object roi -Descending | Select-Object -First 1
+    if ($eff) {
+      $highlights.Add(("综合 ROI 最高店铺：{0}（ROI {1}，花费 {2}）" -f $eff.store, $eff.roi, $eff.spend))
+    }
+  }
+  if ($topByRevenue.Count -gt 0) {
+    $t = $topByRevenue[0]
+    $highlights.Add(("单系列销售额 TOP1：[{0}] {1}（销售额 {2}，ROI {3}）" -f $t.store, $t.campaign, (ConvertTo-DoubleSafe $t.revenue), (ConvertTo-DoubleSafe $t.roi)))
+  }
+
+  foreach ($s in $storeRollups) {
+    if ($s.spend -gt 0 -and $s.roi -gt 0 -and $s.roi -lt $LowRoiThreshold) {
+      $risks.Add(("店铺 {0} 综合 ROI {1} 低于阈值 {2}，建议复核出价/素材/选品" -f $s.store, $s.roi, $LowRoiThreshold))
+    }
+    if ($s.zeroRevSpend -gt 0) {
+      $risks.Add(("店铺 {0} 有 {1} 个系列花费>0 但销售额为 0" -f $s.store, $s.zeroRevSpend))
+    }
+  }
+  foreach ($f in $failStores) {
+    $risks.Add(("抓取失败：{0} — {1}" -f $f.displayName, $f.error))
+  }
+  if ($risks.Count -eq 0) {
+    $risks.Add("未发现明显异常（按当前阈值）。")
+  }
+
+  $md = New-Object System.Text.StringBuilder
+  [void]$md.AppendLine("# TK 广告日报分析")
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine(("> 业务日期：**{0}** · 生成时间：{1}" -f $BizDate, (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')))
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("## 1. 总览")
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine(("| 指标 | 数值 |"))
+  [void]$md.AppendLine(("| --- | --- |"))
+  [void]$md.AppendLine(("| 成功/计划店铺 | {0} / {1} |" -f $okStores, @($RunSummary).Count))
+  [void]$md.AppendLine(("| 广告系列数 | {0} |" -f $totalCampaigns))
+  [void]$md.AppendLine(("| 广告花费合计 | {0} |" -f $totalSpend))
+  [void]$md.AppendLine(("| 销量合计 | {0} |" -f $totalOrders))
+  [void]$md.AppendLine(("| 销售额合计 | {0} |" -f $totalRevenue))
+  [void]$md.AppendLine(("| 综合 ROI | {0} |" -f $overallRoi))
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("## 2. 分店铺汇总")
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("| 店铺 | 系列数 | 广告花费 | 销量 | 销售额 | 综合ROI | 贡献TOP系列 |")
+  [void]$md.AppendLine("| --- | ---: | ---: | ---: | ---: | ---: | --- |")
+  foreach ($s in ($storeRollups | Sort-Object revenue -Descending)) {
+    [void]$md.AppendLine(("| {0} | {1} | {2} | {3} | {4} | {5} | {6} |" -f `
+      $s.store, $s.campaigns, $s.spend, $s.orders, $s.revenue, $s.roi, $s.topCampaign))
+  }
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("## 3. 亮点")
+  [void]$md.AppendLine("")
+  foreach ($h in $highlights) { [void]$md.AppendLine(("- {0}" -f $h)) }
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine(("## 4. 风险与建议（ROI 阈值 < {0}）" -f $LowRoiThreshold))
+  [void]$md.AppendLine("")
+  foreach ($r in $risks) { [void]$md.AppendLine(("- {0}" -f $r)) }
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("## 5. 系列 TOP（按销售额）")
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("| 店铺 | 品名 | 花费 | 销量 | ROI | 销售额 |")
+  [void]$md.AppendLine("| --- | --- | ---: | ---: | ---: | ---: |")
+  foreach ($t in $topByRevenue) {
+    [void]$md.AppendLine(("| {0} | {1} | {2} | {3} | {4} | {5} |" -f `
+      $t.store, $t.campaign, (ConvertTo-DoubleSafe $t.spend), (ConvertTo-DoubleSafe $t.orders), (ConvertTo-DoubleSafe $t.roi), (ConvertTo-DoubleSafe $t.revenue)))
+  }
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("## 6. 系列 TOP（按 ROI，花费>0）")
+  [void]$md.AppendLine("")
+  [void]$md.AppendLine("| 店铺 | 品名 | 花费 | 销量 | ROI | 销售额 |")
+  [void]$md.AppendLine("| --- | --- | ---: | ---: | ---: | ---: |")
+  foreach ($t in $topByRoi) {
+    [void]$md.AppendLine(("| {0} | {1} | {2} | {3} | {4} | {5} |" -f `
+      $t.store, $t.campaign, (ConvertTo-DoubleSafe $t.spend), (ConvertTo-DoubleSafe $t.orders), (ConvertTo-DoubleSafe $t.roi), (ConvertTo-DoubleSafe $t.revenue)))
+  }
+  if ($riskRows.Count -gt 0) {
+    [void]$md.AppendLine("")
+    [void]$md.AppendLine("## 7. 需关注系列（摘录）")
+    [void]$md.AppendLine("")
+    foreach ($t in $riskRows) {
+      [void]$md.AppendLine(("- [{0}] {1} · 花费 {2} · ROI {3} · 销售额 {4}" -f `
+        $t.store, $t.campaign, (ConvertTo-DoubleSafe $t.spend), (ConvertTo-DoubleSafe $t.roi), (ConvertTo-DoubleSafe $t.revenue)))
+    }
+  }
+
+  $brief = New-Object System.Text.StringBuilder
+  [void]$brief.AppendLine(("【TK广告日报 {0}】" -f $BizDate))
+  [void]$brief.AppendLine(("总览：店铺 {0}/{1} 成功 · 系列 {2} · 花费 {3} · 销量 {4} · 销售额 {5} · 综合ROI {6}" -f `
+    $okStores, @($RunSummary).Count, $totalCampaigns, $totalSpend, $totalOrders, $totalRevenue, $overallRoi))
+  foreach ($h in $highlights) { [void]$brief.AppendLine(("亮点：{0}" -f $h)) }
+  $riskHead = @($risks | Select-Object -First 5)
+  foreach ($r in $riskHead) { [void]$brief.AppendLine(("关注：{0}" -f $r)) }
+
+  return [pscustomobject]@{
+    bizDate        = $BizDate
+    storeRollups   = $storeRollups
+    totalSpend     = $totalSpend
+    totalOrders    = $totalOrders
+    totalRevenue   = $totalRevenue
+    totalCampaigns = $totalCampaigns
+    overallRoi     = $overallRoi
+    okStores       = $okStores
+    highlights     = @($highlights)
+    risks          = @($risks)
+    topByRevenue   = $topByRevenue
+    topByRoi       = $topByRoi
+    markdown       = $md.ToString()
+    briefText      = $brief.ToString()
+  }
+}
+
+function New-SummaryFeishuRows {
+  param(
+    $Analysis,
+    [string]$BizDate
+  )
+  $utf8 = [System.Text.Encoding]::UTF8
+  # 【店铺汇总】 【全店汇总】 【日报分析】
+  $labelStore = $utf8.GetString([byte[]](0xE3,0x80,0x90,0xE5,0xBA,0x97,0xE9,0x93,0xBA,0xE6,0xB1,0x87,0xE6,0x80,0xBB,0xE3,0x80,0x91))
+  $labelAll = $utf8.GetString([byte[]](0xE3,0x80,0x90,0xE5,0x85,0xA8,0xE5,0xBA,0x97,0xE6,0xB1,0x87,0xE6,0x80,0xBB,0xE3,0x80,0x91))
+  $labelAnalysis = $utf8.GetString([byte[]](0xE3,0x80,0x90,0xE6,0x97,0xA5,0xE6,0x8A,0xA5,0xE5,0x88,0x86,0xE6,0x9E,0x90,0xE3,0x80,0x91))
+  $storeAll = $utf8.GetString([byte[]](0xE5,0x85,0xA8,0xE5,0xBA,0x97))
+
+  $out = @()
+  foreach ($s in @($Analysis.storeRollups)) {
+    $out += [pscustomobject]@{
+      date      = $BizDate
+      store     = $s.store
+      storeId   = $s.storeId
+      campaign  = $labelStore
+      spend     = $s.spend
+      orders    = $s.orders
+      roi       = $s.roi
+      revenue   = $s.revenue
+      sourceUrl = ''
+      status    = 'success'
+    }
+  }
+  $out += [pscustomobject]@{
+    date      = $BizDate
+    store     = $storeAll
+    storeId   = ''
+    campaign  = $labelAll
+    spend     = $Analysis.totalSpend
+    orders    = $Analysis.totalOrders
+    roi       = $Analysis.overallRoi
+    revenue   = $Analysis.totalRevenue
+    sourceUrl = ''
+    status    = 'success'
+  }
+  # One analysis stub row: campaign holds short brief (truncated for text field)
+  $briefOneLine = ($Analysis.briefText -replace '\r?\n', ' | ').Trim()
+  if ($briefOneLine.Length -gt 500) { $briefOneLine = $briefOneLine.Substring(0, 500) + '...' }
+  $out += [pscustomobject]@{
+    date      = $BizDate
+    store     = $storeAll
+    storeId   = ''
+    campaign  = ("{0} {1}" -f $labelAnalysis, $briefOneLine)
+    spend     = $Analysis.totalSpend
+    orders    = $Analysis.totalOrders
+    roi       = $Analysis.overallRoi
+    revenue   = $Analysis.totalRevenue
+    sourceUrl = ''
+    status    = 'success'
+  }
+  return $out
+}

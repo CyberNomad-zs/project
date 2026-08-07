@@ -1,0 +1,9 @@
+config/config.yaml
+config/config.g1-*.yaml
+config/config.g2-*.yaml
+config.yaml
+bridge.db
+bridge.log
+recon.log
+logs/
+__pycache__/

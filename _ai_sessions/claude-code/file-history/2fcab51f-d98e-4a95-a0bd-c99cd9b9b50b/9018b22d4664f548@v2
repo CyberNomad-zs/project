@@ -1,0 +1,124 @@
+@echo off
+rem Pure ASCII menu (cmd codepage-safe). Prefer launch-gui.bat for GUI.
+cd /d "%~dp0"
+title Temu Monitor Launcher
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [ERR] Node.js not found. Install LTS: https://nodejs.org
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [First run] npm install ...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   npm install failed.
+    pause
+    exit /b 1
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo            Temu Monitor Launcher
+echo   GUI: double-click  launch-gui.bat
+echo   Docs: README.md / PLUGIN_PARITY.md
+echo ============================================
+echo.
+echo    --- Local PC (traffic only, no Sellfox API) ---
+echo    1.  Login Temu              (first time / expired)
+echo    2.  Traffic once            (watch / decline / on-sale count)
+echo    3.  Traffic loop            (foreground, keep window open)
+echo    4.  Enable auto-start       (Task TemuMonitor = traffic)
+echo    5.  Disable auto-start
+echo.
+echo    --- Sellfox (needs IP whitelist; use server in prod) ---
+echo    6.  Sellfox probe only
+echo    7.  Sellfox once only
+echo    8.  Full once               (sellfox + traffic; needs whitelist)
+echo    0.  Exit
+echo.
+set /p "c=Choice: "
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_once
+if "%c%"=="3" goto do_start
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="6" goto do_sf_probe
+if "%c%"=="7" goto do_sf_once
+if "%c%"=="8" goto do_full
+if "%c%"=="0" exit /b 0
+goto menu
+
+:do_login
+echo.
+echo Browser will open. Log in to Temu Seller Central.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+echo Traffic only (no Sellfox). Need Temu login in .userdata.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo Traffic loop only. Keep window open. Ctrl+C to stop.
+echo Sellfox delist/onshelf runs on the fixed-IP server.
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_sf_probe
+echo.
+echo Needs Sellfox IP whitelist on THIS machine.
+node src\sellfox\cli.js probe
+echo.
+pause
+goto menu
+
+:do_sf_once
+echo.
+echo Needs Sellfox IP whitelist on THIS machine.
+node src\sellfox\cli.js once
+echo.
+pause
+goto menu
+
+:do_full
+echo.
+echo FULL = Sellfox + traffic. Needs whitelist. Prefer server for Sellfox.
+set FULL_RUN=1
+node src\cli.js once
+echo.
+pause
+goto menu

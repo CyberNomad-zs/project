@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb0e7-440c-71c2-bd0e-3a91e9e7465f",
+    "cwd": "E:\\project\\海外仓\\sellfox-bridge"
+  },
+  "session_summary": "赛狐API IP白名单通过后能否直接用",
+  "created_at": "2026-07-30T02:42:54.111038700Z",
+  "updated_at": "2026-07-30T02:43:54.597247Z",
+  "num_messages": 28,
+  "num_chat_messages": 18,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外仓/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/haiwaicang.git"
+  ],
+  "head_commit": "d9274d094da2705da6e87d53eb8fe29eed1fe013",
+  "head_branch": "master",
+  "request_id": "51e70abc-55d2-4397-b6b1-bf679d5d8e9a",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T02:43:54.597247Z",
+  "generated_title": "赛狐API IP白名单通过后能否直接用",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

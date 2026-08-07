@@ -1,0 +1,455 @@
+# Qingquan center ingest client (Stage A dual-write)
+# Dot-sourced by run-multi-store.ps1; can also be used alone.
+#
+# config.qingquan example:
+# {
+#   "enabled": true,
+#   "baseUrl": "https://qingquan.jmzlai.com",
+#   "apiKey": "<must match server INGEST_DEFAULT_API_KEY>",
+#   "source": "tiktok_ads",
+#   "failOpen": true,
+#   "timeoutSec": 30
+# }
+#
+# PS 5.1 pitfalls:
+# - @($hashtable) enumerates KEYS, not a single-element array
+# - return ,$object[] may still unwrap a single element on assignment
+# - Generic type literals like List[object] break the parser
+# Keep items in ArrayList; serialize via JavaScriptSerializer.
+
+function Get-QingquanConfig($cfg) {
+  if (-not $cfg.qingquan) {
+    return [pscustomobject]@{
+      enabled    = $false
+      baseUrl    = 'http://127.0.0.1:8000'
+      apiKey     = ''
+      source     = 'tiktok_ads'
+      failOpen   = $true
+      timeoutSec = 30
+    }
+  }
+  $q = $cfg.qingquan
+  $enabled = $false
+  if ($null -ne $q.enabled) { $enabled = [bool]$q.enabled }
+  $failOpen = $true
+  if ($null -ne $q.failOpen) { $failOpen = [bool]$q.failOpen }
+  $timeout = 30
+  if ($null -ne $q.timeoutSec) { $timeout = [int]$q.timeoutSec }
+  $source = 'tiktok_ads'
+  if ($q.source) { $source = [string]$q.source }
+  $base = 'http://127.0.0.1:8000'
+  if ($q.baseUrl) { $base = [string]$q.baseUrl }
+  $key = ''
+  if ($q.apiKey) { $key = [string]$q.apiKey }
+  return [pscustomobject]@{
+    enabled    = $enabled
+    baseUrl    = $base.TrimEnd('/')
+    apiKey     = $key
+    source     = $source
+    failOpen   = $failOpen
+    timeoutSec = $timeout
+  }
+}
+
+function Get-FeishuWriteMode($cfg) {
+  # direct | dual | center
+  $mode = 'direct'
+  if ($cfg.feishu -and $cfg.feishu.writeMode) {
+    $mode = [string]$cfg.feishu.writeMode
+  } elseif ($cfg.qingquan -and $cfg.qingquan.enabled) {
+    $mode = 'dual'
+  }
+  $mode = $mode.ToLowerInvariant()
+  if ($mode -notin @('direct', 'dual', 'center')) { $mode = 'direct' }
+  return $mode
+}
+
+function Get-QingquanItemList {
+  param($Items)
+  $list = New-Object System.Collections.ArrayList
+  if ($null -eq $Items) { return $list }
+
+  if ($Items -is [System.Collections.ArrayList]) {
+    foreach ($x in $Items) {
+      if ($null -ne $x) { [void]$list.Add($x) }
+    }
+    return $list
+  }
+
+  # Single Hashtable / Dictionary = one ingest item (do NOT @()-enumerate keys)
+  if ($Items -is [System.Collections.IDictionary]) {
+    [void]$list.Add($Items)
+    return $list
+  }
+
+  if ($Items -is [System.Array]) {
+    foreach ($x in $Items) {
+      if ($null -eq $x) { continue }
+      [void]$list.Add($x)
+    }
+    return $list
+  }
+
+  # Other enumerables (but not string)
+  $isEnum = $false
+  try {
+    if (($Items -is [System.Collections.IEnumerable]) -and -not ($Items -is [string])) {
+      $isEnum = $true
+    }
+  } catch { $isEnum = $false }
+
+  if ($isEnum) {
+    foreach ($x in $Items) {
+      if ($null -ne $x) { [void]$list.Add($x) }
+    }
+    return $list
+  }
+
+  [void]$list.Add($Items)
+  return $list
+}
+
+function ConvertTo-QingquanIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [string]$Currency = 'USD'
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = New-Object System.Collections.ArrayList
+  foreach ($r in @($Rows)) {
+    $campaign = [string]$r.campaign
+    if (-not $campaign) { continue }
+    $storeId = [string]$r.storeId
+    $bizDate = [string]$r.date
+    $spend = 0; if ($null -ne $r.spend) { $spend = [double]$r.spend }
+    $orders = 0; if ($null -ne $r.orders) { $orders = [double]$r.orders }
+    $roi = $null; if ($null -ne $r.roi) { $roi = [double]$r.roi }
+    $revenue = 0; if ($null -ne $r.revenue) { $revenue = [double]$r.revenue }
+    $dailyBudget = $null
+    if ($null -ne $r.dailyBudget -and "$($r.dailyBudget)" -ne '') { $dailyBudget = [double]$r.dailyBudget }
+    $targetRoi = $null
+    if ($null -ne $r.targetRoi -and "$($r.targetRoi)" -ne '') { $targetRoi = [double]$r.targetRoi }
+    $netCost = $null
+    if ($null -ne $r.netCost -and "$($r.netCost)" -ne '') { $netCost = [double]$r.netCost }
+    $avgOrderCost = $null
+    if ($null -ne $r.avgOrderCost -and "$($r.avgOrderCost)" -ne '') { $avgOrderCost = [double]$r.avgOrderCost }
+    $status = 'success'; if ($r.status) { $status = [string]$r.status }
+    $planStatus = ''; if ($r.planStatus) { $planStatus = [string]$r.planStatus }
+    $deliveryStatus = ''; if ($r.deliveryStatus) { $deliveryStatus = [string]$r.deliveryStatus }
+    $sourceUrl = ''; if ($r.sourceUrl) { $sourceUrl = [string]$r.sourceUrl }
+    $storeName = ''; if ($r.store) { $storeName = [string]$r.store }
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+
+    $payload = @{
+      campaign_name   = $campaign
+      spend           = $spend
+      orders          = $orders
+      roi             = $roi
+      revenue         = $revenue
+      daily_budget    = $dailyBudget
+      target_roi      = $targetRoi
+      net_cost        = $netCost
+      avg_order_cost  = $avgOrderCost
+      delivery_status = $deliveryStatus
+      row_status      = $status
+      plan_status     = $planStatus
+      currency        = $rowCurrency
+      source_url      = $sourceUrl
+    }
+
+    [void]$items.Add(@{
+      platform        = 'tiktok'
+      shop_id         = $storeId
+      shop_name       = $storeName
+      biz_date        = $bizDate
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_ads:{0}:{1}:{2}" -f $storeId, $campaign, $bizDate)
+      payload         = $payload
+      evidence        = @{ source_url = $sourceUrl }
+    })
+  }
+  # PS 5.1 unwraps a 1-element ArrayList into the bare Hashtable on `return`.
+  # -NoEnumerate keeps the list intact so .Count == item count (not key count).
+  Write-Output -NoEnumerate $items
+}
+
+function ConvertTo-QingquanOrderIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [string]$StoreName = '',
+    [string]$BizDate = '',
+    [string]$Currency = 'USD',
+    [string]$SourceUrl = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = New-Object System.Collections.ArrayList
+  foreach ($r in @($Rows)) {
+    $orderId = ''
+    if ($r.orderId) { $orderId = [string]$r.orderId }
+    elseif ($r.order_id) { $orderId = [string]$r.order_id }
+    if (-not $orderId) { continue }
+
+    $qty = 0
+    if ($null -ne $r.quantity) { try { $qty = [double]$r.quantity } catch { $qty = 0 } }
+    $pay = 0
+    if ($null -ne $r.payAmount) { try { $pay = [double]$r.payAmount } catch { $pay = 0 } }
+    elseif ($null -ne $r.pay_amount) { try { $pay = [double]$r.pay_amount } catch { $pay = 0 } }
+
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+    elseif ($r.currencyHint) { $rowCurrency = [string]$r.currencyHint }
+
+    $rowSourceUrl = $SourceUrl
+    if ($r.sourceUrl) { $rowSourceUrl = [string]$r.sourceUrl }
+
+    $payload = @{
+      order_id         = $orderId
+      order_status     = $(if ($r.orderStatus) { [string]$r.orderStatus } elseif ($r.order_status) { [string]$r.order_status } else { '' })
+      pay_time         = $(if ($r.payTime) { [string]$r.payTime } elseif ($r.pay_time) { [string]$r.pay_time } else { '' })
+      create_time      = $(if ($r.createTime) { [string]$r.createTime } elseif ($r.create_time) { [string]$r.create_time } else { '' })
+      product_name     = $(if ($r.productName) { [string]$r.productName } elseif ($r.product_name) { [string]$r.product_name } else { '' })
+      seller_sku       = $(if ($r.sellerSku) { [string]$r.sellerSku } elseif ($r.seller_sku) { [string]$r.seller_sku } else { '' })
+      sku_id           = $(if ($r.skuId) { [string]$r.skuId } elseif ($r.sku_id) { [string]$r.sku_id } else { '' })
+      quantity         = $qty
+      pay_amount       = $pay
+      currency         = $rowCurrency
+      shipping_status  = $(if ($r.shippingStatus) { [string]$r.shippingStatus } else { '' })
+      buyer_region     = $(if ($r.buyerRegion) { [string]$r.buyerRegion } else { '' })
+      source_url       = $rowSourceUrl
+    }
+
+    $biz = $BizDate
+    if (-not $biz -and $payload.pay_time) { $biz = '' }
+    # biz_date 可空，服务端用 pay_time/create_time 推导
+
+    [void]$items.Add(@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $(if ($biz) { $biz } else { $null })
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_orders:{0}:{1}" -f $StoreId, $orderId)
+      payload         = $payload
+      evidence        = @{ source_url = $rowSourceUrl }
+    })
+  }
+  Write-Output -NoEnumerate $items
+}
+
+function ConvertTo-QingquanIngestJson {
+  param([Parameter(Mandatory = $true)] $Items)
+  $list = Get-QingquanItemList $Items
+  if ($list.Count -eq 0) {
+    throw 'qingquan payload has 0 items'
+  }
+
+  try {
+    Add-Type -AssemblyName System.Web.Extensions -ErrorAction Stop
+    $ser = New-Object System.Web.Script.Serialization.JavaScriptSerializer
+    $ser.MaxJsonLength = 50MB
+    $payload = New-Object 'System.Collections.Generic.Dictionary[string,object]'
+    $payload['items'] = $list.ToArray()
+    $json = $ser.Serialize($payload)
+  } catch {
+    $parts = New-Object System.Collections.ArrayList
+    foreach ($it in $list) {
+      $piece = ($it | ConvertTo-Json -Depth 12 -Compress)
+      [void]$parts.Add($piece)
+    }
+    $json = '{"items":[' + ($parts -join ',') + ']}'
+  }
+
+  if ([string]::IsNullOrWhiteSpace($json) -or $json -notmatch '"items"\s*:\s*\[') {
+    $preview = ''
+    if ($json) { $preview = $json.Substring(0, [Math]::Min(120, $json.Length)) }
+    $len = 0
+    if ($json) { $len = $json.Length }
+    throw ("qingquan payload json invalid (len={0}): {1}" -f $len, $preview)
+  }
+  if ($json -match '"items"\s*:\s*\[\s*\]') {
+    throw 'qingquan payload items array is empty after serialize'
+  }
+  return $json
+}
+
+function Send-QingquanIngest {
+  param(
+    [Parameter(Mandatory = $true)] $Config,
+    [Parameter(Mandatory = $true)] $Items,
+    [string]$Source = '',
+    [switch]$Quiet
+  )
+  $q = Get-QingquanConfig $Config
+  if (-not $q.enabled) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'qingquan.disabled'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+  if (-not $q.apiKey) {
+    $msg = 'qingquan.apiKey empty'
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = 0 }
+    }
+    throw $msg
+  }
+
+  $itemList = Get-QingquanItemList $Items
+  if ($itemList.Count -eq 0) {
+    return [pscustomobject]@{ ok = $true; skipped = $true; reason = 'empty-items'; accepted = 0; duplicated = 0; failed = 0 }
+  }
+
+  $useSource = $q.source
+  if (-not [string]::IsNullOrWhiteSpace($Source)) { $useSource = $Source.Trim() }
+  $url = "{0}/api/v1/ingest/{1}" -f $q.baseUrl, $useSource
+  try {
+    $json = ConvertTo-QingquanIngestJson -Items $itemList
+  } catch {
+    $msg = [string]$_
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = $itemList.Count }
+    }
+    throw
+  }
+
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  $bodyBytes = $utf8.GetBytes($json)
+  if ($bodyBytes.Length -lt 10) {
+    $msg = ("qingquan body too short: {0} bytes" -f $bodyBytes.Length)
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning $msg }
+      return [pscustomobject]@{ ok = $false; skipped = $false; error = $msg; accepted = 0; duplicated = 0; failed = $itemList.Count }
+    }
+    throw $msg
+  }
+
+  try {
+    $curlCmd = Get-Command curl.exe -ErrorAction SilentlyContinue
+    $text = $null
+    $httpCode = 0
+    if ($curlCmd) {
+      $tmp = [System.IO.Path]::GetTempFileName()
+      try {
+        [System.IO.File]::WriteAllBytes($tmp, $bodyBytes)
+        $outFile = [System.IO.Path]::GetTempFileName()
+        try {
+          $curlArgs = @(
+            '-sS', '-X', 'POST', $url,
+            '-H', 'Content-Type: application/json; charset=utf-8',
+            '-H', ("X-Api-Key: {0}" -f $q.apiKey),
+            '--data-binary', ("@{0}" -f $tmp),
+            '-o', $outFile,
+            '-w', '%{http_code}',
+            '--connect-timeout', '15',
+            '--max-time', ([string][Math]::Max(10, [int]$q.timeoutSec))
+          )
+          $httpCodeStr = & curl.exe @curlArgs 2>&1
+          if ($LASTEXITCODE -ne 0 -and -not (Test-Path $outFile)) {
+            throw ("curl failed: {0}" -f $httpCodeStr)
+          }
+          if ($httpCodeStr -match '(\d{3})\s*$') { $httpCode = [int]$Matches[1] }
+          elseif ("$httpCodeStr" -match '^\d{3}$') { $httpCode = [int]$httpCodeStr }
+          $text = [System.IO.File]::ReadAllText($outFile, $utf8)
+          if ($httpCode -ge 400) {
+            throw ("HTTP {0}: {1}" -f $httpCode, $text)
+          }
+        } finally {
+          Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+        }
+      } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+      }
+    } else {
+      $req = [System.Net.HttpWebRequest]::Create($url)
+      $req.Method = 'POST'
+      $req.Timeout = [Math]::Max(5000, [int]($q.timeoutSec * 1000))
+      $req.ReadWriteTimeout = $req.Timeout
+      $req.ContentType = 'application/json; charset=utf-8'
+      $req.Accept = 'application/json'
+      $req.Headers.Add('X-Api-Key', $q.apiKey)
+      $req.ContentLength = $bodyBytes.Length
+      $req.ServicePoint.Expect100Continue = $false
+      $stream = $req.GetRequestStream()
+      try { $stream.Write($bodyBytes, 0, $bodyBytes.Length) } finally { $stream.Close() }
+
+      $httpResp = $req.GetResponse()
+      try {
+        $httpCode = [int]$httpResp.StatusCode
+        $reader = New-Object System.IO.StreamReader($httpResp.GetResponseStream(), $utf8)
+        try { $text = $reader.ReadToEnd() } finally { $reader.Close() }
+      } finally { $httpResp.Close() }
+    }
+
+    $resp = $null
+    if (-not [string]::IsNullOrWhiteSpace($text)) {
+      try { $resp = $text | ConvertFrom-Json } catch { $resp = $null }
+    }
+    $accepted = 0; $duplicated = 0; $failed = 0
+    if ($null -ne $resp -and $null -ne $resp.accepted) { $accepted = [int]$resp.accepted }
+    if ($null -ne $resp -and $null -ne $resp.duplicated) { $duplicated = [int]$resp.duplicated }
+    if ($null -ne $resp -and $null -ne $resp.failed) { $failed = [int]$resp.failed }
+    return [pscustomobject]@{
+      ok         = ($failed -eq 0)
+      skipped    = $false
+      accepted   = $accepted
+      duplicated = $duplicated
+      failed     = $failed
+      resp       = $resp
+      error      = $null
+      httpCode   = $httpCode
+      bodyBytes  = $bodyBytes.Length
+    }
+  }
+  catch {
+    $err = [string]$_
+    $statusCode = 0
+    try {
+      $ex = $_.Exception
+      while ($ex -and -not ($ex -is [System.Net.WebException])) { $ex = $ex.InnerException }
+      if ($ex -is [System.Net.WebException] -and $ex.Response) {
+        $statusCode = [int]$ex.Response.StatusCode
+        $sr = New-Object System.IO.StreamReader($ex.Response.GetResponseStream(), $utf8)
+        $bodyErr = $sr.ReadToEnd()
+        $sr.Close()
+        if ($bodyErr) { $err = ("HTTP {0}: {1}" -f $statusCode, $bodyErr) }
+      }
+    } catch {}
+    if ($err -match 'API Key|401') {
+      $err = $err + ' | check stores.config.json qingquan.apiKey == server INGEST_DEFAULT_API_KEY'
+    }
+    if ($err -match 'Field required' -and $err -match 'body') {
+      $err = $err + (" | local bodyBytes={0} url={1}" -f $bodyBytes.Length, $url)
+    }
+    if ($q.failOpen) {
+      if (-not $Quiet) { Write-Warning ("qingquan ingest failed (failOpen): {0}" -f $err) }
+      return [pscustomobject]@{
+        ok         = $false
+        skipped    = $false
+        accepted   = 0
+        duplicated = 0
+        failed     = $itemList.Count
+        resp       = $null
+        error      = $err
+        httpCode   = $statusCode
+        bodyBytes  = $bodyBytes.Length
+      }
+    }
+    throw
+  }
+}
+
+function Test-QingquanHealth {
+  param([Parameter(Mandatory = $true)] $Config)
+  $q = Get-QingquanConfig $Config
+  $url = "{0}/health" -f $q.baseUrl
+  try {
+    $r = Invoke-RestMethod -Method Get -Uri $url -TimeoutSec 10
+    return [pscustomobject]@{ ok = ($r.status -eq 'ok'); resp = $r; error = $null }
+  }
+  catch {
+    return [pscustomobject]@{ ok = $false; resp = $null; error = [string]$_ }
+  }
+}

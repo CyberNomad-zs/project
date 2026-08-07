@@ -1,0 +1,28 @@
+# -*- coding: utf-8 -*-
+import sys
+from playwright.sync_api import sync_playwright
+
+URL = "https://www.showdoc.com.cn/2143160933861042/9145888065939630"
+OUT = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\bf8d3248-1b4a-473b-8aa8-16a14e848bfc\scratchpad\api_doc.txt"
+
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    pg = b.new_context().new_page()
+    try:
+        pg.goto(URL, wait_until="networkidle", timeout=60000)
+    except Exception as e:
+        print("goto warn:", e, flush=True)
+    pg.wait_for_timeout(5000)
+    title = pg.title()
+    txt = pg.evaluate(r"""() => {
+      const sels=['.page-content','.markdown-body','#markdown','.editormd-html-preview',
+                  '.wiki-content','#page_content','.showdoc-content','.container'];
+      for(const s of sels){const e=document.querySelector(s);
+        if(e && e.innerText && e.innerText.trim().length>50) return e.innerText;}
+      return document.body.innerText;
+    }""")
+    with open(OUT, "w", encoding="utf-8") as f:
+        f.write("TITLE: " + (title or "") + "\n\n" + (txt or ""))
+    print("title =", title, flush=True)
+    print("len =", len(txt or ""), "-> saved", OUT, flush=True)
+    b.close()

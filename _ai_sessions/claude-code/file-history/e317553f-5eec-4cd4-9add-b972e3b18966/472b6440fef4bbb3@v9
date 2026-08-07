@@ -1,0 +1,264 @@
+// Service worker：接收接口数据 → 按【店铺名】分别解析/对比/告警。
+// 多店铺：同一账号下有多个店(HomeCove/Twilight Cove/Agnis)，切到哪个店就记哪个店，各自独立快照与告警。
+// 数据只存本机 chrome.storage.local，不上传任何服务器。
+
+const GOODS_URL = 'https://agentseller.temu.com/goods/list';
+const DEFAULT_CONFIG = { webhook: '', intervalMinutes: 15, enabled: true, storeName: '' };
+
+// ---------------- 解析 ----------------
+function parseCountStatus(body) {
+  try {
+    const j = JSON.parse(body);
+    const list = j && j.result && j.result.skcTopStatusCountList;
+    if (!Array.isArray(list)) return null;
+    const pick = (s) => {
+      const x = list.find((e) => e && e.skcTopStatus === s);
+      return x && typeof x.skcTotal === 'number' ? x.skcTotal : null;
+    };
+    return { onSale: pick(100), unpublished: pick(0), removed: pick(200), deleted: pick(300) };
+  } catch (e) { return null; }
+}
+function parsePageQuery(body) {
+  try {
+    const j = JSON.parse(body);
+    const r = j && j.result;
+    if (!r) return null;
+    return { total: r.total };
+  } catch (e) { return null; }
+}
+
+// ---------------- 存取 ----------------
+async function getConfig() {
+  const { config } = await chrome.storage.local.get('config');
+  return Object.assign({}, DEFAULT_CONFIG, config || {});
+}
+async function getStores() {
+  const { stores } = await chrome.storage.local.get('stores');
+  return stores || {};
+}
+async function saveStores(stores) {
+  await chrome.storage.local.set({ stores });
+}
+// 更新某店的最新读数
+async function updateStoreLatest(name, patch) {
+  const stores = await getStores();
+  const s = stores[name] || { latest: {}, snapshot: {} };
+  s.latest = Object.assign({}, s.latest, patch, { ts: Date.now() });
+  stores[name] = s;
+  await saveStores(stores);
+  return s;
+}
+
+// ---------------- 飞书 ----------------
+async function sendFeishu(webhook, title, lines) {
+  if (!webhook) return { ok: false, msg: '未配置飞书 webhook' };
+  const card = {
+    msg_type: 'interactive',
+    card: {
+      header: { title: { tag: 'plain_text', content: title }, template: 'red' },
+      elements: [{ tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } }],
+    },
+  };
+  try {
+    const resp = await fetch(webhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(card) });
+    const data = await resp.json().catch(() => ({}));
+    const ok = resp.ok && (data.code === 0 || data.StatusCode === 0 || data.code === undefined);
+    return { ok, msg: ok ? '已发送' : ('飞书返回：' + JSON.stringify(data)) };
+  } catch (e) {
+    return { ok: false, msg: '发送失败：' + (e && e.message) };
+  }
+}
+
+// ---------------- 对比 & 告警（按店） ----------------
+async function diffAndAlert(name) {
+  const cfg = await getConfig();
+  if (!cfg.enabled) return;
+  const stores = await getStores();
+  const s = stores[name];
+  if (!s) return;
+  const latest = s.latest || {};
+  const snap = s.snapshot || {};
+  const events = [];
+
+  if (typeof latest.onSale === 'number' && typeof snap.onSale === 'number' && latest.onSale < snap.onSale) {
+    events.push(`📉 在售数量下降：${snap.onSale} → ${latest.onSale}`);
+  }
+  if (typeof latest.trafficWatch === 'number' && typeof snap.trafficWatch === 'number' && latest.trafficWatch > snap.trafficWatch) {
+    events.push(`⚠️ 商品流量待关注增加：${snap.trafficWatch} → ${latest.trafficWatch}`);
+  }
+
+  if (events.length > 0) {
+    const lines = [`**🏬 ${name}**`, ...events, '', `_检查时间：${new Date().toLocaleString('zh-CN')}_`];
+    const r = await sendFeishu(cfg.webhook, '🔔 Temu 店铺监测告警', lines);
+    await chrome.storage.local.set({ lastAlert: { ts: Date.now(), ok: r.ok, msg: r.msg, store: name, lines } });
+  }
+
+  // 合并式更新该店基准快照（只覆盖本次拿到的数值），幂等只报一次
+  const newSnap = Object.assign({}, snap);
+  if (typeof latest.onSale === 'number') newSnap.onSale = latest.onSale;
+  if (typeof latest.total === 'number') newSnap.total = latest.total;
+  if (typeof latest.trafficWatch === 'number') newSnap.trafficWatch = latest.trafficWatch;
+  newSnap.ts = Date.now();
+  s.snapshot = newSnap;
+  stores[name] = s;
+  await saveStores(stores);
+}
+
+// 解析店铺名：优先用页面读到的店名；读不到则退回配置里手填的，再退回“当前店铺”
+async function resolveStore(msgStore) {
+  if (msgStore && String(msgStore).trim()) return String(msgStore).trim();
+  const cfg = await getConfig();
+  return (cfg.storeName && cfg.storeName.trim()) || '当前店铺';
+}
+
+// ---------------- 消息处理 ----------------
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  (async () => {
+    if (msg.type === 'capture') {
+      const name = await resolveStore(msg.store);
+      if (msg.kind === 'countStatus') {
+        const p = parseCountStatus(msg.body);
+        if (p && p.onSale != null) {
+          await updateStoreLatest(name, { onSale: p.onSale, unpublished: p.unpublished, removed: p.removed, deleted: p.deleted });
+          await diffAndAlert(name);
+        }
+      } else if (msg.kind === 'pageQuery') {
+        const p = parsePageQuery(msg.body);
+        if (p) await updateStoreLatest(name, { total: p.total });
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === 'chipStats') {
+      if (typeof msg.trafficWatch === 'number') {
+        const name = await resolveStore(msg.store);
+        await updateStoreLatest(name, { trafficWatch: msg.trafficWatch });
+        await diffAndAlert(name);
+      }
+      sendResponse({ ok: true });
+      return;
+    }
+    if (msg.type === 'getStatus') {
+      sendResponse({ config: await getConfig(), stores: await getStores(), ...(await chrome.storage.local.get('lastAlert')) });
+      return;
+    }
+    if (msg.type === 'checkNow') {
+      sendResponse(await pollNow());
+      return;
+    }
+    if (msg.type === 'cycleNow') {
+      sendResponse(await cycleStores('manual'));
+      return;
+    }
+    if (msg.type === 'testFeishu') {
+      const cfg = await getConfig();
+      const r = await sendFeishu(cfg.webhook, '✅ Temu 监测测试', ['这是一条测试消息，收到说明飞书配置正常。', '', `_${new Date().toLocaleString('zh-CN')}_`]);
+      sendResponse(r);
+      return;
+    }
+  })();
+  return true;
+});
+
+// ---------------- 自动轮巡（切遍每个店抓数，再切回原店；仅空闲时触发） ----------------
+const IDLE_SECONDS = 240; // 无操作 4 分钟视为空闲
+let cycling = false;
+
+async function getGoodsTab() {
+  const tabs = await chrome.tabs.query({ url: 'https://agentseller.temu.com/*' });
+  return tabs.find((t) => /goods\/list/.test(t.url || '')) || tabs[0] || null;
+}
+function sendTab(tabId, cmd) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabs.sendMessage(tabId, cmd, (resp) => {
+        if (chrome.runtime.lastError) resolve(null); else resolve(resp);
+      });
+    } catch (e) { resolve(null); }
+  });
+}
+async function sendTabRetry(tabId, cmd, tries) {
+  for (let i = 0; i < (tries || 8); i++) {
+    const r = await sendTab(tabId, cmd);
+    if (r) return r;
+    await new Promise((res) => setTimeout(res, 1000)); // 页面重载后 content 未就绪，重试
+  }
+  return null;
+}
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+// 等某店在切换后被重新抓到（latest.ts 比切换前更新、且有 onSale）
+async function waitForStoreCapture(name, sinceTs, timeout) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < (timeout || 25000)) {
+    const stores = await getStores();
+    const L = stores[name] && stores[name].latest;
+    if (L && typeof L.onSale === 'number' && (L.ts || 0) > sinceTs) return true;
+    await sleep(1500);
+  }
+  return false;
+}
+
+async function cycleStores(reason) {
+  if (cycling) return { ok: false, msg: '轮巡进行中' };
+  cycling = true;
+  const log = [];
+  try {
+    const tab = await getGoodsTab();
+    if (!tab) return { ok: false, msg: '没有打开的 Temu 商品页' };
+    const cur = await sendTabRetry(tab.id, { cmd: 'ping' }, 5);
+    const original = cur && cur.store;
+    log.push('当前店：' + (original || '未知'));
+
+    const listed = await sendTabRetry(tab.id, { cmd: 'listStores' }, 5);
+    let names = (listed && listed.names) || [];
+    const known = Object.keys(await getStores());
+    names = [...new Set([...names, ...known])].filter(Boolean);
+    if (names.length === 0) return { ok: false, msg: '没识别到店铺清单' };
+    log.push('轮巡：' + names.join(', '));
+
+    for (const name of names) {
+      if (name === original) continue; // 原店最后再确认；先切别的
+      const since = Date.now();
+      const r = await sendTabRetry(tab.id, { cmd: 'switchTo', target: name }, 5);
+      if (!r || !r.ok) { log.push('切到 ' + name + ' 失败：' + (r && r.msg)); continue; }
+      const got = await waitForStoreCapture(name, since, 25000);
+      log.push((got ? '✓ ' : '✗ ') + name);
+    }
+    // 切回原店
+    if (original) {
+      const since = Date.now();
+      await sendTabRetry(tab.id, { cmd: 'switchTo', target: original }, 5);
+      await waitForStoreCapture(original, since, 25000);
+      log.push('已切回 ' + original);
+    }
+    const summary = log.join(' | ');
+    await chrome.storage.local.set({ lastCycle: { ts: Date.now(), reason, summary } });
+    return { ok: true, msg: summary };
+  } finally { cycling = false; }
+}
+
+async function pollNow() {
+  const tab = await getGoodsTab();
+  if (!tab) return { ok: false, msg: '未找到打开的 Temu 后台标签页，请先登录并打开商品列表页' };
+  if (/goods\/list/.test(tab.url || '')) { await chrome.tabs.reload(tab.id, { bypassCache: false }); return { ok: true, msg: '已刷新后台商品页' }; }
+  await chrome.tabs.update(tab.id, { url: GOODS_URL });
+  return { ok: true, msg: '已导航到商品列表页' };
+}
+
+// 定时：空闲则轮巡所有店，否则不打扰（靠随看随记覆盖当前店）
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name !== 'poll') return;
+  chrome.idle.queryState(IDLE_SECONDS, (state) => {
+    if (state === 'idle' || state === 'locked') cycleStores('idle');
+  });
+});
+
+async function setupAlarm() {
+  await chrome.storage.local.remove('trafficSample'); // 清早期诊断残留
+  const cfg = await getConfig();
+  await chrome.alarms.clear('poll');
+  chrome.alarms.create('poll', { periodInMinutes: Math.max(1, cfg.intervalMinutes || 15) });
+}
+chrome.runtime.onInstalled.addListener(setupAlarm);
+chrome.runtime.onStartup.addListener(setupAlarm);
+chrome.storage.onChanged.addListener((changes, area) => { if (area === 'local' && changes.config) setupAlarm(); });

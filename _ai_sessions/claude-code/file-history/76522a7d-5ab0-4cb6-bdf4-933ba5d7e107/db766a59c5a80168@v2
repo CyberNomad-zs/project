@@ -1,0 +1,367 @@
+# 清泉生产环境 · 同事交接（服务器 / PG / 采集）
+
+> 快照日期：**2026-08-04**  
+> 用途：把**服务器、PostgreSQL、Ingest、飞书表**相关信息同步给同事（采集机 / 联调 / 排障）  
+> 相关：[SERVER.md](./SERVER.md) · [数据库现状说明.md](../数据库现状说明.md) · [生产环境.md](../../collectors/tiktok-ads/docs/生产环境.md)
+
+---
+
+## 0. 30 秒总览
+
+| 项 | 值 |
+|----|-----|
+| 公网域名 | `https://qingquan.jmzlai.com` |
+| 服务器 IP | `43.156.50.38`（腾讯云轻量 · 新加坡 · 2C4G · Ubuntu 24.04） |
+| SSH | `ubuntu@43.156.50.38`，密钥登录（密码登录已关） |
+| 代码目录 | `/opt/qingquan` |
+| Compose | `/opt/qingquan/deploy/docker-compose.prod.yml` · project `qingquan` |
+| 环境变量 | `/opt/qingquan/.env`（**仅服务器本地，不进 Git**） |
+| PostgreSQL | 容器 `qingquan-db-1` · **仅** `127.0.0.1:5432`（**不公网暴露**） |
+| Redis | `qingquan-redis-1` · `127.0.0.1:6379` |
+| API | `qingquan-api-1` · 宿主机 `127.0.0.1:8000` → Nginx → 公网 HTTPS |
+| Worker | `qingquan-worker-1`（outbox / 飞书同步等） |
+| 时区 | `Asia/Shanghai` |
+| 健康检查 | `https://qingquan.jmzlai.com/health` → `{"status":"ok",...}` |
+
+**原则：** 生产事实以 **PG 为 SoT**；采集写 Ingest → PG；飞书 / 任务台只读中心。  
+**禁止**把生产密码、Ingest Key、飞书 Secret 贴进群聊或提交仓库。
+
+---
+
+## 1. SSH 怎么上
+
+仓库内密钥（开发机）：
+
+```text
+keys/qingquan_sg_ed25519
+```
+
+```bash
+# 本机（仓库根）
+ssh -i keys/qingquan_sg_ed25519 ubuntu@43.156.50.38
+
+# 或已配 ssh config 别名
+ssh qingquan-sg
+```
+
+Windows PowerShell 示例：
+
+```powershell
+$key = "E:\project\清泉跨境系统（企业级）\keys\qingquan_sg_ed25519"
+ssh -i $key ubuntu@43.156.50.38
+```
+
+> 同事若无密钥：由负责人单独发 **私钥文件 + 权限说明**（勿发到公开群）；服务器侧 `ubuntu` 的 `authorized_keys` 需已加入对应公钥。
+
+---
+
+## 2. Docker 拓扑（生产）
+
+| 容器名 | 镜像 / 角色 | 端口绑定 |
+|--------|-------------|----------|
+| `qingquan-db-1` | `postgres:16-alpine`（PG **16.14**） | `127.0.0.1:5432→5432` |
+| `qingquan-redis-1` | `redis:7-alpine` | `127.0.0.1:6379→6379` |
+| `qingquan-api-1` | `qingquan-api`（uvicorn） | `127.0.0.1:8000→8000` |
+| `qingquan-worker-1` | `qingquan-worker` | 无宿主机端口 |
+
+常用：
+
+```bash
+cd /opt/qingquan/deploy
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+docker compose -f docker-compose.prod.yml --env-file ../.env ps
+curl -sS http://127.0.0.1:8000/health
+```
+
+---
+
+## 3. PostgreSQL（给同事的核心）
+
+### 3.1 连接参数（结构）
+
+| 项 | 生产值 |
+|----|--------|
+| 引擎 | PostgreSQL **16**（Alpine 容器） |
+| 库名 | `qingquan`（`POSTGRES_DB`） |
+| 用户 | `qingquan`（`POSTGRES_USER`） |
+| 密码 | **在服务器** `/opt/qingquan/.env` → `POSTGRES_PASSWORD`（长度约 19；**勿写进本文档**） |
+| 容器内主机名 | Compose 服务名 **`db`**（API/Worker 用） |
+| 宿主机 | **`127.0.0.1:5432`**（仅本机回环） |
+| 公网直连 | **无** — 必须先 SSH，再 `docker exec` 或 SSH 隧道 |
+| 应用 `DATABASE_URL` | `postgresql+asyncpg://qingquan:***@db:5432/qingquan` |
+| 时区 | `Asia/Shanghai` |
+
+**查密码 / 密钥（在已 SSH 的机器上）：**
+
+```bash
+# 只看键名与是否存在；需要明文时由负责人当面/加密通道发
+grep -E '^(POSTGRES_|DATABASE_URL|INGEST_|ADMIN_)' /opt/qingquan/.env
+```
+
+### 3.2 进库（推荐方式）
+
+```bash
+# SSH 上去之后
+docker exec -it qingquan-db-1 psql -U qingquan -d qingquan
+```
+
+本机一条管道（不交互）：
+
+```powershell
+$key = "E:\project\清泉跨境系统（企业级）\keys\qingquan_sg_ed25519"
+"SELECT current_database(), current_user, version();" |
+  ssh -i $key ubuntu@43.156.50.38 "docker exec -i qingquan-db-1 psql -U qingquan -d qingquan"
+```
+
+### 3.3 可选：SSH 隧道后用本机客户端
+
+仅当需要 DBeaver / pgAdmin 时：
+
+```bash
+ssh -i keys/qingquan_sg_ed25519 -L 15432:127.0.0.1:5432 ubuntu@43.156.50.38 -N
+```
+
+然后本机连接：
+
+| 项 | 值 |
+|----|-----|
+| Host | `127.0.0.1` |
+| Port | `15432` |
+| Database | `qingquan` |
+| User | `qingquan` |
+| Password | 同服务器 `POSTGRES_PASSWORD` |
+| SSL | 一般关（隧道已加密） |
+
+**不要**把 `5432` 改成 `0.0.0.0` 公网暴露。
+
+### 3.4 Schema 与业务表（TK 相关）
+
+```text
+database: qingquan
+├── public     中心共用（shop / ingest_raw / task / sync_feishu_* / AMZ qq_* …）
+│              + 6 个兼容 VIEW → tk.*
+├── tk         TikTok 事实表
+└── temu       已有壳表（Temu 观测）
+```
+
+| Schema | 关键表 | 说明 |
+|--------|----------|------|
+| `tk` | `fact_tiktok_shop_daily` | 店日 KPI（GMV/订单等） |
+| `tk` | `fact_tiktok_health_daily` | 账号健康 |
+| `tk` | `fact_tiktok_finance_daily` | 财务日 |
+| `tk` | `fact_ads_campaign_daily` | 广告系列日 |
+| `tk` | `fact_tiktok_order` | 订单 |
+| `tk` | `fact_tiktok_product` | 商品快照 |
+| `public` | `shop` | 店铺主数据 |
+| `public` | `ingest_raw` | 原始入库批次 |
+| `public` | `sync_feishu_map` / `sync_feishu_job` | 飞书同步映射 |
+| `public` | `anomaly_event` | 通用异常（旧） |
+| `public` | VIEW `fact_*` | 兼容读 `tk.*` |
+
+> **注意（2026-08-04）：** 生产库**尚无** `tk.fact_tk_anomaly_task`（异常任务中心表）。本机开发分支已有规则/同步代码时，上线前需补迁移 + 部署，再开飞书异常表同步。  
+> 生产 `.env` 已配 T1/T2 表 id；**异常任务 table id 可能未写全**，部署前对齐仓库 `.env.example` 的 `FEISHU_BITABLE_TABLE_TK_*`。
+
+### 3.5 店铺主数据（`public.shop`）
+
+| platform | external_shop_id | name |
+|----------|------------------|------|
+| tiktok | `27501502216807` | Deal to deal |
+| tiktok | `27328767468273` | Gardena |
+| tiktok | `27758103898326` | TikTok - Pop |
+| temu | `396706` / `398202` / `398203` | Agnis / HomeCove / Twilight Cove |
+| amazon | `AMZ-DEMO-001` | Amazon Demo UK |
+
+### 3.6 生产 TK 数据量（2026-08-04 实查）
+
+| 表 | 行数约 | biz_date 窗口 |
+|----|--------|----------------|
+| `tk.fact_tiktok_shop_daily` | **5** | 2026-07-30 ~ 2026-08-02 |
+| `tk.fact_tiktok_health_daily` | 4 | 同上 |
+| `tk.fact_tiktok_finance_daily` | 4 | 同上 |
+| `tk.fact_ads_campaign_daily` | 23 | 2026-07-29 ~ 2026-08-02 |
+| `tk.fact_tiktok_order` | 775 | 2026-07-11 ~ 2026-08-03 |
+| `tk.fact_tiktok_product` | 239 | — |
+| `public.ingest_raw` | ~1287 | — |
+| `public.shop` | 7 | — |
+
+`shop_daily` 样例（真采）：
+
+| biz_date | shop | gmv | orders |
+|----------|------|-----|--------|
+| 2026-07-30 | Deal to deal | 440.96 GBP | 35 |
+| 2026-07-30 | Gardena | 5295.27 GBP | 430 |
+| 2026-08-02 | Deal to deal | 488.72 GBP | 35 |
+| 2026-08-02 | Gardena | 5148.92 GBP | 423 |
+
+常用核对 SQL：
+
+```sql
+-- 店日是否在涨
+SELECT biz_date, shop_name, gmv, orders_cnt, currency
+FROM tk.fact_tiktok_shop_daily
+ORDER BY biz_date DESC, gmv DESC NULLS LAST
+LIMIT 20;
+
+-- 最近 ingest
+SELECT source, status, count(*), max(received_at)
+FROM ingest_raw
+GROUP BY 1, 2
+ORDER BY 4 DESC NULLS LAST;
+
+-- 广告日
+SELECT biz_date, count(*), sum(spend) AS spend, sum(revenue) AS revenue
+FROM tk.fact_ads_campaign_daily
+GROUP BY 1
+ORDER BY 1 DESC
+LIMIT 14;
+```
+
+---
+
+## 4. API / Ingest（采集机必读）
+
+| 项 | 值 |
+|----|-----|
+| 公网 Base | `https://qingquan.jmzlai.com` |
+| OpenAPI | `https://qingquan.jmzlai.com/docs` |
+| 管理端 | `https://qingquan.jmzlai.com/` |
+| Ingest | `POST /api/v1/ingest/{source}` |
+| 鉴权 | Header：生产 `INGEST_DEFAULT_API_KEY`（**32 位**，在服务器 `.env`） |
+| 管理账号 | `ADMIN_USERNAME=admin`；密码在服务器 `.env` 的 `ADMIN_PASSWORD`（**不是**本机 `admin123`） |
+
+采集配置（本机 TK 副本，**勿提交密钥**）：
+
+| 项 | 说明 |
+|----|------|
+| 文件 | `collectors/tiktok-ads/config/stores.config.json` |
+| `qingquan.baseUrl` | **生产** `https://qingquan.jmzlai.com` |
+| `qingquan.apiKey` | **必须等于** 服务器 `INGEST_DEFAULT_API_KEY` |
+| 本地联调覆盖 | `stores.config.local-ingest.json` → `http://127.0.0.1:8000` + `dev-ingest-key` |
+
+```bash
+# 在服务器上看 Ingest Key（勿转发明文到大群）
+ssh ... "grep INGEST_DEFAULT_API_KEY /opt/qingquan/.env"
+```
+
+健康：
+
+```bash
+curl -sS https://qingquan.jmzlai.com/health
+```
+
+---
+
+## 5. 飞书（TK 驾驶舱表）
+
+| 项 | 值 / 来源 |
+|----|-----------|
+| App ID | `cli_aae1a925e9fa9bed`（与服务器 `.env` 一致） |
+| App Secret | 仅服务器 / 本机 `.env` |
+| TK Base Token | `FEISHU_BITABLE_APP_TOKEN_TK`（服务器；现网文档常见 `C1iHbw6TVad6rUsbZnbc2gSDnHg`） |
+| T1 店日 | `FEISHU_BITABLE_TABLE_TK_SHOP_DAILY=tblwh7EVeAFPfvuy` |
+| T2 广告 | `FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN=tblXaQ871ZcrrTPL` |
+| 异常任务表 | 代码侧 `tblstt4IVNJihCd3`；**确认生产 `.env` 是否已写** `FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK` |
+
+同步脚本（中心机 / 能连 PG+飞书）：
+
+```powershell
+# 仓库根
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -LookbackDays 14
+# 或
+python scripts\feishu_tk_daily_sync.py --lookback-days 14
+```
+
+计划任务名（本机已装示例）：`TK-P0-Post-Collect-Daily` @ **19:00**。
+
+---
+
+## 6. 日更时间表（采集机）
+
+| 时间 | 任务 | 说明 |
+|------|------|------|
+| ~17:20 | 广告日报 | **同事机**；不归中心重复装 |
+| 17:45 | `TK-Shop-Modules-Daily` | KPI/健康/财务 → Ingest → PG |
+| 18:00 | `TK-Orders-Daily` | 订单 |
+| 18:20 | `TK-Products-Daily` | 商品 |
+| 19:00 | `TK-P0-Post-Collect-Daily` | 规则 + 飞书 T1/T2（**不抢紫鸟**） |
+
+前置：紫鸟客户端已登录；Bridge 可用；生产 `qingquan.apiKey` 正确。
+
+文档：`collectors/tiktok-ads/docs/每日定时任务.md`。
+
+---
+
+## 7. 本机开发 vs 生产（勿混）
+
+| 项 | 生产新加坡 | 本机开发 |
+|----|------------|----------|
+| PG | Docker `qingquan-db-1` @ 服务器回环 | Windows `127.0.0.1:5432` |
+| 库/用户 | `qingquan` / `qingquan` | 常同名 |
+| 密码 | **生产强密码**（`.env`） | 常见 `qingquan`（仅本地） |
+| API | `https://qingquan.jmzlai.com` | `http://127.0.0.1:8000` |
+| Ingest Key | 生产 32 位 | `dev-ingest-key` |
+| Admin 密码 | 生产 `.env` | 常见 `admin123` |
+| 数据 | 真采为主 | demo + 联调 |
+| shop_daily | 已有多日真行 | 联调日可能更新 |
+
+**不要**用本机密码去登录生产管理端；**不要**把本地 `DATABASE_URL=...@127.0.0.1...` 当成生产连接串发给写采集的同事当「服务器库」。
+
+---
+
+## 8. 给同事的最小权限包（建议）
+
+按角色勾选分发（加密通道 / 1Password / 当面）：
+
+| 角色 | 需要 |
+|------|------|
+| 采集机同事 | 公网 `baseUrl` + **Ingest API Key** + 店铺 filter 说明 + 紫鸟登录约定 |
+| 看库 / 写 SQL 同事 | SSH 密钥 **或** 隧道方式 + `POSTGRES_USER/DB` + **密码当面给** |
+| 飞书看板同事 | Base 链接 + 表 id（T1/T2）；**不必**给 PG 密码 |
+| 后端部署同事 | SSH + `/opt/qingquan/.env` 读写 + `deploy.sh` 流程 |
+
+---
+
+## 9. 排障速查
+
+| 现象 | 查 |
+|------|-----|
+| Ingest 401 | `qingquan.apiKey` ≠ 服务器 `INGEST_DEFAULT_API_KEY` |
+| 公网 health 非 200 | Nginx / `qingquan-api-1` / 证书 |
+| 库连不上 | 是否误连公网 5432；应 SSH + `docker exec` 或隧道 |
+| shop_daily 不涨 | 紫鸟是否登录；`TK-Shop-Modules-Daily` 日志；`ingest_raw` 是否有 `tiktok_shop_daily` |
+| 管理端登不上 | 生产 admin 密码 ≠ 本地 `admin123` |
+| 飞书空 | post-collect / `feishu_tk_daily_sync` 日志；table id；机器人是否进 Base |
+
+日志位置：
+
+- 采集机：`collectors/tiktok-ads/logs/*`
+- 服务器：`docker logs qingquan-api-1 --tail 200`；`/opt/qingquan/logs/`（若有）
+
+---
+
+## 10. 明文密钥怎么拿（负责人操作，不写进 Git）
+
+在已授权 SSH 的机器：
+
+```bash
+ssh -i keys/qingquan_sg_ed25519 ubuntu@43.156.50.38
+sudo sed -n '1,80p' /opt/qingquan/.env   # 或 grep 单项
+```
+
+需要同步给同事时，建议单独发：
+
+1. `POSTGRES_PASSWORD`
+2. `INGEST_DEFAULT_API_KEY`
+3. `ADMIN_PASSWORD`（仅管理端同事）
+4. `FEISHU_APP_SECRET` / Token（仅同步脚本同事）
+
+发完提醒对方：勿转发、勿进仓库、聊天记录用完可删。
+
+---
+
+## 11. 变更时请同步更新本文
+
+- IP / 域名 / 容器名  
+- 库名用户、是否开放隧道策略  
+- 新 schema / 异常任务表上线  
+- Ingest Key 或 Admin 密码轮换（轮换后通知采集机改 `stores.config.json`）

@@ -1,0 +1,256 @@
+/* TikTok product manage list scraper - calibrated 2026-07-31 seller-uk. */
+(function () {
+  function cleanText(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+  function detectCurrency(text) {
+    var s = String(text == null ? '' : text);
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '');
+    s = s.replace(/USD|GBP|EUR|CNY|RMB/gi, '').replace(/%/g, '');
+    var n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+  function extractProductId(text) {
+    var s = cleanText(text);
+    var m = s.match(/ID\s*[:：]\s*(\d{10,22})/i) || s.match(/\b(17\d{15,20})\b/) || s.match(/\b(\d{15,22})\b/);
+    return m ? m[1] : '';
+  }
+  function extractSellerSku(text) {
+    var s = cleanText(text);
+    var m = s.match(/(?:商家\s*)?SKU\s*[:：]\s*([^\s]+)/i);
+    return m ? m[1] : '';
+  }
+  function extractSalesQty(text) {
+    var s = cleanText(text);
+    var m = s.match(/已售出\s*(\d+)/) || s.match(/Sold\s*(\d+)/i);
+    return m ? Number(m[1]) : null;
+  }
+  function extractProductName(text) {
+    var s = cleanText(text);
+    s = s.replace(/ID\s*[:：]\s*\d{10,22}/ig, ' ');
+    s = s.replace(/(?:商家\s*)?SKU\s*[:：]\s*\S+/ig, ' ');
+    return s.replace(/\s+/g, ' ').trim();
+  }
+  var HEADER_ALIASES = {
+    product: ['商品', '商品名称', '产品名称', 'product', 'product name', 'title'],
+    performance: ['表现', 'performance'],
+    status: ['状态', '商品状态', 'status'],
+    stockQty: ['库存', '可售库存', 'stock'],
+    price: ['零售价', '价格', '售价', 'price', 'retail']
+  };
+  function matchField(header) {
+    var h = cleanText(header).toLowerCase();
+    if (!h) return null;
+    var best = null, bestLen = 0;
+    var keys = Object.keys(HEADER_ALIASES);
+    for (var i = 0; i < keys.length; i++) {
+      var field = keys[i];
+      var aliases = HEADER_ALIASES[field];
+      for (var j = 0; j < aliases.length; j++) {
+        var al = aliases[j].toLowerCase();
+        if (h === al || h.indexOf(al) >= 0) {
+          if (al.length >= bestLen) { best = field; bestLen = al.length; }
+        }
+      }
+    }
+    return best;
+  }
+  function scoreTable(table) {
+    var trs = Array.prototype.slice.call(table.querySelectorAll('tr'));
+    if (trs.length < 2) return 0;
+    var head = Array.prototype.slice.call(trs[0].querySelectorAll('th,td')).map(function (c) { return cleanText(c.textContent); });
+    var hits = 0, fields = {};
+    for (var i = 0; i < head.length; i++) {
+      var f = matchField(head[i]);
+      if (f) { hits++; fields[f] = true; }
+    }
+    if (!fields.product && !fields.stockQty && !fields.price) {
+      var idHits = 0;
+      for (var r = 1; r < Math.min(trs.length, 6); r++) {
+        if (extractProductId(trs[r].textContent || '')) idHits++;
+      }
+      if (idHits === 0) return 0;
+      return idHits * 5 + trs.length;
+    }
+    return hits * 10 + Math.min(trs.length, 80);
+  }
+  function pickBestTable() {
+    var tables = Array.prototype.slice.call(document.querySelectorAll('table'));
+    var best = null, bestScore = 0;
+    for (var i = 0; i < tables.length; i++) {
+      var s = scoreTable(tables[i]);
+      if (s > bestScore) { bestScore = s; best = tables[i]; }
+    }
+    return bestScore >= 8 ? best : null;
+  }
+  function defaultColMap() {
+    return { product: 1, performance: 2, status: 3, stockQty: 4, price: 5 };
+  }
+  function parseHtmlTable(table) {
+    var trs = Array.prototype.slice.call(table.querySelectorAll('tr'));
+    if (trs.length < 2) return { rows: [], headers: [], colMap: {} };
+    var headIdx = -1;
+    for (var i = 0; i < Math.min(3, trs.length); i++) {
+      var cells = Array.prototype.slice.call(trs[i].querySelectorAll('th,td')).map(function (c) { return cleanText(c.textContent); });
+      var hits = 0, hasPid = false;
+      for (var h = 0; h < cells.length; h++) {
+        if (matchField(cells[h])) hits++;
+        if (extractProductId(cells[h])) hasPid = true;
+      }
+      if (hits >= 2 && !hasPid) { headIdx = i; break; }
+    }
+    var colMap = {}, headCells = [];
+    if (headIdx >= 0) {
+      headCells = Array.prototype.slice.call(trs[headIdx].querySelectorAll('th,td')).map(function (c) { return cleanText(c.textContent); });
+      headCells.forEach(function (h, idx) {
+        var f = matchField(h);
+        if (f && colMap[f] == null) colMap[f] = idx;
+      });
+    }
+    var def = defaultColMap();
+    Object.keys(def).forEach(function (k) { if (colMap[k] == null) colMap[k] = def[k]; });
+    if (!headCells.length) headCells = ['', 'product', 'perf', 'status', 'stock', 'price'];
+    var rows = [], seen = {};
+    var start = headIdx >= 0 ? headIdx + 1 : 0;
+    for (var r = start; r < trs.length; r++) {
+      var tds = Array.prototype.slice.call(trs[r].querySelectorAll('td,th'));
+      if (!tds.length) continue;
+      var vals = tds.map(function (c) { return cleanText(c.textContent); });
+      function get(f) { return colMap[f] != null ? vals[colMap[f]] || '' : ''; }
+      var productCell = get('product') || vals.join(' ');
+      var productId = extractProductId(productCell) || extractProductId(vals.join(' '));
+      var sellerSku = extractSellerSku(productCell);
+      var productName = extractProductName(productCell);
+      if (!productId) {
+        if (sellerSku) productId = 'sku:' + sellerSku;
+        else if (productName) productId = 'name:' + productName.slice(0, 80);
+      }
+      if (!productId || seen[productId]) continue;
+      seen[productId] = true;
+      var perf = get('performance');
+      rows.push({
+        productId: productId,
+        productName: productName,
+        sellerSku: sellerSku,
+        status: get('status'),
+        stockQty: parseNumber(get('stockQty')),
+        price: parseNumber(get('price')),
+        salesQty: extractSalesQty(perf),
+        currencyHint: detectCurrency(vals.join(' ')) || detectCurrency(get('price')),
+        rawCells: vals.slice(0, 10)
+      });
+    }
+    return { rows: rows, headers: headCells, colMap: colMap };
+  }
+  function parseIdBlocks() {
+    var nodes = Array.prototype.slice.call(document.querySelectorAll('div,tr,li,section,article'));
+    var rows = [], seen = {};
+    for (var i = 0; i < nodes.length; i++) {
+      var raw = nodes[i].textContent || '';
+      if (raw.indexOf('ID:') < 0 && raw.indexOf('ID：') < 0) continue;
+      var text = cleanText(raw).slice(0, 600);
+      if (text.length > 550) continue;
+      var productId = extractProductId(text);
+      if (!productId || seen[productId]) continue;
+      seen[productId] = true;
+      var pm = text.match(/[£$€]\s*[0-9.]+/);
+      var st = '';
+      var sm = text.match(/(在售|已下架|草稿|审核中|已冻结|Active|Inactive|Draft)/);
+      if (sm) st = sm[1];
+      rows.push({
+        productId: productId,
+        productName: extractProductName(text),
+        sellerSku: extractSellerSku(text),
+        status: st,
+        stockQty: (function () {
+          var m = text.match(/库存\s*[:：]?\s*(\d+)/) || text.match(/Stock\s*[:：]?\s*(\d+)/i);
+          return m ? Number(m[1]) : null;
+        })(),
+        price: pm ? parseNumber(pm[0]) : null,
+        salesQty: extractSalesQty(text),
+        currencyHint: detectCurrency(text),
+        rawCells: [text.slice(0, 160)]
+      });
+    }
+    return rows.length ? { rows: rows, headers: ['id-blocks'], colMap: {}, source: 'id-blocks' } : null;
+  }
+  function parseBodyTextFallback() {
+    var body = cleanText((document.body && document.body.innerText) || '');
+    if (!body || body.length < 20) return null;
+    // split by product id markers
+    var parts = body.split(/(?=ID\s*[:：]\s*\d{10,22})/i);
+    var rows = [], seen = {};
+    for (var i = 0; i < parts.length; i++) {
+      var text = cleanText(parts[i]).slice(0, 500);
+      var productId = extractProductId(text);
+      if (!productId || seen[productId]) continue;
+      seen[productId] = true;
+      var pm = text.match(/[£$€]\s*[0-9.,]+/);
+      rows.push({
+        productId: productId,
+        productName: extractProductName(text),
+        sellerSku: extractSellerSku(text),
+        status: '',
+        stockQty: null,
+        price: pm ? parseNumber(pm[0]) : null,
+        salesQty: extractSalesQty(text),
+        currencyHint: detectCurrency(text),
+        rawCells: [text.slice(0, 120)]
+      });
+    }
+    return rows.length ? { rows: rows, headers: ['body-text'], colMap: {}, source: 'body-text' } : null;
+  }
+  try {
+    var url = location.href || '';
+    var title = document.title || '';
+    if (!url || url === 'about:blank') {
+      return JSON.stringify({ ok: false, source: 'none', module: 'products', url: url, rows: [], error: 'about:blank' });
+    }
+    var table = pickBestTable();
+    var parsed = null, source = 'none';
+    if (table) { parsed = parseHtmlTable(table); source = 'html-table'; }
+    if (!parsed || !parsed.rows || parsed.rows.length === 0) {
+      var fb = parseIdBlocks();
+      if (fb) { parsed = fb; source = fb.source || 'id-blocks'; }
+    }
+    if (!parsed || !parsed.rows || parsed.rows.length === 0) {
+      var fb2 = parseBodyTextFallback();
+      if (fb2) { parsed = fb2; source = fb2.source || 'body-text'; }
+    }
+    var rows = parsed && parsed.rows ? parsed.rows : [];
+    var currencyHits = { USD: 0, GBP: 0, EUR: 0, CNY: 0 };
+    for (var ri = 0; ri < rows.length; ri++) {
+      var c = rows[ri].currencyHint;
+      if (c && currencyHits[c] != null) currencyHits[c]++;
+    }
+    var currency = 'GBP', max = -1;
+    var ks = Object.keys(currencyHits);
+    for (var k = 0; k < ks.length; k++) {
+      if (currencyHits[ks[k]] > max) { max = currencyHits[ks[k]]; currency = ks[k]; }
+    }
+    if (max <= 0) currency = 'GBP';
+    var ok = rows.length > 0;
+    return JSON.stringify({
+      ok: ok, source: source, module: 'products', url: url, title: title,
+      currency: currency, currencyHits: currencyHits,
+      headers: parsed && parsed.headers ? parsed.headers : [],
+      colMap: parsed && parsed.colMap ? parsed.colMap : {},
+      rows: rows, rowCount: rows.length,
+      diag: { tables: document.querySelectorAll('table').length, bodyLen: ((document.body && document.body.innerText) || '').length },
+      error: ok ? null : 'no product table. url=' + url
+    });
+  } catch (e) {
+    return JSON.stringify({ ok: false, source: 'none', module: 'products', url: location.href || '', rows: [], error: String(e && e.message ? e.message : e) });
+  }
+})();

@@ -1,0 +1,43 @@
+{
+  "feishu": {
+    "appId": "cli_aaeb3d2e16b99d22",
+    "appSecret": "zRAFN0ihqtxhhlYqXR4PGdetvG6E4zxd",
+    "appToken": "NnpObOqZSa5EjCsQjnqcfVgOnFc",
+    "tableId": "tblLPhqUkpWxKT9n"
+  },
+  "filter": {
+    "platformContains": ["TikTok"],
+    "nameContains": [],
+    "nameExclude": [],
+    "requireIp": true,
+    "includeStoreIds": [],
+    "excludeStoreIds": []
+  },
+  "adsUrl": {
+    "default": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+    }
+  },
+  "storeNameMap": {
+    "Tiktok_Shop2": "Deal to deal",
+    "Nookora Home": "Nookora Home",
+    "Tiktok - KK Seagull": "Gardena",
+    "TikTok - Pop": "TikTok - Pop",
+    "TT-L": "TT-L"
+  },
+  "options": {
+    "dryRun": false,
+    "dateMode": "yesterday",
+    "closeAfter": true,
+    "waitAfterOpenMs": 25000,
+    "waitAfterVisitMs": 15000,
+    "delayBetweenStoresMs": 5000
+  },
+  "analysis": {
+    "enabled": true,
+    "lowRoiThreshold": 3,
+    "writeSummaryToFeishu": true
+  }
+}

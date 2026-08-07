@@ -1,0 +1,86 @@
+# -*- coding: utf-8 -*-
+"""
+只读实测 WMS 黑猫(JMCAT) 平台订单页，核对 wms.py 选择器是否命中真实 DOM。
+- 登录 JMCAT -> 开平台订单 -> 数未发货行
+- 校验：表头全选框 / 批量修改快递方按钮 / 快递方下拉+RM选项 / 批量发货按钮
+- 打开"批量修改快递方"弹窗看快递方选项，然后【取消】；不发货。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, secrets
+from core import log, ORDERINFO_WMS
+from playwright.sync_api import sync_playwright
+
+JMCAT = [a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMCAT"][0]
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.wms_login(page, JMCAT):
+            print("登录失败"); ctx.close(); return
+        core.safe_goto(page, ORDERINFO_WMS)
+        time.sleep(5)
+
+        # 点查询刷新
+        try:
+            page.click("button:has-text('查询')", timeout=5000); time.sleep(3)
+        except Exception as e:
+            print("查询按钮:", e)
+
+        # 行数 / 分页总数
+        rows = page.query_selector_all(".el-table__row")
+        vis = [r for r in rows if r.is_visible()]
+        total_txt = None
+        el = page.query_selector(".el-pagination__total")
+        if el: total_txt = el.inner_text()
+        print(f"el-table__row 总={len(rows)} 可见={len(vis)}  分页总数文本={total_txt!r}")
+
+        # 状态筛选下拉当前值（确认是未发货）
+        status = page.evaluate(r"""() => {
+            const ins=[...document.querySelectorAll('.el-input__inner')].map(i=>i.value).filter(v=>v);
+            return ins;
+        }""")
+        print("输入框当前值:", status)
+
+        # 工具栏按钮
+        btns = page.evaluate(r"""() => [...document.querySelectorAll('button')]
+            .map(b=>(b.innerText||'').trim().replace(/\s+/g,'')).filter(t=>t&&t.length<=10)""")
+        print("按钮:", sorted(set(btns)))
+
+        # 表头全选框
+        hcb = page.query_selector(".el-table__header-wrapper .el-checkbox, .el-table__header .el-checkbox")
+        print("表头全选框存在:", bool(hcb), " class:", hcb.get_attribute("class") if hcb else None)
+
+        # 打开 批量修改快递方 弹窗，看快递方选项
+        try:
+            page.click("button:has-text('批量修改快递方')", timeout=6000); time.sleep(1.5)
+            # 需要先选中行？先尝试全选
+        except Exception as e:
+            print("打开批量修改快递方:", e)
+        # 弹窗与下拉
+        dlg = page.query_selector(".el-dialog")
+        print("弹窗出现:", bool(dlg), " 标题区:", (page.query_selector(".el-dialog__title").inner_text() if page.query_selector(".el-dialog__title") else None))
+        try:
+            page.click(".el-dialog .el-select", timeout=4000); time.sleep(1)
+            opts = [ (o.inner_text() or "").strip() for o in page.query_selector_all(".el-select-dropdown__item") if o.is_visible() ]
+            print("快递方选项:", opts)
+        except Exception as e:
+            print("打开快递方下拉:", e)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "wms_validate.png"), full_page=True)
+
+        # 取消弹窗（不改不发）
+        try:
+            page.click(".el-dialog button:has-text('取消')", timeout=3000)
+        except Exception:
+            page.keyboard.press("Escape")
+
+        print("\n截图: capture/dumps/wms_validate.png")
+        print("DONE，保持 20 秒。")
+        time.sleep(20)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

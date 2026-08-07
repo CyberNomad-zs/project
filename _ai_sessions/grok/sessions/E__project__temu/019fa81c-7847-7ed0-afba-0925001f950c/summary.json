@@ -1,0 +1,28 @@
+{
+  "info": {
+    "id": "019fa81c-7847-7ed0-afba-0925001f950c",
+    "cwd": "E:\\project\\temu"
+  },
+  "session_summary": "获取Claude Code项目对话记忆",
+  "created_at": "2026-07-28T09:44:25.943610900Z",
+  "updated_at": "2026-07-30T08:40:56.937089500Z",
+  "num_messages": 182,
+  "num_chat_messages": 77,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 4,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/temu/",
+  "git_remotes": [
+    "https://github.com/CyberNomad-zs/temu.git",
+    "https://github.com/JMCATTT/temu.git"
+  ],
+  "head_commit": "be1eeedb43fba5a310e0451f69dd11af8c111adc",
+  "head_branch": "main",
+  "request_id": "0628e114-f9ff-461d-893c-35c04622d158",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T09:49:37.947581300Z",
+  "generated_title": "获取Claude Code项目对话记忆",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

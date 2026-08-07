@@ -1,0 +1,41 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告日更由**同事本机定时**承担。
+
+## 2026-07-31 晚间续作
+
+### 生产数据（qingquan.jmzlai.com）
+| 表 | 行数 | 备注 |
+|----|------|------|
+| orders | 565 | future_biz=0；null_biz≈51（无 create_time_raw 的旧行，待 Bridge 重采） |
+| products | 110 | price 已有 ~101 |
+| shop_daily | 1 | Gardena 近7天 GMV £5295 / 订单430 / 客户423 |
+| health_daily | 1 | 健康分 277，差评率 0.45% |
+| finance_daily | 1 | pending £4802 / refund -159 |
+
+### 本轮修复
+1. **shop/health URL**：homepage + health-center（compass 占位、health-score 404）
+2. **scrape 脚本**：首页卡片 / 健康中心标签
+3. **单条 ingest PS 解包**：PSCustomObject + 属性探测；list=1 可上报
+4. **订单号粘连相对时间**：`5769…72428 分钟前` → 先剥 18 位单号再取 1–4 位；pytest **6 passed**；API 已部署  
+5. **null biz_date 回填**：从 `raw_extra.create_time_raw` 回填 **5** 行；余 **51** 无 raw（旧数据）  
+6. **products-click-next**：增强 arco-pagination / 页码+1（待 Bridge 实跑）  
+7. **单条 ingest**：PSCustomObject + list 识别，`list=1` / `accepted=1` 已通
+
+### Bridge
+- 本机 Bridge **9481 当前不可用** → 翻页/重采需先开紫鸟
+
+### 待你本地（Bridge 恢复后）
+```powershell
+cd collectors/tiktok-ads
+.\scripts\run-orders.ps1          # 再压 null biz_date
+.\scripts\run-products.ps1        # 验证翻页
+.\scripts\run-shop-modules.ps1    # 多店 shop+health+finance
+```
+
+### 代码点
+- `qingquan-client.ps1` Resolve + Get-QingquanItemList  
+- `scrape-orders-page.js` / `ingest.py` 粘连时间  
+- `scrape-shop-daily-page.js` / `scrape-health-daily-page.js`  
+- `products-click-next.js`

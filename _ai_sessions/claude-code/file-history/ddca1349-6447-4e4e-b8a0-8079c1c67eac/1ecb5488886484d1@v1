@@ -1,0 +1,547 @@
+# 赛狐开放 API 交接说明
+
+> 更新：2026-08-05  
+> 适用项目：`sellfox-bridge`（赛狐 ↔ 海外仓 WMS 发货桥接）  
+> 代码位置：`bridge/clients/sellfox.py`  
+> 相关总文档：`项目说明.md`、`业务层说明.md`、`对齐记录_业务语义.md`  
+> WMS 侧对照：`WMS_API交接说明.md`
+
+---
+
+## 1. 一句话定位
+
+本项目通过 **赛狐开放平台官方 API** 完成：拉待处理包裹、认/指派渠道、物流下单（推三方仓）、出库后回传赛狐。
+
+| 做 | 不做 |
+|---|---|
+| 拉包裹列表（待处理 / 物流下单中 / 已发货） | 地址编辑（赛狐无此 API） |
+| 查物流渠道 / 仓库列表 | 待审核通过、拆包（接口有、本项目未接） |
+| 指派仓库+渠道 | 仓内改快递方 / 批量发货（属 WMS） |
+| 物流下单 `applyTrackNo`（经赛狐内置三方仓通道推 WMS） | 重建赛狐→WMS 推单通道 |
+| 称重发货 / 快速出库回传 | 网页 DOM 自动化（旧 `automation/`） |
+
+**推单到 WMS 的路径**：赛狐 `applyTrackNo` → 赛狐内置三方仓 → WMS。  
+**桥接不直接写 WMS 发货**；WMS 侧只读查状态/运单，见 `WMS_API交接说明.md`。
+
+---
+
+## 2. 接入信息
+
+| 项 | 值 |
+|---|---|
+| 接入域名 | `https://openapi.sellfox.com` |
+| 官方文档 | `https://sellfoxapi.apifox.cn` |
+| 文档访问密码 | `VZKGdd0Q` |
+| 协议方法 | 业务接口全部 **POST**；取 token 为 **GET** |
+| 数据格式 | JSON；**鉴权参数在 query**，**业务参数在 body** |
+| 网络限制 | **IP 白名单**；不在白名单返回 `code=40005` |
+| 本项目 client | `bridge/clients/sellfox.py` → `SellfoxClient` |
+
+### 2.1 密钥存放（勿外传）
+
+真实 `client_id` / `client_secret` 在本机配置（**已 gitignore**）：
+
+- 生产常用：`config/config.g2-3shops.yaml`
+- 模板：`config/config.example.yaml`
+
+```yaml
+sellfox:
+  base_url: https://openapi.sellfox.com
+  client_id: ""          # 赛狐开放平台申请
+  client_secret: ""
+```
+
+**不要把 secret 写进聊天、文档、Git。**
+
+### 2.2 店铺白名单（金猫商贸授权，绝不能碰其它店）
+
+| shopId | 店名 | 平台 |
+|---|---|---|
+| `396706` | Agnis | Temu |
+| `398202` | HomeCove | Temu |
+| `398203` | Twilight Cove | Temu |
+
+同账号下 **Gardena / SHOP INOUT / 昇新-UK / Amazon 店** 等 = 其他客户业务，**禁止**进 bridge。  
+配置项：`run.shop_whitelist`。
+
+---
+
+## 3. 认证与签名（必须严格按此）
+
+实现见 `bridge/clients/sellfox.py`。
+
+### 3.1 获取 access_token
+
+| 项 | 说明 |
+|---|---|
+| 方法 | `GET /api/oauth/v2/token.json` |
+| 参数 | `client_id`、`client_secret`、`grant_type=client_credentials` |
+| 有效期 | 响应 `expires_in` 为**毫秒**；约 24 小时 |
+| 缓存 | 本地缓存 token；**提前 10 分钟**刷新 |
+| IP | **token 接口不校验 IP**；业务接口才校验 |
+
+成功响应结构（业务关心字段）：
+
+```json
+{
+  "code": 0,
+  "data": {
+    "access_token": "...",
+    "expires_in": 86400000
+  }
+}
+```
+
+### 3.2 业务接口签名（HMAC-SHA256）
+
+1. 拼 query 鉴权参数（**body 不参与签名**）：
+
+| 参数 | 说明 |
+|---|---|
+| `access_token` | 上一步拿到的 token |
+| `client_id` | 应用 ID |
+| `timestamp` | **毫秒** Unix 时间戳 |
+| `nonce` | 随机整数（本项目 `1~99999`） |
+| `sign` | 下方算法结果 |
+
+2. 签名字符串：下列 6 个键按**字典序**排成 `k=v`，用 `&` 拼接：
+
+```text
+access_token=...&client_id=...&method=post&nonce=...&timestamp=...&url=...
+```
+
+其中：
+
+- `method` 固定小写 `"post"`
+- `url` = 接口路径，如 `/api/packageShip/v1/getPackagePage.json`（**不含域名**）
+
+3. 计算：
+
+```python
+import hmac, hashlib
+
+sign = hmac.new(
+    client_secret.encode(),
+    data.encode(),          # 上面拼好的字符串
+    hashlib.sha256,
+).hexdigest()               # 小写 hex
+```
+
+4. 请求：
+
+```text
+POST {base_url}{url_path}?access_token=...&client_id=...&timestamp=...&nonce=...&sign=...
+Content-Type: application/json
+
+{ ... 业务 body ... }
+```
+
+### 3.3 HTTP 客户端约束
+
+- 使用 `requests.Session()`
+- **必须 `session.trust_env = False`**（直连，不走系统代理）  
+  原因：赛狐按**出口 IP** 白名单校验；走代理会导致 IP 漂移 → `40005`
+- 网络错误指数退避重试（本项目默认 3 次）
+- 响应 `msg` 含 `token` 时清缓存重取 token 再试
+
+### 3.4 统一业务响应
+
+```json
+{
+  "code": 0,
+  "msg": "...",
+  "requestId": "...",
+  "data": { }
+}
+```
+
+- `code == 0`：成功；客户端返回已解包的 `data`
+- 非 0：抛 `SellfoxError(code, msg, requestId)`
+- `40005`：IP 不在白名单（见 §8）
+
+---
+
+## 4. 已封装接口清单
+
+客户端类：`bridge.clients.sellfox.SellfoxClient`
+
+| 方法 | Path | 主用途 | 流水线 |
+|---|---|---|---|
+| `_get_token` | `GET /api/oauth/v2/token.json` | 取 token | 每次业务调用前 |
+| `get_package_page` | `/api/packageShip/v1/getPackagePage.json` | 拉包裹分页 | step1 / step1b / recon |
+| `query_ship_channels` | `/api/packageShip/queryShipChannel.json` | 查三方仓物流渠道 | 启动同步 / 配置校验 |
+| `warehouse_list` | `/api/warehouseManage/warehouseList.json` | 仓库列表 | 配置校验 |
+| `update_package_detail` | `/api/packageShip/updatePackageDetail.json` | 指派仓库+渠道 | step2（无渠道时） |
+| `apply_track_no` | `/api/packageShip/applyTrackNo.json` | 物流下单（推 WMS） | step3 |
+| `weighing_shipment` | `/api/packageShip/weighingShipment.json` | 称重发货回传 | step4 |
+| `quick_outbound` | `/api/packageShip/quickOutbound.json` | 快速出库回传（免重量） | step4 兜底 |
+| `temu_cross_parent_page` | `/api/multiplatform/temu/product/getParentPageList.json` | Temu 跨境父体（只读） | 商品探测，非发货主链 |
+| `temu_cross_child_info` | `/api/multiplatform/temu/product/getChildInfo.json` | Temu 跨境子体 | 同上 |
+| `temu_local_parent_page` | `/api/multiplatform/temu/local/product/getParentPageList.json` | Temu 本土父体 | 同上 |
+
+---
+
+## 5. 发货主链接口详解
+
+### 5.1 拉包裹列表 `getPackagePage`
+
+**Body：**
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `pageNo` | string | 页码，从 1 |
+| `pageSize` | string | 每页条数，项目默认 `200` |
+| `packageStatus` | string | 状态，见下表 |
+| `purchaseDateStart` | string | `YYYY-MM-DD HH:MM:SS` |
+| `purchaseDateEnd` | string | 同上 |
+| `shopIdList` | string[] | 可选；店铺白名单 |
+
+**`packageStatus` 生命周期：**
+
+```text
+to_audit(待审核) → to_process(待处理) → apply_track_no(物流下单中)
+                 → to_print(待打单) → has_shipped(已发货)
+```
+
+本项目实际使用：
+
+| 状态值 | 用途 |
+|---|---|
+| `to_process` | step1 发现待处理 |
+| `apply_track_no` | step1b 同步已下单 → 本地 ORDERED（防重复下单） |
+| `has_shipped` | recon 对账近 N 天 |
+
+**`data` 关键结构（业务用到的）：**
+
+```text
+data.rows[]
+  packageSn              # ★ 包裹号，与 WMS platformOrderNo 一一对应
+  shopId
+  address.countryCode
+  orders[0].amazonOrderId
+  logistics.channelName  # 如 昇新海外仓-BLACKCAT-RM
+  logistics.trackNo / trackingNumber
+  items[]                # SKU 明细（估重用）
+data.pageNo / totalPage / totalSize
+```
+
+**关联键（最重要）：**
+
+```text
+赛狐 packageSn  ==  WMS platformOrderNo
+```
+
+例：`P2AS6TCD63996`  
+**不要**用亚马逊平台单号 `204-xxxx` 当 WMS 查询键。
+
+### 5.2 查询物流渠道 `queryShipChannel`
+
+**Body：**
+
+```json
+{ "logisticsType": ["1"] }
+```
+
+- `logisticsType=1`：三方仓库物流（WMS 渠道）
+- 返回中含 `providerAuthDetailId`、渠道名、启用状态等
+- 启动时 `ChannelSelector` 会同步：赛狐侧 status=`0`（停用）→ 本地 `enabled=false`
+
+### 5.3 指派仓库/渠道 `updatePackageDetail`
+
+≈ 网页上的「更换」仓库/渠道。
+
+**Body：**
+
+| 字段 | 说明 |
+|---|---|
+| `packageSns` | 包裹号数组 |
+| `warehouseId` | 仓库 ID（见渠道表） |
+| `isOversea` | 配置 `warehouse.is_oversea`，一般 `"1"` |
+| `providerAuthDetailId` | 渠道授权明细 ID（见渠道表） |
+
+**当前主路径很少调用**：`keep_existing_channel: true` 时，已有可用渠道只改本地状态，**不调写接口**。  
+仅「无渠道 + 自动选渠道兜底」时才会写（第一期业务上无渠道改人工指派）。
+
+### 5.4 物流下单 `applyTrackNo`
+
+触发赛狐向三方仓（WMS）推单并申请运单号。
+
+**Body：**
+
+```json
+{ "packageSns": ["P2AS6TCD63996", "..."] }
+```
+
+- 单次上限 **200** 单（代码已截断）
+- 受开关 `run.auto_apply_track_no` 控制；生产 G2 为 `true`
+- 可选 `run.order_channel_names`：非空则只对这些 config 渠道名下单
+
+**返回（项目已兼容多种形态）：**
+
+```text
+successData: [ "P..." | {packageSn, msg} , ... ]
+failData:    [ 同上 ]
+success:     成功计数（有时只有计数无明细）
+```
+
+处理规则：
+
+- 在 `successData` → 本地 `ORDERED`
+- `failData` 文案含「已下单/重复/已申请/已交运」→ 仍同步 `ORDERED`（防重复）
+- 其它失败 → 本地 `FAILED` + 飞书告警
+- 无明细仅有计数：单票且 success=1 可保守标成功；否则告警人工核对
+
+### 5.5 称重发货 `weighingShipment`
+
+WMS 已出库且有重量时回传。
+
+**Body：**
+
+```json
+{
+  "items": [
+    {
+      "originalNum": "P2AS6TCD63996",
+      "weight": 0.35,
+      "weightUnit": "kg"
+    }
+  ]
+}
+```
+
+- `originalNum` = 包裹号 `packageSn`
+- 重量来源：本地 `weight_g` 或 `sku_weights` 估算；都没有则改走 quick
+
+### 5.6 快速出库 `quickOutbound`（备用/免重量）
+
+**Body：**
+
+```json
+{
+  "packageList": [
+    {
+      "packageSn": "P2AS6TCD63996",
+      "carrier": "RM",
+      "trackNo": "实际运单号",
+      "warehouseId": 187323,
+      "isOversea": 3,
+      "shipmentType": 1
+    }
+  ]
+}
+```
+
+说明：
+
+- `carrier` / `trackNo` 来自 WMS `queryTrackingNumber`
+- `isOversea: 3`、`shipmentType: 1` 为项目实测可用值
+- 配置 `run.ship_confirm_mode`：
+  - `auto`（生产）：有重量 → weighing，无重量 → quick
+  - `weighing`：优先称重；无重量且 `weighing_fallback_quick: true` 时降级 quick
+  - `quick`：一律快速出库
+
+---
+
+## 6. 渠道映射（配置 ↔ 赛狐 ↔ WMS）
+
+匹配规则：`channelName.endswith(config.name)`。
+
+| 赛狐 channelName（完整） | config.name | providerAuthDetailId | warehouse_id | expected_carrier | wms_profile |
+|---|---|---|---|---|---|
+| 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | 591 | 187323 | RM | **blackcat** |
+| 昇新海外仓-BLACKCAT-DPD | BLACKCAT-DPD | 590 | 187323 | DPD | **blackcat** |
+| 昇新海外仓-BLACKCAT-EH | BLACKCAT-EH | 1303 | 187323 | EH | **blackcat** |
+| 昇新海外仓-昇新海外仓-RM | 昇新海外仓-RM | 480 | 180617 | RM | **jinmao** |
+| 昇新海外仓-昇新海外仓-DPD | 昇新海外仓-DPD | 481 | 180617 | DPD | **jinmao** |
+
+- **BLACKCAT\*** → 黑猫 WMS 账本  
+- **昇新海外仓-\*** → 金猫 WMS 账本  
+- 交叉用错 key 查 WMS = 查无（正常现象，不是漏单）  
+- `providerAuthDetailId` / `warehouse_id` 以赛狐 `queryShipChannel` / `warehouseList` 及现网 config 为准；换客户/换授权后要重核
+
+---
+
+## 7. 在业务流水线里怎么用
+
+```text
+step1  发现待处理     → getPackagePage(to_process)
+step1b 同步已下单     → getPackagePage(apply_track_no) → 本地 ORDERED
+step2  认/指派渠道    → 有渠道则保留；无渠道人工；兜底才 updatePackageDetail
+step3  物流下单       → applyTrackNo  （赛狐内部推 WMS）
+step4  出库回传闭环   → 查 WMS 状态+运单 → weighingShipment / quickOutbound
+recon  每日对账       → getPackagePage(has_shipped) + 只读 WMS
+```
+
+本地状态机（`bridge.db`）：
+
+```text
+NEW → CHANNEL_ASSIGNED → ORDERED → CLOSED
+         └─ FAILED（无渠道等）→ 人工补渠道后可复活
+         └─ STALE（长期不在待处理的陈旧 NEW）
+```
+
+step4 回传前置条件（与 WMS API 对齐）：
+
+```text
+WMS orderStatus ∈ {2, 4}  AND  trackingNumber 非空
+AND 承运商与赛狐 expected_carrier 一致（hold_on_channel_mismatch）
+```
+
+---
+
+## 8. IP 白名单与部署
+
+| 现象 | 处理 |
+|---|---|
+| 业务接口 `code=40005` | 当前出口 IP 未加白，或走了代理 |
+| token 能拿、业务失败 | 正常：仅业务接口校验 IP |
+| 家宽 IP 常变 | 正式部署迁固定 IP（推荐 WMS 同机 `193.112.93.60`） |
+
+检查出口 IP（必须与 bridge 一样直连）：
+
+```powershell
+python -c "import requests; s=requests.Session(); s.trust_env=False; print(s.get('http://myip.ipip.net',timeout=10).text)"
+```
+
+将该 IP 加入赛狐开放平台白名单（对应本项目的 `client_id`）。  
+详见 `部署_固定IP清单.md`。
+
+---
+
+## 9. 最小可跑通示例（同事自测）
+
+**不要把 secret 写进脚本明文提交。** 从本机 config 读。
+
+```python
+import yaml
+from bridge.clients.sellfox import SellfoxClient
+
+cfg = yaml.safe_load(open("config/config.g2-3shops.yaml", encoding="utf-8"))
+sf = cfg["sellfox"]
+client = SellfoxClient(sf["base_url"], sf["client_id"], sf["client_secret"])
+
+# 1) token + 业务连通：查三方仓渠道（未加白会 40005）
+chs = client.query_ship_channels(logistics_type="1")
+print("channels sample:", chs)
+
+# 2) 拉白名单店待处理
+from datetime import datetime, timedelta
+end = datetime.now()
+start = end - timedelta(days=7)
+data = client.get_package_page(
+    status="to_process",
+    date_start=start.strftime("%Y-%m-%d %H:%M:%S"),
+    date_end=end.strftime("%Y-%m-%d %H:%M:%S"),
+    page_no=1,
+    page_size=20,
+    shop_ids=cfg["run"]["shop_whitelist"],
+)
+rows = (data or {}).get("rows") or []
+print("to_process count(page1):", len(rows))
+if rows:
+    p = rows[0]
+    print("sample packageSn:", p.get("packageSn"),
+          "channel:", (p.get("logistics") or {}).get("channelName"),
+          "shopId:", p.get("shopId"))
+```
+
+或走项目入口只读演练（**不写**）：
+
+```powershell
+cd E:\project\海外仓\sellfox-bridge
+python main.py --config config\config.g2-3shops.yaml --dry-run --once
+```
+
+---
+
+## 10. 与「网页 ERP / 旧 automation」边界
+
+| 能力 | 开放 API（本交接） | 网页 automation（`E:\project\海外仓\automation\`） |
+|---|---|---|
+| 登录 | client_id + secret + token | 手动登录 + 持久会话（验证码/滑块） |
+| 拉待处理 / 渠道 | ✅ | DOM 读表 |
+| 物流下单 | ✅ `applyTrackNo` | 点工具栏「物流下单」 |
+| 称重/确认发货回传 | ✅ weighing / quick | 三方仓成功 → 确认发货 |
+| 筛选模板 / 偏远 | ❌ | ✅ |
+| 待审核 / 拆包 / 改地址 | ❌（未接或无 API） | 部分可网页做 |
+| 会话过期 | token 24h 自动刷 | ERP 会话约 10min |
+
+**三店 G2 已上 API 桥接后**：Agnis / HomeCove / Twilight Cove **不要再对这三店跑 automation 全流程真跑**，防双下单。其它店可照旧。
+
+---
+
+## 11. 排错速查
+
+| 现象 | 原因 / 处理 |
+|---|---|
+| `code=40005` | IP 未加白或走了代理 → 查出口 IP、`trust_env=False`、加白 |
+| token 失败 | client_id/secret 错；或 grant_type 未传 |
+| 签名失败 | timestamp 是否**毫秒**；url 是否路径；body 是否误参与签名；参数是否字典序 |
+| 拉包裹为空 | 时间窗 `purchase_date_days`；`shop_whitelist`；状态是否写对 |
+| 物流下单失败「未配对/无库存」 | 业务数据问题，非 API；赛狐侧修 SKU/库存后重试 |
+| 下单返回「已下单/重复」 | 代码会同步 ORDERED，属正常幂等 |
+| step4 不闭环 | 看 WMS 是否已发+有运单；承运商是否与赛狐一致被 hold |
+| 无渠道 FAILED | 人工在赛狐网页指派渠道；有渠道后自动复活 |
+| 误动其它店 | 检查 `shop_whitelist` 是否只含三店 |
+| 双实例双下单 | 本机 G2 与服务器勿同时真跑；与 automation 勿双开三店 |
+
+---
+
+## 12. 已知限制 / 不要误以为 API 已覆盖
+
+1. **无地址编辑 API** → 地址问题只能检测 + 告警转人工。  
+2. **待审核 / 拆包**（如 `auditPackage` / `splitPackage`）官方可能有文档，**本项目未实现**。  
+3. **筛选模板「未取消等待发货」、WMS 偏远=否**：仅旧网页 automation 有，API 桥不覆盖。  
+4. **称重依赖重量**：`sku_weights` 可为空；空则 step4 走 `quickOutbound`。  
+5. **自动选渠道依赖价卡 + 克重**：当前主路径是「保留已有渠道」；无渠道 = 人工。  
+6. **apply_track_no 列表偶发 400**：step1b 已吞掉本轮，不阻断；以赛狐网页核对为准。  
+7. Temu 商品接口仅用于只读探测，**不是发货闭环的一部分**。
+
+---
+
+## 13. 代码与文档索引
+
+| 路径 | 内容 |
+|---|---|
+| `bridge/clients/sellfox.py` | 客户端全文（token + 签名 + 业务方法） |
+| `bridge/pipeline.py` | 四步流水线如何调赛狐 |
+| `bridge/selector.py` | 渠道可用性同步 / 自动选渠道兜底 |
+| `recon.py` | 已发货对账（赛狐 has_shipped + WMS） |
+| `config/config.example.yaml` | 配置模板（无真密钥） |
+| `config/config.g2-3shops.yaml` | 生产三店（有密钥，gitignore） |
+| `项目说明.md` | 总交接 |
+| `业务层说明.md` | 流水线业务规则 |
+| `对齐记录_业务语义.md` | 渠道 ID / 双账本实测 |
+| `部署_固定IP清单.md` | 迁服务器 + 赛狐加白 |
+| `WMS_API交接说明.md` | WMS 侧 API（对照阅读） |
+| 官方文档 | `https://sellfoxapi.apifox.cn` 密码 `VZKGdd0Q` |
+
+---
+
+## 14. 交接 checklist（给同事）
+
+- [ ] 能打开官方文档（Apifox 密码见 §2）
+- [ ] 能读到本机/服务器上的 `config.g2-3shops.yaml`（含 `client_id`/`client_secret`）
+- [ ] 出口 IP 已加白；`query_ship_channels` 能返回渠道（不是 40005）
+- [ ] `get_package_page(to_process)` 能拉到白名单店数据
+- [ ] 理解签名：query 鉴权 + body 业务 + HMAC-SHA256 + **毫秒**时间戳
+- [ ] 理解 `packageSn == WMS platformOrderNo`
+- [ ] 理解五渠道 → providerAuthDetailId / warehouse / wms_profile 映射
+- [ ] 理解店铺白名单仅三店，禁止扩未授权店
+- [ ] 理解写操作开关：`auto_apply_track_no`、`keep_existing_channel`、`ship_confirm_mode`
+- [ ] 知道密钥不得进 Git / 聊天明文
+- [ ] 知道与 WMS API、旧 automation 的边界（防双下单）
+- [ ] 需要扩接口时：先查官方 Apifox，再在 `SellfoxClient` 按同样签名加方法
+
+---
+
+## 15. 敏感信息提醒
+
+| 可以给同事 | 不要给同事（除非当面/加密通道） |
+|---|---|
+| 本文件、官方文档地址与文档密码 | `client_secret` |
+| 接口路径、签名算法、字段说明 | 生产 `config.g2-3shops.yaml` 全文 |
+| 渠道 ID 映射、店铺白名单 shopId | 飞书 webhook |
+| dry-run 操作步骤 | WMS `api_secret` |
+
+配置文件含密钥 → **勿提交仓库、勿截图进群**。

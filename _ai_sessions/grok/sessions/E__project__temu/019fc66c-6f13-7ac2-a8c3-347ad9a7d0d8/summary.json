@@ -1,0 +1,28 @@
+{
+  "info": {
+    "id": "019fc66c-6f13-7ac2-a8c3-347ad9a7d0d8",
+    "cwd": "E:\\project\\temu"
+  },
+  "session_summary": "Sync Claude Code Conversation Memory",
+  "created_at": "2026-08-03T07:00:22.948822800Z",
+  "updated_at": "2026-08-03T07:51:09.868386800Z",
+  "num_messages": 170,
+  "num_chat_messages": 56,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 5,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/temu/",
+  "git_remotes": [
+    "https://github.com/CyberNomad-zs/temu.git",
+    "https://github.com/JMCATTT/temu.git"
+  ],
+  "head_commit": "be1eeedb43fba5a310e0451f69dd11af8c111adc",
+  "head_branch": "main",
+  "request_id": "5828dea0-865e-435d-af78-d9cdc36d90f9",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-08-03T07:51:09.868386800Z",
+  "generated_title": "Sync Claude Code Conversation Memory",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

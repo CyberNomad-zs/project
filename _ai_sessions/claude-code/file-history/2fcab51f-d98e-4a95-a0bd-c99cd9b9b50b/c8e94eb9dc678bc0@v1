@@ -1,0 +1,37 @@
+{
+  "enabled": true,
+  "clientId": "368233",
+  "clientSecret": "8d2a49e8-82cf-40b1-a1ff-5484b57fbc9e",
+  "baseUrl": "https://openapi.sellfox.com",
+  "intervalMinutes": 15,
+  "dateType": "updateDate",
+  "lookbackDays": 30,
+  "pageSize": 100,
+  "maxPagesPerWindow": 50,
+  "editBaseUrl": "https://agentseller.temu.com",
+  "debug": false,
+  "alerts": {
+    "delist": true
+  },
+  "stores": [
+    {
+      "shopId": "396706",
+      "name": "Agnis",
+      "enabled": true
+    },
+    {
+      "shopId": "398202",
+      "name": "HomeCove",
+      "enabled": true
+    },
+    {
+      "shopId": "398203",
+      "name": "Twilight Cove",
+      "enabled": true
+    }
+  ],
+  "feishuWebhooks": [
+    "https://open.feishu.cn/open-apis/bot/v2/hook/eafe2bd9-973f-4381-9031-455228d3977a"
+  ],
+  "stateFile": "data/sellfox-state.json"
+}

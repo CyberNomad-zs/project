@@ -1,0 +1,58 @@
+﻿# Daily report wrapper (for Windows Task Scheduler)
+# Default: real Feishu write, dateMode from config (today recommended for 17:20)
+# Schedule example: every day 17:20
+
+$ErrorActionPreference = 'Continue'
+$root = Split-Path $PSScriptRoot -Parent
+$logDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$logFile = Join-Path $logDir "daily-report-$stamp.log"
+
+function Log([string]$msg) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  Add-Content -Path $logFile -Value $line -Encoding UTF8
+  Write-Host $line
+}
+
+Log "===== TK Ad Daily Report START ====="
+Log "root=$root"
+Log "log=$logFile"
+
+# Optional: ensure working directory
+Set-Location $root
+
+# ziniao must be running — doctor soft check
+try {
+  $doc = & ziniao-cli doctor 2>&1 | Out-String
+  Log "doctor: $($doc.Substring(0, [Math]::Min(400, $doc.Length)))"
+} catch {
+  Log "WARN doctor: $_"
+}
+
+$script = Join-Path $root 'scripts\run-multi-store.ps1'
+if (-not (Test-Path $script)) {
+  Log "FATAL missing $script"
+  exit 1
+}
+
+# Force real write for scheduled daily report
+Log "invoke run-multi-store.ps1 -DryRun:`$false"
+$p = Start-Process -FilePath 'powershell.exe' -ArgumentList @(
+  '-NoProfile',
+  '-ExecutionPolicy', 'Bypass',
+  '-File', $script,
+  '-DryRun:$false'
+) -WorkingDirectory $root -Wait -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $logDir "daily-stdout-$stamp.txt") -RedirectStandardError (Join-Path $logDir "daily-stderr-$stamp.txt")
+
+$code = $p.ExitCode
+Log "exitCode=$code"
+if (Test-Path (Join-Path $logDir "daily-stdout-$stamp.txt")) {
+  Get-Content (Join-Path $logDir "daily-stdout-$stamp.txt") -Encoding UTF8 | ForEach-Object { Log "OUT $_" }
+}
+if (Test-Path (Join-Path $logDir "daily-stderr-$stamp.txt")) {
+  Get-Content (Join-Path $logDir "daily-stderr-$stamp.txt") -Encoding UTF8 | ForEach-Object { Log "ERR $_" }
+}
+
+Log "===== TK Ad Daily Report END ====="
+exit $code

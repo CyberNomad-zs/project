@@ -1,0 +1,12 @@
+:fullloop
+call :confirm_real
+if not "%_ok%"=="1" goto menu
+echo.
+echo === 全流程循环常驻（每5分钟：下单+发货+拉跟踪号+确认发货，真跑），Ctrl+C 停止 ===
+set "HWC_DRY_RUN=0"
+%PY% full_loop.py
+set "HWC_DRY_RUN="
+echo.
+pause
+goto menu
+

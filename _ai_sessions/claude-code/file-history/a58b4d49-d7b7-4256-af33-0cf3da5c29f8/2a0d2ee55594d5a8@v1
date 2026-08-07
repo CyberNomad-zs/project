@@ -1,0 +1,123 @@
+# -*- coding: utf-8 -*-
+"""
+发货哨兵 · AI 处置建议生成器（构建时·离线安全）
+
+在**有大模型 API Key 的机器上运行一次**，为「需立即处理」的订单生成
+  根因(root_cause) + 处置建议(action) + 风险(risk)
+写入 backend/ai_cache.json。build.py 会把缓存 bake 进 unified.json ——
+**运行时/现场演示不调用任何 API、断网可跑**。
+
+用法（演示机，已装 anthropic SDK 且已配 ANTHROPIC_API_KEY 或 `ant auth login`）：
+  python backend/build.py        # 1) 先生成 unified.json（知道哪些单要处理）
+  python backend/ai_enrich.py    # 2) 生成 AI 处置建议缓存（本步需联网+Key）
+  python backend/build.py        # 3) 重新构建，把 AI 建议 bake 进去
+  python backend/pack.py         # 4) 打包离线演示 HTML
+
+模型默认 claude-opus-4-8，可用环境变量 SENTINEL_AI_MODEL 覆盖（如 claude-haiku-4-5 省成本）。
+加 --force 可无视缓存全部重算。
+"""
+import os
+import sys
+import json
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+UNIFIED = os.path.join(HERE, "unified.json")
+CACHE = os.path.join(HERE, "ai_cache.json")
+MODEL = os.environ.get("SENTINEL_AI_MODEL", "claude-opus-4-8")
+
+# 结构化输出：强约束模型只吐这三段中文，直接可用
+SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "root_cause": {"type": "string", "description": "一句话根因，说明这单为何被标记异常"},
+        "action": {"type": "string", "description": "具体、可执行的处置建议（改派实仓/指定渠道/补货等），一句话"},
+        "risk": {"type": "string", "description": "若不处理的后果（超时罚款/降权/断货发不出等），一句话"},
+    },
+    "required": ["root_cause", "action", "risk"],
+}
+
+SYS = (
+    "你是跨境电商自发货履约专家。根据一张被履约哨兵标记为异常的订单的跨系统事实，"
+    "给出简短、专业、可直接照做的中文处置建议。只依据给到的事实，不要臆造运单号或库存数字。"
+    "语气干练，每项一句话，不超过 30 字。"
+)
+
+
+def order_facts(o, rules):
+    tags = "、".join(rules.get(t, {}).get("name", t) for t in o.get("anomalies", []))
+    return (
+        f"包裹号:{o.get('包裹号')}  平台:{o.get('平台')}  店铺:{o.get('店铺')}  站点:{o.get('站点')}\n"
+        f"SKU:{o.get('SKU')}  MSKU:{o.get('MSKU')}  品名:{o.get('品名')}\n"
+        f"仓库:{o.get('仓库')}  发货渠道:{o.get('发货渠道') or '（空）'}\n"
+        f"发货倒计时(小时):{o.get('remaining_h')}  状态:{o.get('state')}\n"
+        f"跨系统匹配货号:{o.get('matched_code') or '未匹配'}  Temu库存:{o.get('temu_stock')}\n"
+        f"命中异常:{tags}"
+    )
+
+
+def main():
+    if not os.path.exists(UNIFIED):
+        sys.exit("找不到 unified.json，请先运行： python backend/build.py")
+    with open(UNIFIED, encoding="utf-8") as f:
+        data = json.load(f)
+    rules = data.get("rules", {})
+    # 需立即处理：severity>=40（排除仅 master_missing 提示级）
+    targets = [o for o in data["orders"] if o.get("severity", 0) >= 40]
+    if not targets:
+        print("没有需要 AI 处置建议的订单（actionable=0）。")
+        return
+
+    try:
+        import anthropic
+    except ImportError:
+        sys.exit("未安装 anthropic SDK。请在有网络的演示机上运行： pip install anthropic")
+
+    try:
+        client = anthropic.Anthropic()  # 读取 ANTHROPIC_API_KEY / ant 登录态
+    except Exception as e:
+        sys.exit(f"初始化 Anthropic 客户端失败：{e}\n请配置 ANTHROPIC_API_KEY 或运行 ant auth login")
+
+    cache = {}
+    if os.path.exists(CACHE):
+        try:
+            with open(CACHE, encoding="utf-8") as f:
+                cache = json.load(f)
+        except (ValueError, OSError):
+            cache = {}
+
+    force = "--force" in sys.argv
+    added = 0
+    for o in targets:
+        pkg = o.get("包裹号")
+        if not pkg:
+            continue
+        if not force and pkg in cache:
+            continue
+        prompt = "下面是一张被标记异常的订单的跨系统事实，请据此给出根因/处置建议/风险：\n\n" + order_facts(o, rules)
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=1024,
+            system=SYS,
+            output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = next((b.text for b in resp.content if b.type == "text"), "")
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            print(f"[{pkg}] 返回非 JSON，跳过：{text[:120]}")
+            continue
+        obj["model"] = resp.model
+        cache[pkg] = obj
+        added += 1
+        print(f"[{pkg}] ✓ 根因: {obj.get('root_cause', '')[:40]}")
+
+    with open(CACHE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    print(f"\n已写入 {CACHE}（新增 {added} 条，共 {len(cache)} 条）。模型: {MODEL}")
+    print("下一步： python backend/build.py && python backend/pack.py   （把 AI 建议 bake 进离线演示包）")
+
+
+if __name__ == "__main__":
+    main()

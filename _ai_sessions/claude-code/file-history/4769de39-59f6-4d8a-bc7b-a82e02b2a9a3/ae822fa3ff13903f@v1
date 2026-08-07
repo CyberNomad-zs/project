@@ -1,0 +1,33 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ROOT } from './config.js';
+
+const LOG_DIR = resolve(ROOT, 'data');
+try { mkdirSync(LOG_DIR, { recursive: true }); } catch {}
+const LOG_FILE = resolve(LOG_DIR, 'monitor.log');
+
+function ts() {
+  // 本地时间戳，避免依赖被禁用的 Date 场景（此处为普通 Node，可用）
+  return new Date().toISOString().replace('T', ' ').slice(0, 19);
+}
+
+function write(level, args) {
+  const line = `[${ts()}] [${level}] ${args.map(fmt).join(' ')}`;
+  // 控制台
+  if (level === 'ERROR') console.error(line);
+  else console.log(line);
+  // 文件
+  try { appendFileSync(LOG_FILE, line + '\n'); } catch {}
+}
+
+function fmt(a) {
+  if (typeof a === 'string') return a;
+  if (a instanceof Error) return a.stack || a.message || String(a);
+  try { return JSON.stringify(a); } catch { return String(a); }
+}
+
+export const log = {
+  info: (...a) => write('INFO', a),
+  warn: (...a) => write('WARN', a),
+  error: (...a) => write('ERROR', a),
+};

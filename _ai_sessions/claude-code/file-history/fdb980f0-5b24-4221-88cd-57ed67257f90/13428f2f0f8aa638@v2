@@ -1,0 +1,37 @@
+# -*- coding: utf-8 -*-
+"""
+海外仓订单发货自动化 - 全局配置
+不在此处存放密码：登录状态通过持久化浏览器 profile 保存（见 capture/step1_login.py）。
+"""
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ---- 浏览器登录 profile（持久化，保存两个系统的登录态）----
+BROWSER_PROFILE = os.path.join(BASE_DIR, ".browser_profile")
+
+# ---- 系统地址 ----
+WMS_URL = "http://193.112.93.60:9999/index.html#"         # 海外仓WMS
+ERP_URL = "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html"  # Sellfox ERP 订单发货
+ERP_HOME = "https://www.sellfox.com"
+
+# ---- 安全开关 ----
+# True  = 空跑演练：走完所有筛选/勾选/定位，但【不】真正点击"确认发货/批量发货"，只打印日志+截图
+# False = 真实发货
+# 默认 True（安全）。启动器「启动.bat」的真跑选项会临时设环境变量 HWC_DRY_RUN=0 来开真跑，
+# 只对那一次运行生效、不改本文件 —— 避免"忘了改回 True"导致下次误真跑。
+# 手动真跑也可：命令行先  set HWC_DRY_RUN=0  再运行脚本。
+DRY_RUN = (os.environ.get("HWC_DRY_RUN", "1").strip() != "0")
+
+# 单次运行最多处理的订单数（防止一次误操作影响过多订单，0 = 不限制）
+MAX_ORDERS_PER_RUN = 20
+
+# 每一步之间的等待（秒），便于人工观察 / 页面加载
+STEP_PAUSE = 1.0
+HEADLESS = False   # 真实跑建议 False（可见），确认稳定后可改 True
+
+# ---- 输出目录 ----
+DUMP_DIR = os.path.join(BASE_DIR, "capture", "dumps")   # DOM/截图
+LOG_DIR = os.path.join(BASE_DIR, "logs")                # 运行日志
+for _d in (DUMP_DIR, LOG_DIR):
+    os.makedirs(_d, exist_ok=True)

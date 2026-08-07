@@ -1,0 +1,374 @@
+# -*- coding: utf-8 -*-
+"""
+temu-monitor · 图形启动器（Tkinter，Python 自带，无新依赖）。
+仿 sellfox-bridge / automation 美化启动器：绿=安全 · 红=真跑 · 蓝=工具
+点按钮 → 新控制台窗口执行。
+
+启动：双击「美化启动器.bat」，或  pythonw gui.py / python gui.py
+"""
+import os
+import shutil
+import subprocess
+import sys
+import tkinter as tk
+from tkinter import font as tkfont
+from tkinter import messagebox
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+DATA_DIR = os.path.join(BASE_DIR, "data")
+
+PY312 = os.path.join(
+    os.environ.get("LOCALAPPDATA", ""),
+    "Programs", "Python", "Python312", "python.exe",
+)
+
+
+def detect_node():
+    n = shutil.which("node")
+    if n:
+        return f'"{n}"' if " " in n else n
+    return "node"
+
+
+NODE = detect_node()
+
+
+def detect_py():
+    if os.path.isfile(PY312):
+        return f'"{PY312}"'
+    if shutil.which("python"):
+        return "python"
+    if shutil.which("py"):
+        return "py -3.12"
+    return f'"{sys.executable}"'
+
+
+# key -> (cmd 模板, 二次确认 key 或 None)
+# 不用 str.format：路径/JSON 花括号会炸。用 {NODE} 占位 replace。
+TEMPLATES = {
+    "login": (
+        "title TemuMon-login&& {NODE} src\\cli.js login&& echo.&& pause",
+        None,
+    ),
+    "once": (
+        "title TemuMon-once&& {NODE} src\\cli.js once&& echo.&& pause",
+        None,
+    ),
+    "start": (
+        "title TemuMon-start&& echo Keep this window open. Ctrl+C to stop.&& {NODE} src\\cli.js start",
+        "start_fg",
+    ),
+    "start_bg": (
+        "title TemuMon-daemon&& powershell -NoProfile -ExecutionPolicy Bypass -File run-forever.ps1",
+        "start_bg",
+    ),
+    "install_auto": (
+        "title TemuMon-autostart&& powershell -NoProfile -ExecutionPolicy Bypass -File install-autostart.ps1&& echo.&& pause",
+        None,
+    ),
+    "uninstall_auto": (
+        "title TemuMon-unauto&& powershell -NoProfile -ExecutionPolicy Bypass -File uninstall-autostart.ps1&& echo.&& pause",
+        None,
+    ),
+    "sellfox_probe": (
+        "title TemuMon-sf-probe&& {NODE} src\\sellfox\\cli.js probe&& echo.&& pause",
+        None,
+    ),
+    "sellfox_once": (
+        "title TemuMon-sf-once&& {NODE} src\\sellfox\\cli.js once&& echo.&& pause",
+        None,
+    ),
+    "sellfox_dry": (
+        "title TemuMon-sf-dry&& {NODE} src\\sellfox\\cli.js dry&& echo.&& pause",
+        None,
+    ),
+    "sellfox_start": (
+        "title TemuMon-sf-start&& echo Keep open. Ctrl+C stop.&& {NODE} src\\sellfox\\cli.js start",
+        "sellfox_start",
+    ),
+    "deps": (
+        "title TemuMon-deps&& npm install&& echo.&& pause",
+        None,
+    ),
+}
+
+CONFIRM_MSG = {
+    "start_fg": (
+        "【全量常驻 · 前台窗口】\n"
+        "每 15 分钟：赛狐下架 + 浏览器流量/切店（等同插件）。\n"
+        "关闭窗口即停止。需要后台请用「开机自启」或守护脚本。"
+    ),
+    "start_bg": (
+        "【守护进程 run-forever.ps1】\n"
+        "崩溃 30 秒自动重启。日志在 logs\\ 目录。\n"
+        "与计划任务 TemuMonitor 同类；勿与前台 start 双开。"
+    ),
+    "sellfox_start": (
+        "【仅赛狐下架常驻】\n"
+        "不打开 Chrome，只轮询赛狐 API。\n"
+        "需 sellfox.config.json + IP 白名单。"
+    ),
+}
+
+
+def build_inner(key):
+    tmpl, _ = TEMPLATES[key]
+    return tmpl.replace("{NODE}", NODE)
+
+
+def launch_console(inner):
+    subprocess.Popen(
+        ["cmd", "/k", inner],
+        creationflags=subprocess.CREATE_NEW_CONSOLE,
+        cwd=BASE_DIR,
+    )
+
+
+class App:
+    def __init__(self, root):
+        self.root = root
+        root.title("temu-monitor · 启动器")
+        root.configure(bg="#f4f6f8")
+        root.minsize(460, 420)
+        root.geometry("520x700")
+        try:
+            root.tk.call("tk", "scaling", 1.15)
+        except Exception:
+            pass
+
+        self.f_title = tkfont.Font(family="Microsoft YaHei UI", size=15, weight="bold")
+        self.f_sub = tkfont.Font(family="Microsoft YaHei UI", size=9)
+        self.f_sec = tkfont.Font(family="Microsoft YaHei UI", size=10, weight="bold")
+        self.f_btn = tkfont.Font(family="Microsoft YaHei UI", size=11)
+        self.f_status = tkfont.Font(family="Microsoft YaHei UI", size=9)
+
+        head = tk.Frame(root, bg="#1f6feb")
+        head.pack(fill="x", side="top")
+        tk.Label(
+            head,
+            text="Temu 店铺监测 · temu-monitor",
+            bg="#1f6feb",
+            fg="white",
+            font=self.f_title,
+        ).pack(anchor="w", padx=16, pady=(12, 0))
+        tk.Label(
+            head,
+            text="绿=安全/只读 · 红=常驻真跑 · 蓝=工具　　无需 Chrome 插件 · 点按钮在新窗口运行",
+            bg="#1f6feb",
+            fg="#d7e6ff",
+            font=self.f_sub,
+        ).pack(anchor="w", padx=16, pady=(2, 12))
+
+        self.status = tk.StringVar(value="就绪　·　" + BASE_DIR)
+        tk.Label(
+            root,
+            textvariable=self.status,
+            bg="#e9edf1",
+            fg="#444",
+            font=self.f_status,
+            anchor="w",
+        ).pack(fill="x", side="bottom", ipady=4)
+
+        mid = tk.Frame(root, bg="#f4f6f8")
+        mid.pack(fill="both", expand=True)
+
+        self._canvas = tk.Canvas(mid, bg="#f4f6f8", highlightthickness=0, bd=0)
+        vsb = tk.Scrollbar(mid, orient="vertical", command=self._canvas.yview)
+        self._canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._canvas.pack(side="left", fill="both", expand=True)
+
+        body = tk.Frame(self._canvas, bg="#f4f6f8")
+        self._body_win = self._canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>", self._on_body_configure)
+        self._canvas.bind("<Configure>", self._on_canvas_configure)
+        root.bind_all("<MouseWheel>", self._on_mousewheel)
+        root.bind_all("<Button-4>", lambda e: self._canvas.yview_scroll(-3, "units"))
+        root.bind_all("<Button-5>", lambda e: self._canvas.yview_scroll(3, "units"))
+
+        pad = tk.Frame(body, bg="#f4f6f8")
+        pad.pack(fill="both", expand=True, padx=14, pady=10)
+
+        s0 = self._section(pad, "① 登录 / 全量监测（等同插件）")
+        self._btn(s0, "登录 Temu", "safe", lambda: self.handle("login"), col=0, hint="首次/过期必做")
+        self._btn(s0, "测试一轮 once", "safe", lambda: self.handle("once"), col=1, hint="赛狐下架+浏览器流量")
+        self._btn(
+            s0,
+            "全量常驻 · 前台",
+            "danger",
+            lambda: self.handle("start"),
+            full=True,
+            hint="关窗口即停 · 需 YES",
+        )
+        self._btn(
+            s0,
+            "守护常驻 run-forever",
+            "danger",
+            lambda: self.handle("start_bg"),
+            full=True,
+            hint="崩溃自启 · 需 YES",
+        )
+
+        s1 = self._section(pad, "② 开机自启（计划任务 TemuMonitor）")
+        self._btn(s1, "启用开机自启", "tool", lambda: self.handle("install_auto"), col=0, hint="UAC 提权")
+        self._btn(s1, "取消开机自启", "neutral", lambda: self.handle("uninstall_auto"), col=1)
+
+        s2 = self._section(pad, "③ 仅赛狐下架（不需要 Chrome）")
+        self._btn(s2, "探测 probe", "safe", lambda: self.handle("sellfox_probe"), col=0)
+        self._btn(s2, "dry 一轮", "safe", lambda: self.handle("sellfox_dry"), col=1, hint="不写状态不发飞书")
+        self._btn(s2, "赛狐 once", "tool", lambda: self.handle("sellfox_once"), col=0)
+        self._btn(s2, "赛狐常驻", "danger", lambda: self.handle("sellfox_start"), col=1, hint="需 YES")
+
+        s3 = self._section(pad, "④ 工具")
+        self._btn(s3, "打开日志文件夹", "tool", lambda: self.handle("logs"), col=0)
+        self._btn(s3, "打开项目目录", "tool", lambda: self.handle("folder"), col=1)
+        self._btn(s3, "打开使用说明", "tool", lambda: self.handle("readme"), col=0)
+        self._btn(s3, "npm install", "tool", lambda: self.handle("deps"), col=1)
+        self._btn(s3, "检查 Node / 配置", "safe", lambda: self.handle("check"), full=True)
+
+    def _on_body_configure(self, _event=None):
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self._canvas.itemconfigure(self._body_win, width=event.width)
+
+    def _on_mousewheel(self, event):
+        if event.delta:
+            self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+    def _section(self, parent, title):
+        wrap = tk.Frame(parent, bg="#f4f6f8")
+        wrap.pack(fill="x", pady=(4, 8))
+        tk.Label(wrap, text=title, bg="#f4f6f8", fg="#333", font=self.f_sec, anchor="w").pack(
+            fill="x", pady=(0, 4)
+        )
+        grid = tk.Frame(wrap, bg="#f4f6f8")
+        grid.pack(fill="x")
+        grid.columnconfigure(0, weight=1, uniform="c")
+        grid.columnconfigure(1, weight=1, uniform="c")
+        grid._row = 0
+        grid._col = 0
+        return grid
+
+    _COLORS = {
+        "safe": ("#2e9e5b", "#268a4f"),
+        "danger": ("#d64545", "#c23b3b"),
+        "tool": ("#3b7dd8", "#356fc2"),
+        "neutral": ("#6b7280", "#5c626b"),
+    }
+
+    def _btn(self, grid, text, kind, cmd, col=None, full=False, hint=None):
+        bg, abg = self._COLORS[kind]
+        label = text if not hint else f"{text}\n{hint}"
+        b = tk.Button(
+            grid,
+            text=label,
+            command=cmd,
+            bg=bg,
+            fg="white",
+            activebackground=abg,
+            activeforeground="white",
+            font=self.f_btn,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            justify="center",
+            pady=8,
+        )
+        if full:
+            b.grid(row=grid._row, column=0, columnspan=2, sticky="ew", padx=3, pady=3)
+            grid._row += 1
+            grid._col = 0
+        else:
+            c = grid._col if col is None else col
+            b.grid(row=grid._row, column=c, sticky="ew", padx=3, pady=3)
+            if c == 1:
+                grid._row += 1
+                grid._col = 0
+            else:
+                grid._col = 1
+
+    def handle(self, key):
+        try:
+            self._handle(key)
+        except Exception as e:
+            messagebox.showerror("启动失败", f"{key}\n\n{type(e).__name__}: {e}")
+            self.status.set(f"失败：{key}")
+
+    def _handle(self, key):
+        if key == "logs":
+            os.makedirs(LOG_DIR, exist_ok=True)
+            os.makedirs(DATA_DIR, exist_ok=True)
+            try:
+                os.startfile(LOG_DIR)
+            except Exception as e:
+                messagebox.showerror("打开失败", str(e))
+            self.status.set("已打开 logs")
+            return
+        if key == "folder":
+            try:
+                os.startfile(BASE_DIR)
+            except Exception as e:
+                messagebox.showerror("打开失败", str(e))
+            self.status.set("已打开项目目录")
+            return
+        if key == "readme":
+            for name in ("使用说明.txt", "PLUGIN_PARITY.md", "README.md"):
+                p = os.path.join(BASE_DIR, name)
+                if os.path.isfile(p):
+                    try:
+                        os.startfile(p)
+                    except Exception as e:
+                        messagebox.showerror("打开失败", str(e))
+                    self.status.set("已打开 " + name)
+                    return
+            messagebox.showinfo("提示", "未找到使用说明文件")
+            return
+        if key == "check":
+            lines = []
+            n = shutil.which("node")
+            lines.append("Node: " + (n or "NOT FOUND"))
+            lines.append("Chrome userdata: " + ("OK" if os.path.isdir(os.path.join(BASE_DIR, ".userdata")) else "missing (run login)"))
+            lines.append("sellfox.config.json: " + ("OK" if os.path.isfile(os.path.join(BASE_DIR, "sellfox.config.json")) else "missing"))
+            lines.append("config.json: " + ("OK" if os.path.isfile(os.path.join(BASE_DIR, "config.json")) else "missing"))
+            lines.append("node_modules: " + ("OK" if os.path.isdir(os.path.join(BASE_DIR, "node_modules")) else "run npm install"))
+            messagebox.showinfo("环境检查", "\n".join(lines))
+            self.status.set("已检查环境")
+            return
+
+        if key not in TEMPLATES:
+            messagebox.showerror("未知操作", key)
+            return
+
+        _, confirm_key = TEMPLATES[key]
+        if confirm_key:
+            msg = CONFIRM_MSG.get(confirm_key, "确认继续？")
+            if not messagebox.askokcancel("确认", msg + "\n\n点「确定」继续。"):
+                self.status.set("已取消")
+                return
+
+        if key == "login" and not shutil.which("node"):
+            messagebox.showerror("缺少 Node.js", "请先安装 Node.js LTS：https://nodejs.org")
+            return
+
+        if key in ("once", "start", "start_bg", "login") and not os.path.isdir(
+            os.path.join(BASE_DIR, "node_modules")
+        ):
+            if messagebox.askyesno("依赖", "未检测到 node_modules，是否先 npm install？"):
+                launch_console(build_inner("deps"))
+                self.status.set("正在安装依赖…装完再点监测")
+                return
+
+        launch_console(build_inner(key))
+        self.status.set("已启动：" + key)
+
+
+def main():
+    root = tk.Tk()
+    App(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

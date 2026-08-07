@@ -1,0 +1,86 @@
+# -*- coding: utf-8 -*-
+"""TK 驾驶舱：PG → 飞书 T1/T2 增量同步。
+
+用法（仓库根）:
+  backend\\.venv\\Scripts\\python.exe scripts\\feishu_tk_daily_sync.py
+  backend\\.venv\\Scripts\\python.exe scripts\\feishu_tk_daily_sync.py --lookback-days 30
+  backend\\.venv\\Scripts\\python.exe scripts\\feishu_tk_daily_sync.py --dry-run
+  backend\\.venv\\Scripts\\python.exe scripts\\feishu_tk_daily_sync.py --ads-only
+  backend\\.venv\\Scripts\\python.exe scripts\\feishu_tk_daily_sync.py --shop-only
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import logging
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+BACKEND = ROOT / "backend"
+sys.path.insert(0, str(BACKEND))
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Sync TK facts to Feishu T1/T2")
+    ap.add_argument("--lookback-days", type=int, default=14)
+    ap.add_argument("--limit", type=int, default=2000)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--ads-only", action="store_true")
+    ap.add_argument("--shop-only", action="store_true")
+    args = ap.parse_args()
+
+    if args.ads_only and args.shop_only:
+        print("use only one of --ads-only / --shop-only")
+        return 2
+    if args.shop_only:
+        keys = ["tk_shop_daily"]
+    elif args.ads_only:
+        keys = ["tk_ads_campaign"]
+    else:
+        keys = ["tk_ads_campaign", "tk_shop_daily"]
+
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    s = get_settings()
+    print("feishu_app", bool(s.feishu_app_id))
+    print("t1", s.feishu_bitable_table_tk_shop_daily)
+    print("t2", s.feishu_bitable_table_tk_ads_campaign)
+    print("keys", keys, "lookback", args.lookback_days, "dry", args.dry_run)
+
+    async def run() -> int:
+        from app.infra.db import SessionLocal
+        from app.jobs.tk_feishu_sync import sync_table
+
+        rc = 0
+        async with SessionLocal() as db:
+            for key in keys:
+                print("--- sync", key)
+                try:
+                    stats = await sync_table(
+                        db,
+                        table_key=key,
+                        mode="incremental",
+                        lookback_days=args.lookback_days,
+                        limit=args.limit,
+                        dry_run=args.dry_run,
+                    )
+                    print("OK", stats)
+                    st = stats.get("status")
+                    if st not in ("success", "skipped", "dry_run") or stats.get("failed"):
+                        rc = 1
+                except Exception as exc:
+                    logging.exception("sync %s failed", key)
+                    print("ERR", key, type(exc).__name__, exc)
+                    rc = 1
+        return rc
+
+    return asyncio.run(run())
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

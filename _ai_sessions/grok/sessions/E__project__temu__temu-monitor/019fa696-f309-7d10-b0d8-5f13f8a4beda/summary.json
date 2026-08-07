@@ -1,0 +1,28 @@
+{
+  "info": {
+    "id": "019fa696-f309-7d10-b0d8-5f13f8a4beda",
+    "cwd": "E:\\project\\temu\\temu-monitor"
+  },
+  "session_summary": "Saihu API Auth vs Amazon Cockpit Feishu",
+  "created_at": "2026-07-28T02:38:58.356305300Z",
+  "updated_at": "2026-07-28T02:42:52.633674600Z",
+  "num_messages": 113,
+  "num_chat_messages": 36,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/temu/",
+  "git_remotes": [
+    "https://github.com/CyberNomad-zs/temu.git",
+    "https://github.com/JMCATTT/temu.git"
+  ],
+  "head_commit": "be1eeedb43fba5a310e0451f69dd11af8c111adc",
+  "head_branch": "main",
+  "request_id": "ad83e5f4-a26c-418e-a865-fe05cd0b78f7",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T02:42:52.633674600Z",
+  "generated_title": "Saihu API Auth vs Amazon Cockpit Feishu",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

@@ -1,0 +1,15 @@
+# -*- coding: utf-8 -*-
+import cv2, os
+F = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\cb8e0d45-d92d-43e4-9eab-a459f923bdd8\scratchpad\frames2"
+OUT = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\cb8e0d45-d92d-43e4-9eab-a459f923bdd8\scratchpad"
+for t in ("t296", "t302", "t306"):
+    img = cv2.imread(os.path.join(F, f"{t}.jpg"))
+    if img is None:
+        print("miss", t); continue
+    h, w = img.shape[:2]
+    # 工具栏 row2 区域：y约 215~240, x 125~560 (1280宽)
+    crop = img[210:245, 125:600]
+    crop = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    p = os.path.join(OUT, f"crop_{t}.png")
+    cv2.imwrite(p, crop)
+    print("saved", p)

@@ -1,0 +1,95 @@
+# -*- coding: utf-8 -*-
+"""只读：按平台订单号查金猫这批单的当前状态/快递方/跟踪号，判断真跑到底发出去没有。
+清掉'未发货'状态筛选后逐个查询。绝不发货。输出 capture/dumps/wms_lookup_orders.txt
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")
+
+ORDERS = ['P2AL6TCD62970','P2AK6TCD62906','P2AK6TCD62888','P2AK6TCD62896','P2AK6TCD62890']
+
+OUT = os.path.join(config.DUMP_DIR, "wms_lookup_orders.txt")
+lines = []
+def w(s=""): lines.append(str(s))
+
+
+def read_rows(page):
+    """读主表 body 每行按列对齐的关键字段。"""
+    return page.evaluate(r"""() => {
+        const hw = document.querySelector('.el-table__header-wrapper');
+        const heads = hw ? [...hw.querySelectorAll('thead th')].map(t=>t.innerText.trim()) : [];
+        const bw = document.querySelector('.el-table__body-wrapper');
+        const rows = bw ? [...bw.querySelectorAll('tr.el-table__row')].map(tr=>{
+            const o={}; [...tr.querySelectorAll('td')].forEach((td,i)=>{o[heads[i]||('c'+i)]=td.innerText.replace(/\s+/g,' ').trim();}); return o;
+        }) : [];
+        return {heads, rows};
+    }""")
+
+
+def clear_status_filter(page):
+    """清掉 订单状态='未发货' 使查询覆盖全部状态。hover 出清除叉并点。"""
+    try:
+        # 找到 placeholder=订单状态 的 input 所在 el-select
+        box = page.query_selector("xpath=//input[@placeholder='订单状态']/ancestor::div[contains(@class,'el-select')][1]")
+        if not box:
+            w("未定位到 订单状态 select"); return
+        box.hover(); time.sleep(0.5)
+        x = box.query_selector("i.el-icon-circle-close, i.el-select__caret.el-icon-circle-close")
+        if x and x.is_visible():
+            x.click(); time.sleep(0.5); w("已点清除叉清空 订单状态")
+        else:
+            # 退而求其次：打开下拉选 '全部'
+            box.click(); time.sleep(0.6)
+            for el in page.query_selector_all(".el-select-dropdown__item"):
+                if el.is_visible() and (el.inner_text() or "").strip() in ("全部",""):
+                    el.click(); w("下拉选 全部"); break
+    except Exception as e:
+        w(f"清状态筛选异常: {e}")
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True); page = ctx.new_page()
+        for _ in range(5):
+            try: page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000); time.sleep(5)
+
+        clear_status_filter(page)
+
+        for od in ORDERS:
+            try:
+                inp = page.query_selector("input[placeholder='平台订单号']")
+                inp.fill(""); inp.fill(od); time.sleep(0.3)
+                page.click("button:has-text('查询')"); time.sleep(2.5)
+                data = read_rows(page)
+                rows = data["rows"]
+                w(f"\n==== {od} ====")
+                if not rows:
+                    w("  (查无此单/或不在可见结果)")
+                for r in rows:
+                    st = r.get('订单状态') or r.get('c1') or ''
+                    # 表头里没有'订单状态'列名时，整行打印关键列
+                    w(f"  平台订单号={r.get('平台订单号','')} 快递方={r.get('快递方','')} "
+                      f"跟踪单号={r.get('跟踪单号','')} 同步平台状态={r.get('同步平台状态','')}")
+                    # 整行兜底
+                    w(f"    (整行) { {k:v for k,v in r.items() if v} }")
+            except Exception as e:
+                w(f"\n==== {od} ====\n  查询异常: {e}")
+
+        with open(OUT, "w", encoding="utf-8") as f: f.write("\n".join(lines))
+        print("WROTE", OUT)
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

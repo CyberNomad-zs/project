@@ -1,0 +1,13 @@
+---
+name: temu-plugin-versions
+description: Temu Chrome 插件各版本修复的 bug 与版本号对照
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: f4fcb23a-058a-4bde-8966-06d03d25c649
+---
+
+Temu 监测 Chrome 插件版本历史：
+
+- **v5-修下架误报** (2026-07-17)：待关注筛选与在售扫描的并发竞态导致**误报**下架。修复：content.js 加 `withLock` 互斥锁串行化所有页面操作；scanOnSaleList 扫描前先复位干净再读 onSaleTabCount；diffOnSale 护栏改用干净读数。[[temu-monitor-project]]
+- **v6-下架漏报修复** (2026-07-17)：两个根因导致真实下架**漏报**——①`_diffAndAlert` 在 v3 中移除了 inSale 下降检测（"改由 diffOnSale 报"），但 diffOnSale 只在空闲轮巡触发，用户手动刷新/日常浏览时下架完全漏报；②`diffOnSale` 用初始读到的旧对象写 storage，异步的 `_diffAndAlert` 在中间改过 snapshot 的话会被覆盖→基准腐败→"后来不准"。修复：①在 `_diffAndAlert` 恢复 inSale 下降数字告警（`latest.onSale < snap.onSale` 时发飞书）；②`diffOnSale` 在写 storage 前重读 stores（同 `_diffAndAlert` 做法）避免覆盖并发写入。测试：22/22 通过（8 个 diffOnSale 场景 + 5 个被动 onSale 检测场景）。用户需：chrome://extensions 关开插件开关 → popup 显示 `v6-下架漏报修复`。

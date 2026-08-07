@@ -1,0 +1,292 @@
+# -*- coding: utf-8 -*-
+"""
+飞书（Feishu/Lark）运行汇总通知 —— 企业自建应用方式（app_id/app_secret）。
+
+用途：
+  每次运行 / 每轮循环结束后，发一张"运行汇总"卡片到指定会话（群或个人），
+  让在飞书里就能看到：空跑/真跑、各渠道结果、成功/失败数、失败订单、耗时。
+
+设计原则：
+  · 只依赖标准库 urllib，无新增第三方依赖。
+  · 完全容错：网络/配置/接口任何异常都只记一条日志，绝不影响发货主流程。
+  · 未配置（缺 app_id / app_secret / receive_id）或 enable=False 时，静默跳过。
+  · tenant_access_token 内存缓存（约 2 小时有效），过期自动重取。
+
+配置：放在 secrets.FEISHU（见 secrets.py），也可用环境变量覆盖（环境变量优先）：
+  HWC_FEISHU_APP_ID / HWC_FEISHU_APP_SECRET / HWC_FEISHU_RECEIVE_ID /
+  HWC_FEISHU_RECEIVE_ID_TYPE(chat_id|open_id|user_id|email) /
+  HWC_FEISHU_LEVEL(all|fail_only) / HWC_FEISHU_ENABLE(0=关) / HWC_FEISHU_BASE_URL
+
+自测：命令行 `python notify.py`
+  · 未填 receive_id 时，会尝试列出机器人所在的群及其 chat_id，方便你回填。
+  · 已配置齐全时，会发一条测试卡片。
+"""
+import os
+import json
+import time
+import urllib.request
+import urllib.parse
+
+try:
+    import secrets as _secrets   # 本项目根目录下的 secrets.py（非标准库 secrets）
+except Exception:
+    _secrets = None
+
+
+# ---------------- 配置 ----------------
+def _cfg():
+    """合并 secrets.FEISHU 与环境变量（环境变量优先），返回统一 dict。"""
+    base = {}
+    if _secrets is not None:
+        base = dict(getattr(_secrets, "FEISHU", {}) or {})
+
+    def pick(env_key, cfg_key, default=None):
+        v = os.environ.get(env_key)
+        if v is not None and v != "":
+            return v
+        return base.get(cfg_key, default)
+
+    return {
+        "enable":          pick("HWC_FEISHU_ENABLE", "enable", True),
+        "app_id":          pick("HWC_FEISHU_APP_ID", "app_id", ""),
+        "app_secret":      pick("HWC_FEISHU_APP_SECRET", "app_secret", ""),
+        "receive_id":      pick("HWC_FEISHU_RECEIVE_ID", "receive_id", ""),
+        "receive_id_type": pick("HWC_FEISHU_RECEIVE_ID_TYPE", "receive_id_type", "chat_id"),
+        "level":           pick("HWC_FEISHU_LEVEL", "level", "all"),   # all=每次都发；fail_only=仅失败/异常发
+        "base_url":        pick("HWC_FEISHU_BASE_URL", "base_url", "https://open.feishu.cn"),
+    }
+
+
+def _truthy(v):
+    if isinstance(v, bool):
+        return v
+    return str(v).strip().lower() not in ("0", "false", "no", "off", "")
+
+
+def _is_enabled(cfg):
+    if not _truthy(cfg.get("enable", True)):
+        return False
+    return bool(cfg.get("app_id") and cfg.get("app_secret") and cfg.get("receive_id"))
+
+
+def _log():
+    """延迟拿 core.log（避免 import 期循环依赖）；拿不到就退化为 print。"""
+    try:
+        from core import log
+        return log
+    except Exception:
+        return lambda m: print(m)
+
+
+# ---------------- 飞书 OpenAPI ----------------
+_token = {"value": "", "exp": 0.0}
+
+
+def _get_token(cfg):
+    """取 tenant_access_token（内存缓存，过期自动重取）。失败抛异常，由上层容错。"""
+    now = time.time()
+    if _token["value"] and now < _token["exp"] - 60:
+        return _token["value"]
+    url = cfg["base_url"].rstrip("/") + "/open-apis/auth/v3/tenant_access_token/internal"
+    body = json.dumps({"app_id": cfg["app_id"], "app_secret": cfg["app_secret"]}).encode("utf-8")
+    req = urllib.request.Request(url, data=body,
+                                 headers={"Content-Type": "application/json; charset=utf-8"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    if data.get("code") != 0:
+        raise RuntimeError(f"tenant_access_token 失败: code={data.get('code')} msg={data.get('msg')}")
+    _token["value"] = data["tenant_access_token"]
+    _token["exp"] = now + float(data.get("expire", 7200))
+    return _token["value"]
+
+
+def _post_message(cfg, msg_type, content_obj, token):
+    """POST 一条消息到 im/v1/messages。content_obj 会被二次 JSON 序列化为 content 字符串。"""
+    url = (cfg["base_url"].rstrip("/") + "/open-apis/im/v1/messages?receive_id_type="
+           + urllib.parse.quote(cfg["receive_id_type"]))
+    payload = {
+        "receive_id": cfg["receive_id"],
+        "msg_type": msg_type,
+        "content": json.dumps(content_obj, ensure_ascii=False),
+    }
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, headers={
+        "Authorization": "Bearer " + token,
+        "Content-Type": "application/json; charset=utf-8",
+    })
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+# token 失效相关错误码：清缓存后重试一次
+_TOKEN_ERRS = (99991663, 99991661, 99991664, 99991665)
+
+
+def _emit(msg_type, content_obj):
+    """统一发送入口：容错，返回 True/False。任何异常都不外抛。"""
+    cfg = _cfg()
+    if not _is_enabled(cfg):
+        return False
+    log = _log()
+    try:
+        token = _get_token(cfg)
+        resp = _post_message(cfg, msg_type, content_obj, token)
+        if resp.get("code") in _TOKEN_ERRS:
+            _token["value"] = ""                     # 令牌失效，强制重取一次
+            token = _get_token(cfg)
+            resp = _post_message(cfg, msg_type, content_obj, token)
+        if resp.get("code") == 0:
+            return True
+        log(f"[飞书] 发送失败 code={resp.get('code')} msg={resp.get('msg')}")
+    except Exception as e:
+        log(f"[飞书] 发送异常（已忽略，不影响主流程）: {e}")
+    return False
+
+
+# ---------------- 卡片构建 ----------------
+def _card(title, template, rows, note=None, detail=None):
+    """构建飞书交互卡片。
+    rows: [(label, value), ...] 渲染为双列字段；detail: 追加的富文本段（失败明细）；note: 底部灰字。"""
+    elements = []
+    if rows:
+        fields = [{"is_short": True,
+                   "text": {"tag": "lark_md", "content": f"**{label}**\n{value}"}}
+                  for label, value in rows]
+        elements.append({"tag": "div", "fields": fields})
+    if detail:
+        elements.append({"tag": "hr"})
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": detail}})
+    if note:
+        elements.append({"tag": "note", "elements": [{"tag": "lark_md", "content": note}]})
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": template,
+                   "title": {"tag": "plain_text", "content": title}},
+        "elements": elements,
+    }
+
+
+def _fmt_failures(failures, max_groups=8, max_orders=15):
+    """把失败留存 list 渲染成飞书 lark_md 明细。失败留存项形如
+    {'stage','channel','account','orders':[...], 'reason'}。无失败返回 None。"""
+    if not failures:
+        return None
+    lines = ["**⚠️ 失败明细（需人工跟进）**"]
+    for x in failures[:max_groups]:
+        orders = x.get("orders") or []
+        shown = ", ".join(str(o) for o in orders[:max_orders])
+        more = f" …等 {len(orders)} 单" if len(orders) > max_orders else ""
+        acct = x.get("account") or "-"
+        lines.append(f"• **[{x.get('stage', '')}]** 渠道={x.get('channel', '-')} 账号={acct}\n"
+                     f"　原因：{x.get('reason', '')}\n"
+                     f"　订单：{shown or '（无单号）'}{more}")
+    if len(failures) > max_groups:
+        lines.append(f"…其余 {len(failures) - max_groups} 组略")
+    return "\n".join(lines)
+
+
+# ---------------- 对外：运行汇总 ----------------
+def notify_shipping(*, run_id, dry_run, failures, elapsed_sec, channels, cycle=None):
+    """发货主流程 / 发货循环的每次运行汇总。cycle 非空表示是循环的第 N 轮。"""
+    cfg = _cfg()
+    if not _is_enabled(cfg):
+        return False
+    failures = failures or []
+    fail_orders = sum(len(x.get("orders") or []) for x in failures)
+    ok = (fail_orders == 0 and len(failures) == 0)
+    if ok and str(cfg.get("level", "all")).lower() == "fail_only":
+        return False   # 配成"仅失败才发"且本次全成功 → 跳过
+
+    mode = "空跑（演练）" if dry_run else "真跑 🔴"
+    title = "📦 海外仓发货 · " + (f"循环第 {cycle} 轮" if cycle else "运行结束")
+    if ok:
+        color = "grey" if dry_run else "green"
+        result = "✅ 无失败"
+    else:
+        color = "red"
+        result = f"⚠️ 失败 {len(failures)} 组 / {fail_orders} 单"
+    rows = [
+        ("模式", mode),
+        ("结果", result),
+        ("渠道", f"{channels} 个"),
+        ("耗时", f"{float(elapsed_sec):.1f}s"),
+        ("RUN_ID", f"{run_id}" + (f" · 第{cycle}轮" if cycle else "")),
+    ]
+    detail = _fmt_failures(failures)
+    note = "海外仓自动化 · 运行汇总（每次运行推送一次）"
+    return _emit("interactive", _card(title, color, rows, note=note, detail=detail))
+
+
+def notify_status(*, run_id, cycle, res, elapsed_sec=None):
+    """跟踪号更新循环（status_update_loop）的每轮汇总。res 形如
+    {'total','got','fail'} 或 {'error': '...'}。"""
+    cfg = _cfg()
+    if not _is_enabled(cfg):
+        return False
+    res = res or {}
+    err = res.get("error")
+    ok = not err
+    if ok and str(cfg.get("level", "all")).lower() == "fail_only":
+        return False
+
+    title = "🔄 海外仓 · 跟踪号更新" + (f" 第 {cycle} 轮" if cycle else "")
+    if err:
+        color = "red"
+        rows = [("结果", "❌ 失败"), ("原因", str(err))]
+    else:
+        color = "green"
+        rows = [("结果", "✅ 完成"),
+                ("共", str(res.get("total", "-"))),
+                ("已获取", str(res.get("got", "-"))),
+                ("失败", str(res.get("fail", "-")))]
+    rows.append(("RUN_ID", f"{run_id}" + (f" · 第{cycle}轮" if cycle else "")))
+    if elapsed_sec is not None:
+        rows.append(("耗时", f"{float(elapsed_sec):.1f}s"))
+    note = "海外仓自动化 · 跟踪号更新汇总"
+    return _emit("interactive", _card(title, color, rows, note=note))
+
+
+def notify_text(text):
+    """发一条纯文本消息（备用）。"""
+    return _emit("text", {"text": str(text)})
+
+
+def notify_test():
+    """发一条连通测试卡片。返回 True/False。"""
+    now = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+    card = _card("✅ 海外仓自动化 · 飞书连通测试", "green",
+                 [("状态", "配置正确，可以收到运行汇总"), ("时间", now)],
+                 note="这是一条测试消息，可忽略。")
+    return _emit("interactive", card)
+
+
+def list_chats():
+    """列出机器人所在的群（用于获取 chat_id）。返回原始接口 data。"""
+    cfg = _cfg()
+    token = _get_token(cfg)
+    url = cfg["base_url"].rstrip("/") + "/open-apis/im/v1/chats?page_size=100"
+    req = urllib.request.Request(url, headers={"Authorization": "Bearer " + token})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+# ---------------- 自测 CLI ----------------
+if __name__ == "__main__":
+    cfg = _cfg()
+    if not (cfg["app_id"] and cfg["app_secret"]):
+        print("[飞书] 未配置 app_id / app_secret。请在 secrets.py 的 FEISHU 中填写，或设环境变量后重试。")
+        raise SystemExit(1)
+    if not cfg["receive_id"]:
+        print("[飞书] 已配 app 但未填 receive_id。下面尝试列出机器人所在的群，把目标群的 chat_id 填进 secrets.FEISHU：")
+        try:
+            data = list_chats()
+            items = ((data.get("data") or {}).get("items")) or []
+            if not items:
+                print("  （机器人还没被拉进任何群。请先把应用/机器人加入目标群，再重试。）")
+            for it in items:
+                print(f"  群名={it.get('name')}  chat_id={it.get('chat_id')}")
+        except Exception as e:
+            print("  列群失败：", e)
+        raise SystemExit(0)
+    ok = notify_test()
+    print("飞书测试发送：", "成功 ✅" if ok else "失败 ❌（检查应用权限、是否已把应用拉进群、receive_id 是否正确）")

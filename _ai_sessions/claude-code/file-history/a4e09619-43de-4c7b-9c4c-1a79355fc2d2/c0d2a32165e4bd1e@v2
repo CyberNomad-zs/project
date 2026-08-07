@@ -1,0 +1,158 @@
+/**
+ * 会话级切店（右上角头像 → 切换 →「切换店铺」弹窗）
+ * 对齐 temu-plugin content.js，多 mall 共用账号时必须用此方式，不能用「来源店铺」筛选。
+ */
+import { log } from './logger.js';
+
+const SWITCH_HELPERS = `
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const visible = (el) => {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  };
+  const textEls = (re, maxLen = 40) =>
+    [...document.querySelectorAll('*')].filter((e) => {
+      const t = (e.textContent || '').trim();
+      return re.test(t) && t.length <= maxLen;
+    });
+  const clickableAncestor = (el) => {
+    let p = el;
+    for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+      if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button') return p;
+    }
+    return el;
+  };
+  const realClick = (el) => {
+    if (!el) return;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      el.dispatchEvent(new MouseEvent(type, opts));
+    }
+  };
+  const waitFor = async (fn, timeout = 8000, step = 300) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const v = fn();
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  };
+  function findStoreNameEl() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (t.length < 2 || t.length > 30) continue;
+      if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(t)) continue;
+      if (/^[A-Z0-9]+$/.test(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue;
+      if (r.left < W * 0.5) continue;
+      if (!best || r.left > best.left) best = { el, left: r.left };
+    }
+    return best ? best.el : null;
+  }
+  function readStoreName() {
+    const el = findStoreNameEl();
+    return el ? (el.textContent || '').trim() : null;
+  }
+  async function openStoreModal() {
+    // 点顶栏最右侧区域的「切换」
+    const switches = textEls(/^切换$/, 6).filter(visible);
+    let btn = switches[switches.length - 1];
+    if (!btn) {
+      // 点头像附近
+      const av = [...document.querySelectorAll('img,div,span')].find((e) => {
+        const r = e.getBoundingClientRect();
+        return r.top >= 0 && r.top < 80 && r.left > window.innerWidth * 0.85 && r.width > 20 && r.height > 20;
+      });
+      if (av) realClick(av);
+      await sleep(400);
+      const again = textEls(/^切换$/, 6).filter(visible);
+      btn = again[again.length - 1];
+    }
+    if (btn) realClick(clickableAncestor(btn));
+    await sleep(600);
+    const modal = await waitFor(() => {
+      const t = document.body.innerText || '';
+      return /切换店铺|您的账户存在/.test(t) ? true : null;
+    }, 5000, 200);
+    return !!modal;
+  }
+`;
+
+export async function readCurrentStoreName(page) {
+  return page.evaluate((helpers) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    return readStoreName();
+  }, SWITCH_HELPERS);
+}
+
+/**
+ * 切换到目标店铺（会话级）。已是当前店则 ok。
+ * @returns {Promise<{ok:boolean,msg:string}>}
+ */
+export async function switchSessionStore(page, target) {
+  const cur = await readCurrentStoreName(page);
+  if (cur && cur === target) {
+    log.info(`已是当前店：${target}`);
+    return { ok: true, msg: 'already' };
+  }
+  log.info(`会话切店 → ${target}（当前=${cur || '未知'}）`);
+  const result = await page.evaluate(async (helpers, targetName) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    if (!(await openStoreModal())) return { ok: false, msg: '打不开切换店铺弹窗' };
+    await sleep(400);
+    const esc = String(targetName).replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');
+    const re = new RegExp(esc);
+    // 弹窗内含店名的行
+    const candidates = [...document.querySelectorAll('div,li,tr,span')].filter((e) => {
+      if (!visible(e)) return false;
+      const t = (e.textContent || '').trim();
+      return re.test(t) && /切换|半托管|全托管/.test(t) && t.length < 200;
+    });
+    // 取最短匹配容器
+    candidates.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    const row = candidates[0];
+    if (!row) return { ok: false, msg: '弹窗里没找到店铺 ' + targetName };
+    let btn = [...row.querySelectorAll('button,[role=button]')].find(
+      (b) => /^\\s*切换\\s*$/.test((b.textContent || '').trim()) && !b.disabled && b.getAttribute('aria-disabled') !== 'true',
+    );
+    if (!btn) {
+      const allSwitch = textEls(/^切换$/, 6)
+        .map(clickableAncestor)
+        .filter((b) => b && !b.disabled && visible(b));
+      btn = allSwitch.find((b) => row.contains(b)) || allSwitch[allSwitch.length - 1];
+    }
+    if (!btn) return { ok: false, msg: '没找到可点的切换按钮（可能已是当前店）' };
+    realClick(btn);
+    return { ok: true, msg: 'clicked' };
+  }, SWITCH_HELPERS, target);
+
+  if (!result.ok) {
+    log.warn(`切店失败：${result.msg}`);
+    await page.keyboard.press('Escape').catch(() => {});
+    return result;
+  }
+  // 等顶栏店名变化或导航完成
+  await page.waitForTimeout(2500);
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    const name = await readCurrentStoreName(page);
+    if (name === target) {
+      log.info(`切店成功：${target}`);
+      return { ok: true, msg: 'switched' };
+    }
+    await page.waitForTimeout(800);
+  }
+  const after = await readCurrentStoreName(page);
+  if (after === target) return { ok: true, msg: 'switched-late' };
+  log.warn(`切店超时，当前显示=${after || '未知'}，目标=${target}`);
+  return { ok: false, msg: `timeout current=${after}` };
+}

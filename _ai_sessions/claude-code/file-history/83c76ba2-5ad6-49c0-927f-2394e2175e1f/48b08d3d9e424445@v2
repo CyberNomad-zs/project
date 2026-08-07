@@ -1,0 +1,51 @@
+(function () {
+  function t(el) {
+    return (el && el.textContent ? el.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 100);
+  }
+  var tables = document.querySelectorAll('table').length;
+  var roleRows = document.querySelectorAll('[role="row"]').length;
+  var roleGrids = document.querySelectorAll('[role="grid"],[role="table"]').length;
+  var ths = [];
+  document.querySelectorAll('th').forEach(function (el, i) {
+    if (i < 25) ths.push(t(el));
+  });
+  var candidates = [];
+  var all = document.querySelectorAll('div,span,th,td,p,a,button');
+  for (var i = 0; i < all.length && candidates.length < 40; i++) {
+    var el = all[i];
+    var s = t(el);
+    if (!s || s.length > 60) continue;
+    if (/订单号|订单编号|Order ID|Order No|商品信息|订单状态|Order status|待发货|已发货|Paid|Unpaid/i.test(s)) {
+      candidates.push({
+        tag: el.tagName,
+        cls: (el.className || '').toString().slice(0, 100),
+        text: s
+      });
+    }
+  }
+  var bodyText = document.body && document.body.innerText ? document.body.innerText.slice(0, 2000) : '';
+  var classHints = {};
+  document.querySelectorAll('[class*="order"],[class*="Order"],[class*="table"],[class*="Table"],[class*="list"],[class*="List"]').forEach(function (el) {
+    var c = (el.className || '').toString().split(/\s+/).slice(0, 3).join('.');
+    if (c && !classHints[c]) classHints[c] = (classHints[c] || 0) + 1;
+  });
+  var topClasses = Object.keys(classHints)
+    .map(function (k) {
+      return { c: k, n: classHints[k] };
+    })
+    .sort(function (a, b) {
+      return b.n - a.n;
+    })
+    .slice(0, 20);
+  return JSON.stringify({
+    url: location.href,
+    title: document.title,
+    tables: tables,
+    roleRows: roleRows,
+    roleGrids: roleGrids,
+    ths: ths,
+    candidates: candidates,
+    topClasses: topClasses,
+    bodyPreview: bodyText
+  });
+})();

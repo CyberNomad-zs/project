@@ -1,0 +1,109 @@
+# -*- coding: utf-8 -*-
+"""
+公共基础：浏览器/会话管理 + 日志。
+- 使用持久化 profile（同一浏览器上下文同时持有 ERP 与 WMS 的登录态）。
+- ERP：复用 profile 中的登录态（由 capture/erp_manual_login.py 手动登录一次得到）。
+- WMS：每次运行用账号自动登录（无验证码）。
+"""
+import os, time, datetime
+import config, secrets
+
+LOGIN_URL_WMS = "http://193.112.93.60:9999/login.html"
+INDEX_WMS = "http://193.112.93.60:9999/index.html"
+ORDERINFO_WMS = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+
+
+# ---------------- 日志 ----------------
+def _ts():
+    # 环境禁用无参 datetime.now()，用 time.time 转本地时间字符串
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
+
+
+class Logger:
+    def __init__(self, name="run"):
+        self.path = os.path.join(config.LOG_DIR, f"{name}_{time.strftime('%Y%m%d', time.localtime(time.time()))}.log")
+
+    def __call__(self, msg):
+        line = f"[{_ts()}] {msg}"
+        try:
+            print(line)
+        except UnicodeEncodeError:
+            # 控制台(gbk)打不出的字符(如 emoji)用 replace 兜底，不中断运行
+            import sys
+            enc = (sys.stdout.encoding or "gbk")
+            print(line.encode(enc, "replace").decode(enc, "replace"))
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+
+log = Logger()
+
+
+# ---------------- 浏览器 ----------------
+def open_context(p):
+    """启动持久化浏览器上下文。"""
+    ctx = p.chromium.launch_persistent_context(
+        config.BROWSER_PROFILE,
+        headless=config.HEADLESS,
+        no_viewport=True,
+        args=["--start-maximized", "--no-sandbox"],
+        ignore_https_errors=True,
+    )
+    return ctx
+
+
+def safe_goto(page, url, tries=4, wait_until="domcontentloaded"):
+    last = None
+    for _ in range(tries):
+        try:
+            page.goto(url, wait_until=wait_until, timeout=40000)
+            return True
+        except Exception as e:
+            last = e
+            time.sleep(2)
+    log(f"[WARN] 打开失败 {url}: {last}")
+    return False
+
+
+# ---------------- WMS 登录 ----------------
+def wms_login(page, account):
+    """account: {'shop','login','password'}。返回是否成功。"""
+    safe_goto(page, LOGIN_URL_WMS)
+    time.sleep(1.5)
+    try:
+        page.fill("#loginName", account["login"])
+        page.fill("#loginPwd", account["password"])
+        page.click("#loginSubmit")
+    except Exception as e:
+        log(f"[WMS] 填写登录表单失败: {e}")
+        return False
+    time.sleep(5)
+    # 校验：能打开 orderInfo 且未跳回登录
+    safe_goto(page, ORDERINFO_WMS)
+    time.sleep(3)
+    ok = "login.html" not in (page.url or "")
+    log(f"[WMS] 登录 {account['shop']}({account['login']}) => {'成功' if ok else '失败'}")
+    return ok
+
+
+# ---------------- ERP 会话校验 ----------------
+def erp_is_logged_in(page):
+    try:
+        r = page.request.get("https://www.sellfox.com/api/isLogin.json?reqTime=%d" % int(time.time() * 1000))
+        return bool(r.json().get("data"))
+    except Exception:
+        return False
+
+
+def ensure_erp(page):
+    """确保 ERP 已登录（复用 profile 会话）。未登录则提示需手动登录。"""
+    safe_goto(page, "https://www.sellfox.com/amzup-web-main/login.html")
+    time.sleep(2)
+    if erp_is_logged_in(page):
+        log("[ERP] 会话有效")
+        return True
+    log("[ERP] 会话已失效！请先运行： python capture/erp_manual_login.py 重新登录一次。")
+    return False

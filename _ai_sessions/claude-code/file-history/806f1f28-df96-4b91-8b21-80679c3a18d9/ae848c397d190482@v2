@@ -1,0 +1,766 @@
+﻿# Multi-store TikTok ad scrape via ziniao-cli (dynamic store list)
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -DryRun true
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -DryRun false
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -ListOnly
+#
+# Requires: Ziniao client running + ziniao-cli doctor OK
+# Config: config\stores.config.json
+
+param(
+  [string]$ConfigPath = "",
+  [switch]$ListOnly,
+  # string so -File callers work (Nullable[bool] cannot bind "$true"/"$false" from -File)
+  # omit / empty => use config.options.dryRun; true|1|yes / false|0|no
+  [string]$DryRun = ""
+)
+
+$ErrorActionPreference = 'Stop'
+# ziniao-cli writes progress to stderr; do not treat as terminating
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+if (-not $ConfigPath) {
+  $ConfigPath = Join-Path $root 'config\stores.config.json'
+}
+$scrapeJsPath = Join-Path $root 'scripts\scrape-ads-page.js'
+
+if (-not (Test-Path $ConfigPath)) {
+  throw "Missing config: $ConfigPath (copy config\stores.config.example.json)"
+}
+if (-not (Test-Path $scrapeJsPath)) {
+  throw "Missing scrape script: $scrapeJsPath"
+}
+
+$cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$scrapeJs = Get-Content $scrapeJsPath -Raw -Encoding UTF8
+$analysisLib = Join-Path $PSScriptRoot 'daily-analysis.ps1'
+if (Test-Path $analysisLib) { . $analysisLib }
+$qingquanLib = Join-Path $PSScriptRoot 'qingquan-client.ps1'
+if (Test-Path $qingquanLib) { . $qingquanLib }
+
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+}
+
+function Get-BizDate([string]$mode) {
+  $d = Get-Date
+  if ($mode -eq 'yesterday') { $d = $d.AddDays(-1) }
+  return $d.ToString('yyyy-MM-dd')
+}
+
+function Test-StoreFilter($store, $filter) {
+  if ($filter.includeStoreIds -and @($filter.includeStoreIds).Count -gt 0) {
+    if ($store.storeId -notin @($filter.includeStoreIds)) { return $false }
+  }
+  if ($filter.excludeStoreIds -and ($store.storeId -in @($filter.excludeStoreIds))) {
+    return $false
+  }
+  if ($filter.requireIp -eq $true) {
+    if (-not $store.ip -or [string]::IsNullOrWhiteSpace([string]$store.ip)) { return $false }
+  }
+  $platform = [string]$store.platformName
+  $name = [string]$store.storeName
+  if ($filter.platformContains -and @($filter.platformContains).Count -gt 0) {
+    $ok = $false
+    foreach ($p in @($filter.platformContains)) {
+      if ($platform -like "*$p*") { $ok = $true; break }
+    }
+    if (-not $ok) { return $false }
+  }
+  if ($filter.nameContains -and @($filter.nameContains).Count -gt 0) {
+    $ok = $false
+    foreach ($p in @($filter.nameContains)) {
+      if ($name -like "*$p*") { $ok = $true; break }
+    }
+    if (-not $ok) { return $false }
+  }
+  if ($filter.nameExclude) {
+    foreach ($p in @($filter.nameExclude)) {
+      if ($name -like "*$p*") { return $false }
+    }
+  }
+  return $true
+}
+
+function Get-AdsUrl($store, $adsUrlCfg) {
+  $platform = [string]$store.platformName
+  if ($adsUrlCfg.byPlatform) {
+    foreach ($p in $adsUrlCfg.byPlatform.PSObject.Properties) {
+      if ($p.Name -eq $platform) { return [string]$p.Value }
+    }
+    foreach ($p in $adsUrlCfg.byPlatform.PSObject.Properties) {
+      if ($platform -like "*$($p.Name)*") { return [string]$p.Value }
+    }
+  }
+  return [string]$adsUrlCfg.default
+}
+
+function Get-DisplayName($store, $map) {
+  $name = [string]$store.storeName
+  if ($map) {
+    foreach ($p in $map.PSObject.Properties) {
+      if ($p.Name -eq $name) { return [string]$p.Value }
+    }
+    foreach ($p in $map.PSObject.Properties) {
+      if ($name -like "*$($p.Name)*" -or $p.Name -like "*$name*") {
+        return [string]$p.Value
+      }
+    }
+  }
+  return $name
+}
+
+function Get-FeishuToken($appId, $appSecret) {
+  $body = @{ app_id = $appId; app_secret = $appSecret } | ConvertTo-Json
+  $r = Invoke-RestMethod -Method POST -Uri 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' `
+    -ContentType 'application/json; charset=utf-8' -Body $body
+  if ($r.code -ne 0) { throw "Feishu token failed: $($r.msg)" }
+  return $r.tenant_access_token
+}
+
+function Write-FeishuRows($feishu, $rows, $dryRun) {
+  if ($dryRun) {
+    Write-Step ("  [dry-run] skip Feishu write, rows={0}" -f $rows.Count)
+    return @{ written = 0; dryRun = $true }
+  }
+  if (-not $rows.Count) { return @{ written = 0; dryRun = $false } }
+
+  $token = Get-FeishuToken $feishu.appId $feishu.appSecret
+  $url = "https://open.feishu.cn/open-apis/bitable/v1/apps/$($feishu.appToken)/tables/$($feishu.tableId)/records/batch_create"
+  $fieldsUrl = "https://open.feishu.cn/open-apis/bitable/v1/apps/$($feishu.appToken)/tables/$($feishu.tableId)/fields?page_size=100"
+  $fieldList = Invoke-RestMethod -Method GET -Uri $fieldsUrl -Headers @{ Authorization = "Bearer $token" }
+  $names = @($fieldList.data.items | ForEach-Object { $_.field_name })
+
+  function Pick-Name([string[]]$aliases) {
+    foreach ($a in $aliases) { if ($names -contains $a) { return $a } }
+    return $null
+  }
+
+  # UTF-8 field names (same as extension BITABLE_FIELDS)
+  $utf8 = [System.Text.Encoding]::UTF8
+  $A_DATE = @($utf8.GetString([byte[]](0xE6,0x97,0xA5,0xE6,0x9C,0x9F)))
+  $A_STORE = @($utf8.GetString([byte[]](0xE5,0xBA,0x97,0xE9,0x93,0xBA)))
+  $A_STORE_ID = @($utf8.GetString([byte[]](0xE5,0xBA,0x97,0xE9,0x93,0xBA,0x49,0x44)))
+  $A_CAMPAIGN = @(
+    $utf8.GetString([byte[]](0xE5,0x93,0x81,0xE5,0x90,0x8D)),
+    $utf8.GetString([byte[]](0xE5,0xB9,0xBF,0xE5,0x91,0x8A,0xE7,0xB3,0xBB,0xE5,0x88,0x97,0xE5,0x90,0x8D,0xE7,0xA7,0xB0))
+  )
+  $A_SPEND = @(
+    $utf8.GetString([byte[]](0xE5,0xB9,0xBF,0xE5,0x91,0x8A,0xE8,0x8A,0xB1,0xE8,0xB4,0xB9)),
+    $utf8.GetString([byte[]](0xE6,0x88,0x90,0xE6,0x9C,0xAC))
+  )
+  $A_ORDERS = @($utf8.GetString([byte[]](0xE9,0x94,0x80,0xE9,0x87,0x8F)))
+  $A_ROI = @('ROI')
+  $A_REVENUE = @(
+    $utf8.GetString([byte[]](0xE9,0x94,0x80,0xE5,0x94,0xAE,0xE9,0xA2,0x9D)),
+    $utf8.GetString([byte[]](0xE6,0x80,0xBB,0xE6,0x94,0xB6,0xE5,0x85,0xA5))
+  )
+  $A_SCRAPED = @($utf8.GetString([byte[]](0xE6,0x8A,0x93,0xE5,0x8F,0x96,0xE6,0x97,0xB6,0xE9,0x97,0xB4)))
+  $A_URL = @($utf8.GetString([byte[]](0xE6,0x95,0xB0,0xE6,0x8D,0xAE,0xE6,0xBA,0x90,0x55,0x52,0x4C)))
+  $A_STATUS = @($utf8.GetString([byte[]](0xE7,0x8A,0xB6,0xE6,0x80,0x81)))
+
+  $fn = @{
+    date      = Pick-Name $A_DATE
+    store     = Pick-Name $A_STORE
+    storeId   = Pick-Name $A_STORE_ID
+    campaign  = Pick-Name $A_CAMPAIGN
+    spend     = Pick-Name $A_SPEND
+    orders    = Pick-Name $A_ORDERS
+    roi       = Pick-Name $A_ROI
+    revenue   = Pick-Name $A_REVENUE
+    scrapedAt = Pick-Name $A_SCRAPED
+    sourceUrl = Pick-Name $A_URL
+    status    = Pick-Name $A_STATUS
+  }
+
+  if (-not $fn.campaign -or -not $fn.store) {
+    throw ("Feishu fields incomplete. Have: {0}" -f ($names -join ', '))
+  }
+
+  $records = @()
+  foreach ($row in $rows) {
+    $fields = @{}
+    if ($fn.date) {
+      $dt = [DateTime]::ParseExact($row.date, 'yyyy-MM-dd', $null)
+      $fields[$fn.date] = [DateTimeOffset]::new($dt).ToUnixTimeMilliseconds()
+    }
+    if ($fn.store) { $fields[$fn.store] = $row.store }
+    if ($fn.storeId) { $fields[$fn.storeId] = $row.storeId }
+    if ($fn.campaign) { $fields[$fn.campaign] = $row.campaign }
+    if ($fn.spend) { $fields[$fn.spend] = [double]$row.spend }
+    if ($fn.orders) { $fields[$fn.orders] = [double]$row.orders }
+    if ($fn.roi) { $fields[$fn.roi] = [double]$row.roi }
+    if ($fn.revenue) { $fields[$fn.revenue] = [double]$row.revenue }
+    if ($fn.scrapedAt) { $fields[$fn.scrapedAt] = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+    if ($fn.sourceUrl) { $fields[$fn.sourceUrl] = $row.sourceUrl }
+    if ($fn.status) { $fields[$fn.status] = $row.status }
+    $records += @{ fields = $fields }
+  }
+
+  $bodyBytes = [System.Text.Encoding]::UTF8.GetBytes((@{ records = $records } | ConvertTo-Json -Depth 8 -Compress))
+  $resp = Invoke-RestMethod -Method POST -Uri $url -Headers @{ Authorization = "Bearer $token" } `
+    -ContentType 'application/json; charset=utf-8' -Body $bodyBytes
+  if ($resp.code -ne 0) {
+    throw ("Feishu write failed: code={0} msg={1}" -f $resp.code, $resp.msg)
+  }
+  return @{ written = $records.Count; dryRun = $false }
+}
+
+# --- main ---
+function ConvertTo-ProcessArgument([string]$arg) {
+  # CommandLineToArgvW-style quoting for ProcessStartInfo.Arguments
+  if ($null -eq $arg) { return '""' }
+  if ($arg -notmatch '[\s"]') { return $arg }
+  $bs = [char]0x5C
+  $sb = New-Object System.Text.StringBuilder
+  [void]$sb.Append([char]0x22)
+  $backslashes = 0
+  foreach ($ch in $arg.ToCharArray()) {
+    if ($ch -eq $bs) {
+      $backslashes++
+      continue
+    }
+    if ($ch -eq [char]0x22) {
+      [void]$sb.Append($bs, $backslashes * 2 + 1)
+      [void]$sb.Append([char]0x22)
+      $backslashes = 0
+      continue
+    }
+    if ($backslashes -gt 0) {
+      [void]$sb.Append($bs, $backslashes)
+      $backslashes = 0
+    }
+    [void]$sb.Append($ch)
+  }
+  if ($backslashes -gt 0) { [void]$sb.Append($bs, $backslashes * 2) }
+  [void]$sb.Append([char]0x22)
+  return $sb.ToString()
+}
+
+# Cache: npm ziniao-cli is a .ps1 shim — Process.Start cannot run it; invoke node + run.js directly
+$script:ZiniaoNode = $null
+$script:ZiniaoRunJs = $null
+
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode -and $script:ZiniaoRunJs) { return }
+
+  $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+  if (-not $nodeCmd) { throw "node not found in PATH (required by ziniao-cli)" }
+  $script:ZiniaoNode = $nodeCmd.Source
+
+  $candidates = @()
+  $npmDir = Join-Path $env:APPDATA 'npm'
+  if ($npmDir) {
+    $candidates += (Join-Path $npmDir 'node_modules\@ziniao-open\cli\scripts\run.js')
+  }
+  $cmd = Get-Command ziniao-cli -ErrorAction SilentlyContinue
+  if ($cmd -and $cmd.Source) {
+    $base = Split-Path $cmd.Source -Parent
+    $candidates += (Join-Path $base 'node_modules\@ziniao-open\cli\scripts\run.js')
+  }
+  foreach ($c in $candidates) {
+    if ($c -and (Test-Path -LiteralPath $c)) {
+      $script:ZiniaoRunJs = (Resolve-Path -LiteralPath $c).Path
+      break
+    }
+  }
+  if (-not $script:ZiniaoRunJs) {
+    throw "ziniao-cli run.js not found. Install: npm i -g @ziniao-open/cli  (looked under %APPDATA%\npm\node_modules\@ziniao-open\cli)"
+  }
+  Write-Step ("ziniao runtime: node={0} run.js={1}" -f $script:ZiniaoNode, $script:ZiniaoRunJs)
+}
+
+function Invoke-Ziniao([string[]]$CliArgs) {
+  # UTF-8 capture via ProcessStartInfo. npm ziniao-cli is .ps1 — call node run.js instead.
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  try {
+    [void]$p.Start()
+  } catch {
+    throw "Failed to start ziniao (node): $($_.Exception.Message)"
+  }
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+
+  $parts = @()
+  if (-not [string]::IsNullOrEmpty($stdout)) { $parts += $stdout.TrimEnd("`r", "`n") }
+  if (-not [string]::IsNullOrEmpty($stderr)) { $parts += $stderr.TrimEnd("`r", "`n") }
+  return ($parts -join "`n")
+}
+
+function Save-ScrapeDebug {
+  param(
+    [string]$StoreId,
+    [string]$StoreName,
+    [string]$DisplayName,
+    [string]$AdsUrl,
+    [string]$ExecOut,
+    $Payload,
+    [string]$ErrorMsg,
+    [switch]$AsLast
+  )
+  $logsDir = Join-Path $root 'logs'
+  New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+  $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+  $path = if ($AsLast) {
+    Join-Path $logsDir 'scrape-debug-last.json'
+  } else {
+    Join-Path $logsDir ("scrape-debug-{0}-{1}.json" -f $StoreId, $stamp)
+  }
+  $previewLen = 8000
+  $execPreview = $ExecOut
+  if ($execPreview -and $execPreview.Length -gt $previewLen) {
+    $execPreview = $execPreview.Substring(0, $previewLen) + '...[truncated]'
+  }
+  $obj = [ordered]@{
+    storeId       = $StoreId
+    storeName     = $StoreName
+    displayName   = $DisplayName
+    adsUrl        = $AdsUrl
+    error         = $ErrorMsg
+    execOutLength = if ($ExecOut) { $ExecOut.Length } else { 0 }
+    execOut       = $execPreview
+    payload       = $Payload
+    payloadUrl    = if ($Payload -and $Payload.url) { [string]$Payload.url } else { $null }
+    capturedAt    = (Get-Date).ToString('o')
+  }
+  ($obj | ConvertTo-Json -Depth 10) | Set-Content -Path $path -Encoding UTF8
+  Write-Step ("  debug saved: {0}" -f $path)
+  return $path
+}
+
+function ConvertTo-ScrapeOneLine([string]$js) {
+  # // comments become catastrophic when newlines are removed — strip first
+  $s = [regex]::Replace($js, '/\*[\s\S]*?\*/', ' ')
+  $s = [regex]::Replace($s, '(?m)^\s*//.*$', '')
+  $s = [regex]::Replace($s, '(?m)([^:"''\\])//[^\r\n]*', '$1')
+  $s = ($s -replace '\r?\n', ' ' -replace '\s+', ' ').Trim()
+  if ($s -notmatch '\)\s*\(\s*\)\s*;?\s*$' -and $s -notmatch '\}\s*\)\s*\(\s*\)\s*;?\s*$') {
+    Write-Step "WARN scrape script may be truncated (len=$($s.Length))"
+  }
+  return $s
+}
+
+function ConvertFrom-JsonSafe([string]$text) {
+  if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+  try { return ($text | ConvertFrom-Json) } catch { return $null }
+}
+
+function Get-ScrapePayload([string]$execOut) {
+  # ziniao-cli page exec shapes seen in the wild:
+  #   { ok, data: { ok, storeId, data: { exceptionDetails, result: "<json string>", targetId } } }
+  #   { ok, data: { data: { result: { type, value: "<json string>" } } } }  (raw CDP)
+  # Our scraper returns JSON.stringify({ ok, rows, source, url, error })
+  function Test-ScrapeShape($o) {
+    if ($null -eq $o) { return $false }
+    if ($o -is [string]) { return $false }
+    $names = @($o.PSObject.Properties.Name)
+    return ($names -contains 'rows') -or (($names -contains 'ok') -and ($names -contains 'source' -or $names -contains 'error'))
+  }
+  function Convert-MaybeJsonString($v) {
+    if ($v -is [string]) {
+      $inner = ConvertFrom-JsonSafe $v
+      if (Test-ScrapeShape $inner) { return $inner }
+      return $null
+    }
+    if (Test-ScrapeShape $v) { return $v }
+    if ($v -and ($v.PSObject.Properties.Name -contains 'value')) {
+      return Convert-MaybeJsonString $v.value
+    }
+    return $null
+  }
+
+  $root = ConvertFrom-JsonSafe $execOut
+  if (-not $root) {
+    if ($execOut -match '(?s)(\{\s*"ok"\s*:\s*(?:true|false)\s*,\s*"source"[\s\S]*?"rows"\s*:\s*\[[\s\S]*?\})') {
+      return (ConvertFrom-JsonSafe $Matches[1])
+    }
+    return $null
+  }
+
+  # Walk common nest paths first
+  $paths = @(
+    { param($r) $r },
+    { param($r) $r.data },
+    { param($r) $r.data.data },
+    { param($r) $r.data.result },
+    { param($r) $r.data.data.result },
+    { param($r) $r.data.data.result.value },
+    { param($r) $r.result },
+    { param($r) $r.result.value }
+  )
+  foreach ($get in $paths) {
+    try {
+      $node = & $get $root
+    } catch { continue }
+    if ($null -eq $node) { continue }
+
+    # exception on this node?
+    if ($node -isnot [string] -and $node.PSObject.Properties.Name -contains 'exceptionDetails' -and $node.exceptionDetails) {
+      $ex = $node.exceptionDetails
+      $msg = if ($ex.exception -and $ex.exception.description) { [string]$ex.exception.description }
+             elseif ($ex.text) { [string]$ex.text }
+             else { 'page exec exception' }
+      return [pscustomobject]@{ ok = $false; rows = @(); error = $msg; source = 'exception' }
+    }
+
+    $parsed = Convert-MaybeJsonString $node
+    if ($parsed) { return $parsed }
+
+    # node has .result string/object
+    if ($node -isnot [string] -and $node.PSObject.Properties.Name -contains 'result') {
+      $parsed = Convert-MaybeJsonString $node.result
+      if ($parsed) { return $parsed }
+    }
+  }
+
+  # Fallback: unescaped scrape JSON embedded in the CLI text
+  if ($execOut -match '(?s)(\{\s*"ok"\s*:\s*(?:true|false)\s*,\s*"source"\s*:[\s\S]*?"rows"\s*:\s*\[[\s\S]*?\})') {
+    $inner = ConvertFrom-JsonSafe $Matches[1]
+    if ($inner) { return $inner }
+  }
+  # Escaped form inside result:"{...}"
+  if ($execOut -match '"result"\s*:\s*"(\{\\"ok\\".+?\})"') {
+    $unescaped = $Matches[1] -replace '\\"', '"' -replace '\\\\', '\'
+    $inner = ConvertFrom-JsonSafe $unescaped
+    if ($inner) { return $inner }
+  }
+
+  return [pscustomobject]@{
+    ok         = $false
+    rows       = @()
+    error      = 'unrecognized page exec payload'
+    source     = 'parse'
+    rawPreview = if ($execOut.Length -gt 400) { $execOut.Substring(0, 400) } else { $execOut }
+  }
+}
+
+Write-Step "check ziniao-cli..."
+$doctorText = Invoke-Ziniao @('doctor')
+if ($doctorText -notmatch 'ZClaw|Bridge|ok|OK|通过') {
+  Write-Host $doctorText
+  # soft warn only
+}
+
+Write-Step "list stores (dynamic)..."
+$listRaw = Invoke-Ziniao @('store', 'list', '--format', 'json')
+if ($listRaw -match '(?s)\{[\s\S]*"ok"\s*:\s*true[\s\S]*\}') {
+  $listRaw = $Matches[0]
+}
+$listObj = $listRaw | ConvertFrom-Json
+if (-not $listObj.ok) { throw "store list failed: $listRaw" }
+$all = @($listObj.data.items)
+Write-Step ("ziniao stores total: {0}" -f $all.Count)
+
+$selected = @($all | Where-Object { Test-StoreFilter $_ $cfg.filter })
+Write-Step ("after filter: {0}" -f $selected.Count)
+foreach ($s in $selected) {
+  $disp = Get-DisplayName $s $cfg.storeNameMap
+  $ip = if ($s.ip) { $s.ip } else { '(no-ip)' }
+  Write-Host ("  - {0} | {1} => Feishu[{2}] | {3} | {4}" -f $s.storeId, $s.storeName, $disp, $s.platformName, $ip)
+}
+
+if ($ListOnly) {
+  Write-Step "ListOnly done."
+  exit 0
+}
+
+if ($selected.Count -eq 0) {
+  throw "No stores matched filter. Adjust requireIp / platformContains / excludeStoreIds."
+}
+
+function Convert-DryRunFlag([string]$raw) {
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  switch -Regex ($raw.Trim()) {
+    '^(?i:true|1|yes|y|\$true)$'  { return $true }
+    '^(?i:false|0|no|n|\$false)$' { return $false }
+    default { throw "Invalid -DryRun value '$raw' (use true/false, or omit to use config)" }
+  }
+}
+$dryRunParsed = Convert-DryRunFlag $DryRun
+$useDryRun = if ($null -ne $dryRunParsed) { [bool]$dryRunParsed } else { [bool]$cfg.options.dryRun }
+$bizDate = Get-BizDate $cfg.options.dateMode
+$scrapeRetries = 2
+$scrapeRetryWaitMs = 12000
+if ($null -ne $cfg.options.scrapeRetries) { $scrapeRetries = [int]$cfg.options.scrapeRetries }
+if ($null -ne $cfg.options.scrapeRetryWaitMs) { $scrapeRetryWaitMs = [int]$cfg.options.scrapeRetryWaitMs }
+if ($scrapeRetries -lt 1) { $scrapeRetries = 1 }
+Write-Step ("bizDate={0} dryRun={1} scrapeRetries={2} waitAfterVisitMs={3}" -f $bizDate, $useDryRun, $scrapeRetries, $cfg.options.waitAfterVisitMs)
+if (-not $useDryRun) {
+  Write-Step "NOTE: Feishu write is APPEND — same bizDate re-run will create duplicate rows. Clean Feishu if you re-ran today."
+}
+
+function Get-FriendlyScrapeError($payload, [string]$fallback) {
+  $url = ''
+  if ($payload -and $payload.url) { $url = [string]$payload.url }
+  if ($url -match 'settle/verification|verification') {
+    return "店铺被重定向到核验/结算页，无法进广告面板: $url （请在卖家中心完成核验后重试）"
+  }
+  if ($url -match 'login|passport|signin') {
+    return "页面疑似未登录/掉登录: $url"
+  }
+  $base = if ($fallback) { $fallback } else { 'scrape failed' }
+  if ($url) { return "$base | url=$url" }
+  return $base
+}
+
+$summary = @()
+$allCampaignRows = @()
+$scrapeOneLine = ConvertTo-ScrapeOneLine $scrapeJs
+Write-Step ("scrape script one-line length={0}" -f $scrapeOneLine.Length)
+
+$analysisEnabled = $true
+$lowRoi = 3.0
+$writeSummaryFeishu = $true
+if ($cfg.analysis) {
+  if ($null -ne $cfg.analysis.enabled) { $analysisEnabled = [bool]$cfg.analysis.enabled }
+  if ($null -ne $cfg.analysis.lowRoiThreshold) { $lowRoi = [double]$cfg.analysis.lowRoiThreshold }
+  if ($null -ne $cfg.analysis.writeSummaryToFeishu) { $writeSummaryFeishu = [bool]$cfg.analysis.writeSummaryToFeishu }
+}
+
+foreach ($store in $selected) {
+  $sid = $store.storeId
+  $sname = $store.storeName
+  $display = Get-DisplayName $store $cfg.storeNameMap
+  $adsUrl = Get-AdsUrl $store $cfg.adsUrl
+  $item = [ordered]@{
+    storeId          = $sid
+    storeName        = $sname
+    displayName      = $display
+    ok               = $false
+    rows             = 0
+    written          = 0
+    qingquanAccepted = 0
+    qingquanDup      = 0
+    qingquanError    = $null
+    error            = $null
+  }
+
+  Write-Step ("==== START {0} ({1}) => {2} ====" -f $sname, $sid, $display)
+  $execOut = $null
+  $payload = $null
+  $debugSaved = $false
+  try {
+    Write-Step "  open store..."
+    Write-Host (Invoke-Ziniao @('store', 'open', '--id', $sid, '--url', $adsUrl))
+    Start-Sleep -Milliseconds ([int]$cfg.options.waitAfterOpenMs)
+
+    Write-Step "  visit ads page..."
+    # visit may fail (Bridge glitch) while page still usable — soft-log and continue
+    $visitOut = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $adsUrl, '--wait-until', 'networkidle', '--timeout', '90000')
+    Write-Host $visitOut
+    if ($visitOut -match '"ok"\s*:\s*false' -or $visitOut -match 'Bridge|无法连接|network') {
+      Write-Step "  WARN page visit soft-failed; will still try scrape after wait"
+    }
+    Start-Sleep -Milliseconds ([int]$cfg.options.waitAfterVisitMs)
+
+    $rawRows = @()
+    $lastErr = $null
+    for ($attempt = 1; $attempt -le $scrapeRetries; $attempt++) {
+      Write-Step ("  page exec scrape (attempt {0}/{1})..." -f $attempt, $scrapeRetries)
+      $execOut = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $scrapeOneLine, '--timeout', '60000')
+      Write-Host $execOut
+
+      $payload = Get-ScrapePayload $execOut
+      if (-not $payload) {
+        $lastErr = 'scrape failed: empty payload'
+        Write-Step ("  attempt {0}: {1}" -f $attempt, $lastErr)
+      } elseif (-not $payload.ok) {
+        $lastErr = Get-FriendlyScrapeError $payload $(if ($payload.error) { [string]$payload.error } else { 'scrape failed (ok=false)' })
+        # Hard fail: verification page won't fix by waiting
+        if ($payload.url -and ([string]$payload.url -match 'settle/verification|verification')) {
+          break
+        }
+        Write-Step ("  attempt {0}: {1}" -f $attempt, $lastErr)
+      } else {
+        $rawRows = @()
+        if ($null -ne $payload.rows) {
+          if ($payload.rows -is [System.Array]) { $rawRows = @($payload.rows) }
+          else { $rawRows = @($payload.rows) }
+        }
+        $rawRows = @($rawRows | Where-Object { $_ -and ($_.campaign -or $null -ne $_.spend -or $null -ne $_.revenue) })
+        if ($rawRows.Count -gt 0) {
+          $lastErr = $null
+          break
+        }
+        # On ads dashboard but 0 data rows — likely still loading
+        $lastErr = Get-FriendlyScrapeError $payload '广告页已打开但表格 0 行（可能仍在加载）'
+        Write-Step ("  attempt {0}: {1}" -f $attempt, $lastErr)
+      }
+
+      if ($attempt -lt $scrapeRetries) {
+        Write-Step ("  retry wait {0}ms + re-visit..." -f $scrapeRetryWaitMs)
+        Start-Sleep -Milliseconds $scrapeRetryWaitMs
+        $null = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $adsUrl, '--wait-until', 'networkidle', '--timeout', '90000')
+        Start-Sleep -Milliseconds ([Math]::Min([int]$cfg.options.waitAfterVisitMs, 15000))
+      }
+    }
+
+    if ($lastErr -or $rawRows.Count -eq 0) {
+      $errMsg = if ($lastErr) { $lastErr } else { '广告表格 0 行' }
+      $null = Save-ScrapeDebug -StoreId $sid -StoreName $sname -DisplayName $display -AdsUrl $adsUrl `
+        -ExecOut $execOut -Payload $payload -ErrorMsg $errMsg
+      $debugSaved = $true
+      throw $errMsg
+    }
+
+    $rows = @()
+    foreach ($r in $rawRows) {
+      $rows += [pscustomobject]@{
+        date      = $bizDate
+        store     = $display
+        storeId   = $sid
+        campaign  = [string]$r.campaign
+        spend     = if ($null -ne $r.spend) { $r.spend } else { 0 }
+        orders    = if ($null -ne $r.orders) { $r.orders } else { 0 }
+        roi       = if ($null -ne $r.roi) { $r.roi } else { 0 }
+        revenue   = if ($null -ne $r.revenue) { $r.revenue } else { 0 }
+        sourceUrl = [string]$payload.url
+        status    = 'success'
+      }
+    }
+    $item.rows = $rows.Count
+    if ($rows.Count -gt 0) { $allCampaignRows += $rows }
+
+    # --- Stage A: 旁路上报清泉中心（failOpen，默认不阻断飞书）---
+    $writeMode = 'direct'
+    if (Get-Command Get-FeishuWriteMode -ErrorAction SilentlyContinue) {
+      $writeMode = Get-FeishuWriteMode $cfg
+    }
+    $qingquanEnabled = $false
+    if ($cfg.qingquan -and $null -ne $cfg.qingquan.enabled) { $qingquanEnabled = [bool]$cfg.qingquan.enabled }
+
+    if ($qingquanEnabled -and (Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue)) {
+      if ($useDryRun) {
+        Write-Step ("  qingquan dryRun: would report {0} rows (writeMode={1})" -f $rows.Count, $writeMode)
+      } else {
+        $collectedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+        $qqItems = ConvertTo-QingquanIngestItems -Rows $rows -CollectedAt $collectedAt
+        Write-Step ("  report Qingquan center ({0} items, writeMode={1})..." -f $qqItems.Count, $writeMode)
+        $qq = Send-QingquanIngest -Config $cfg -Items $qqItems
+        $item.qingquanAccepted = $qq.accepted
+        $item.qingquanDup = $qq.duplicated
+        if ($qq.error) { $item.qingquanError = [string]$qq.error }
+        Write-Step ("  qingquan accepted={0} duplicated={1} failed={2} ok={3}" -f $qq.accepted, $qq.duplicated, $qq.failed, $qq.ok)
+      }
+    }
+
+    # direct / dual → 写飞书；center → 仅中心（飞书由中心同步）
+    $shouldWriteFeishu = ($writeMode -ne 'center')
+    if ($shouldWriteFeishu) {
+      Write-Step ("  scraped {0} rows (source={1}), write Feishu..." -f $rows.Count, $payload.source)
+      $w = Write-FeishuRows $cfg.feishu $rows $useDryRun
+      $item.written = $w.written
+      Write-Step ("  done written={0}" -f $w.written)
+    } else {
+      Write-Step ("  scraped {0} rows (source={1}), skip Feishu direct write (writeMode=center)" -f $rows.Count, $payload.source)
+      $item.written = 0
+    }
+    $item.ok = $true
+    $null = Save-ScrapeDebug -StoreId $sid -StoreName $sname -DisplayName $display -AdsUrl $adsUrl `
+      -ExecOut $execOut -Payload $payload -ErrorMsg $null -AsLast
+    $debugSaved = $true
+  }
+  catch {
+    $item.error = [string]$_
+    Write-Step ("  FAIL: {0}" -f $_)
+    if (-not $debugSaved) {
+      try {
+        $null = Save-ScrapeDebug -StoreId $sid -StoreName $sname -DisplayName $display -AdsUrl $adsUrl `
+          -ExecOut $execOut -Payload $payload -ErrorMsg ([string]$_)
+      } catch {
+        Write-Step ("  debug save failed: {0}" -f $_)
+      }
+    }
+  }
+  finally {
+    if ($cfg.options.closeAfter) {
+      try {
+        Write-Step "  close store..."
+        $null = Invoke-Ziniao @('store', 'close', '--id', $sid)
+      } catch { }
+    }
+    Start-Sleep -Milliseconds ([int]$cfg.options.delayBetweenStoresMs)
+  }
+  $summary += [pscustomobject]$item
+}
+
+Write-Step "======== SUMMARY ========"
+$summary | Format-Table storeName, displayName, ok, rows, written, qingquanAccepted, qingquanDup, error -AutoSize
+$okCount = @($summary | Where-Object { $_.ok }).Count
+Write-Step ("OK {0} / {1}" -f $okCount, $summary.Count)
+$qqFail = @($summary | Where-Object { $_.qingquanError }).Count
+if ($qqFail -gt 0) {
+  Write-Step ("NOTE: qingquan report soft-failed on {0} store(s) (failOpen; Feishu path unaffected if writeMode!=center)" -f $qqFail)
+}
+$outPath = Join-Path $root ("logs\multi-store-{0:yyyyMMdd-HHmmss}.json" -f (Get-Date))
+New-Item -ItemType Directory -Force -Path (Split-Path $outPath) | Out-Null
+$summary | ConvertTo-Json -Depth 6 | Set-Content $outPath -Encoding UTF8
+Write-Step ("log: {0}" -f $outPath)
+
+# --- daily analysis (saved under 日报/ for easy browsing; logs/ keeps scrape debug only) ---
+if ($analysisEnabled -and (Get-Command Build-DailyAnalysis -ErrorAction SilentlyContinue)) {
+  try {
+    Write-Step "build daily analysis..."
+    $analysis = Build-DailyAnalysis -CampaignRows $allCampaignRows -RunSummary $summary -BizDate $bizDate -LowRoiThreshold $lowRoi
+    $reportDir = Join-Path $root '日报'
+    New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+    $mdPath = Join-Path $reportDir ("日报-{0}.md" -f $bizDate)
+    $analysis.markdown | Set-Content -Path $mdPath -Encoding UTF8
+    $briefPath = Join-Path $reportDir ("简报-{0}.txt" -f $bizDate)
+    $analysis.briefText | Set-Content -Path $briefPath -Encoding UTF8
+    $analysisJson = Join-Path $reportDir ("日报-{0}.json" -f $bizDate)
+    [pscustomobject]@{
+      bizDate        = $analysis.bizDate
+      totalSpend     = $analysis.totalSpend
+      totalOrders    = $analysis.totalOrders
+      totalRevenue   = $analysis.totalRevenue
+      totalCampaigns = $analysis.totalCampaigns
+      overallRoi     = $analysis.overallRoi
+      highlights     = $analysis.highlights
+      risks          = $analysis.risks
+      storeRollups   = $analysis.storeRollups
+    } | ConvertTo-Json -Depth 6 | Set-Content $analysisJson -Encoding UTF8
+    # One-click latest aliases
+    Copy-Item -LiteralPath $mdPath -Destination (Join-Path $reportDir '最新日报.md') -Force
+    Copy-Item -LiteralPath $briefPath -Destination (Join-Path $reportDir '最新简报.txt') -Force
+    Write-Step ("日报目录: {0}" -f $reportDir)
+    Write-Step ("analysis md: {0}" -f $mdPath)
+    Write-Host ""
+    Write-Host $analysis.briefText
+    Write-Host ""
+    if ($analysis.storeRollups.Count -gt 0) {
+      $analysis.storeRollups | Format-Table store, campaigns, spend, orders, revenue, roi, topCampaign -AutoSize
+    }
+
+    if ($writeSummaryFeishu) {
+      $sumRows = New-SummaryFeishuRows -Analysis $analysis -BizDate $bizDate
+      Write-Step ("write summary rows to Feishu: {0}" -f $sumRows.Count)
+      $sw = Write-FeishuRows $cfg.feishu $sumRows $useDryRun
+      Write-Step ("summary written={0} dryRun={1}" -f $sw.written, $sw.dryRun)
+    }
+  }
+  catch {
+    Write-Step ("analysis FAILED (non-fatal): {0}" -f $_)
+  }
+}
+
+if ($okCount -lt $summary.Count) { exit 2 }

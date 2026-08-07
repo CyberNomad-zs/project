@@ -1,0 +1,140 @@
+# 飞书接入指南（ASIN 健康度一期）
+
+## 你需要准备什么
+
+最少两样（**发给开发时注意脱敏，不要发到公开群**）：
+
+| 配置项 | 从哪拿 | 示例形态 |
+|---|---|---|
+| `FEISHU_APP_ID` | 飞书开放平台 → 你的企业自建应用 → 凭证与基础信息 | `cli_xxx` |
+| `FEISHU_APP_SECRET` | 同上 | 一串密钥 |
+
+有了上面两个，可运行脚本**自动创建**多维表格，并生成：
+
+| 配置项 | 说明 |
+|---|---|
+| `FEISHU_BITABLE_APP_TOKEN` | 多维表格 app_token |
+| `FEISHU_TABLE_ASIN_DAILY` | ASIN每日数据 table_id |
+| `FEISHU_TABLE_TASKS` | 异常任务 table_id |
+| `FEISHU_TABLE_ACTIONS` | 运营动作 table_id |
+| `FEISHU_TABLE_CONFIG` | 配置表 table_id |
+
+可选：
+
+| 配置项 | 说明 |
+|---|---|
+| `FEISHU_BOT_WEBHOOK` | 群自定义机器人 Webhook，用于日报摘要 |
+
+---
+
+## 创建应用（管理员 / IT 约 10 分钟）
+
+1. 打开 [飞书开放平台](https://open.feishu.cn/app)
+2. **创建企业自建应用**，名称如：`ASIN健康度同步`
+3. **权限管理** 搜索并开通（名称以控制台为准，勾选可用的 bitable 相关）：
+   - 查看、评论、编辑和管理多维表格（`bitable:app`）
+   - 查看多维表格（`bitable:app:readonly`）
+   - 若用机器人发消息：获取与发送单聊、群组消息等（视机器人方案）
+4. **版本管理与发布** → 创建版本 → 申请线上发布（企业可能需管理员审批）
+5. 复制 **App ID**、**App Secret**
+
+### 若你已有多维表格（不用脚本建）
+
+1. 浏览器打开该多维表格  
+2. 从 URL 取 `app_token`：  
+   `https://xxx.feishu.cn/base/**APP_TOKEN**?...`  
+3. 各子表：表头菜单 / 开发者工具 / API 调试里看 `table_id`（或以脚本 `--app-token` 列表现有表）  
+4. 把应用添加为该多维表格的**协作者（可编辑）**
+
+---
+
+## 配置步骤
+
+### 1. 写入 `.env`
+
+```env
+FEISHU_APP_ID=cli_xxxx
+FEISHU_APP_SECRET=xxxx
+```
+
+### 2. 初始化四张表
+
+```powershell
+cd "E:\project\亚马逊平台驾驶舱-店铺数据"
+.\.venv\Scripts\Activate.ps1
+python scripts\init_feishu_tables.py
+```
+
+成功后把打印的 / `data/feishu_env.snippet.txt` 内容合并进 `.env`。
+
+### 3. 冒烟
+
+```powershell
+python scripts\smoke_feishu.py
+```
+
+### 4. 打开双写
+
+编辑 `config/config.yaml`：
+
+```yaml
+sync:
+  sink: both   # sqlite | feishu | both
+```
+
+### 5. 同步数据 + 任务
+
+```powershell
+python -m app.main sync --date 2026-07-21
+python -m app.main rules --date 2026-07-21 --reset-tasks
+python -m app.main push-feishu-tasks --date 2026-07-21
+```
+
+---
+
+## 四张表用途
+
+| 表名 | 谁写 | 用途 |
+|---|---|---|
+| ASIN每日数据 | 系统 | 赛狐同步底表；含「主键」防重复 |
+| 异常任务 | 系统 | 橙/红任务 |
+| 运营动作记录 | 人 | 原因、动作、复查（系统不覆盖） |
+| 配置表 | 人/管理员 | 负责人、阈值（二期可读飞书覆盖 YAML） |
+
+---
+
+## 老板视图（在飞书里配，无需开发）
+
+在「异常任务」表建筛选视图：
+
+1. **今日红色**：等级 = red  
+2. **逾期**：截止时间 < 今天 且 状态 ≠ closed  
+3. **待老板决策**：需要老板决策 = 勾选  
+4. 按店铺分组统计  
+
+---
+
+## 常见错误
+
+| 现象 | 处理 |
+|---|---|
+| 99991663 / 无权限 | 开通 bitable 权限并发布应用 |
+| 找不到 app | 应用未发布或企业禁用 |
+| 写入 1254043 字段不存在 | 列名与 `feishu_schema` 不一致，用 init 脚本建表 |
+| 重复行 | 确认有「主键」字段且用 upsert |
+
+---
+
+## 把凭证发给开发时的模板（复制填写）
+
+```text
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+# 若已有表：
+FEISHU_BITABLE_APP_TOKEN=
+FEISHU_TABLE_ASIN_DAILY=
+FEISHU_TABLE_TASKS=
+FEISHU_TABLE_ACTIONS=
+FEISHU_TABLE_CONFIG=
+FEISHU_BOT_WEBHOOK=
+```

@@ -1,0 +1,78 @@
+# 运维与排障
+
+## 日常操作
+
+| 场景 | 操作 |
+|------|------|
+| 每日手动 | 打开店铺 → 广告列表 → 扩展 Popup → 立即抓取 |
+| 定时 | 设置中开启定时；保证早上时段机器与紫鸟在线 |
+| 查结果 | 飞书多维表按「日期 / 店铺」筛选 |
+| 导出日志 | Popup「导出」得到 JSON |
+| 新机器部署 | 双击 `安装环境.bat` → 安装/登录紫鸟客户端 → 配置 `stores.config.json` |
+
+## 环境依赖一键安装
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -ApiKey "紫鸟开放平台APIKey"
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -UseOfficialMirror
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -DoctorOnly
+```
+
+| 会装 | 不会装 |
+|------|--------|
+| Node.js LTS（**默认 npmmirror 下载 MSI**，失败再 winget） | 紫鸟桌面浏览器（需官网/安装包） |
+| `@ziniao-open/cli`（npm **默认 registry.npmmirror.com**） | Python（仅图形启动器需要，可选） |
+
+`doctor` 失败常见原因：紫鸟客户端未开、未登录、API Key 未配置、本机 Bridge 端口不可用。
+
+脚本装不上时：完整手动步骤见 **[手动安装环境.md](手动安装环境.md)**。
+
+## 常见问题
+
+### 1. 未找到 TikTok 页面
+
+- 必须在 **紫鸟店铺窗口** 内打开 `*.tiktok.com` / `ads.tiktok.com` 广告相关页。
+- 扩展图标在客户端主界面可能无目标 tab；请在店铺浏览器窗口点扩展。
+
+### 2. 未识别到广告数据表格
+
+- 确认已进入 **广告系列列表 / Shop Ads / GMV Max 报表**，而非首页。
+- 等表格加载完成后再点抓取。
+- 若 TK 改版表头变化：更新 `content/content.js` 中 `HEADER_ALIASES`，或依赖 API hook（需先在页面操作触发报表请求）。
+- 张威开通测试店后，建议用 DevTools Network 固化接口字段映射。
+
+### 3. 飞书连接失败
+
+- 检查 App ID / Secret、应用是否已发布、是否添加到该多维表格。
+- 检查 app_token、table_id 是否与 URL 一致。
+- 字段名是否与《飞书表格建表说明》一致。
+
+### 4. 写入成功但飞书看不到
+
+- 刷新多维表；确认看的是正确 table。
+- 是否仍处于「干跑」模式（干跑不写表）。
+- 日期字段为时间戳，视图中确认日期列格式正确。
+
+### 5. 定时未执行
+
+- `chrome://extensions` 查看插件是否启用。
+- 系统休眠/退出紫鸟会导致 alarm 无法可靠触发。
+- 查看 Popup 最近日志是否有「定时任务触发」。
+
+### 6. 部分字段为空（status=partial）
+
+- 页面列与别名未完全匹配；以 partial 写入便于后续补数。
+- 导出预览 JSON 对照页面列名，补充同义词。
+
+## 安全
+
+- 不要将 App Secret 提交到 Git。
+- 店铺密码由紫鸟托管，插件 **不采集、不存储** 登录密码。
+- 离职交接：在飞书撤销应用权限，在紫鸟取消账号分配。
+
+## 版本升级
+
+1. 修改 `extension/manifest.json` 的 `version`。
+2. 运行 `scripts/package-zip.ps1`。
+3. 开放平台上传新版本；调试期可直接「重新加载」已解压扩展。

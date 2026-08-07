@@ -1,0 +1,454 @@
+# -*- coding: utf-8 -*-
+"""TK 广告日报 · 图形启动器"""
+
+from __future__ import annotations
+
+import os
+import queue
+import subprocess
+import sys
+import threading
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+from tkinter import (
+    BOTH,
+    DISABLED,
+    END,
+    LEFT,
+    NORMAL,
+    RIGHT,
+    WORD,
+    Button,
+    Frame,
+    Label,
+    Scrollbar,
+    Text,
+    Tk,
+    messagebox,
+)
+
+ROOT = Path(__file__).resolve().parent
+SCRIPTS = ROOT / "scripts"
+LOGS = ROOT / "logs"
+REPORTS = ROOT / "日报"
+CONFIG = ROOT / "config" / "stores.config.json"
+POWERSHELL = "powershell.exe"
+
+
+def _ps_file(script: Path, *extra: str) -> list[str]:
+    cmd = [
+        POWERSHELL,
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+    ]
+    cmd.extend(extra)
+    return cmd
+
+
+class App(Tk):
+    def __init__(self) -> None:
+        super().__init__()
+        self.title("TK 英区广告日报 · 启动器")
+        self.geometry("720x560")
+        self.minsize(640, 480)
+        self.configure(bg="#0f1419")
+        self._proc: Optional[subprocess.Popen] = None
+        self._q = queue.Queue()  # type: ignore[var-annotated]
+        self._log_path: Optional[Path] = None
+        self._build()
+        self.after(100, self._drain_queue)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+        LOGS.mkdir(parents=True, exist_ok=True)
+
+    def _build(self) -> None:
+        header = Frame(self, bg="#1a222c", padx=16, pady=14)
+        header.pack(fill="x")
+        Label(
+            header,
+            text="TK 英区广告日报",
+            font=("Segoe UI", 16, "bold"),
+            fg="#e7ecf1",
+            bg="#1a222c",
+        ).pack(anchor="w")
+        Label(
+            header,
+            text="紫鸟多店串行抓取 → 飞书多维表  ·  计划任务 17:20",
+            font=("Segoe UI", 9),
+            fg="#8b9aab",
+            bg="#1a222c",
+        ).pack(anchor="w", pady=(4, 0))
+
+        body = Frame(self, bg="#0f1419", padx=16, pady=12)
+        body.pack(fill=BOTH, expand=True)
+
+        btn_row = Frame(body, bg="#0f1419")
+        btn_row.pack(fill="x", pady=(0, 10))
+
+        buttons = [
+            ("1. 预览店铺列表", self.run_list_only, "#3b82f6"),
+            ("2. 干跑抓取", self.run_dry, "#64748b"),
+            ("3. 正式写入飞书", self.run_write, "#16a34a"),
+            ("4. 立即跑日报", self.run_daily, "#0ea5e9"),
+            ("5. 安装 17:20 任务", self.install_task, "#8b5cf6"),
+            ("6. 打开日报目录", self.open_reports, "#0d9488"),
+            ("7. 打开最新日报", self.open_latest_analysis, "#14b8a6"),
+            ("8. 打开日志目录", self.open_logs, "#475569"),
+            ("9. 打开飞书配置", self.open_config, "#475569"),
+            ("安装环境依赖", self.install_deps, "#f59e0b"),
+            ("环境自检", self.doctor_only, "#d97706"),
+            ("停止当前任务", self.stop_proc, "#dc2626"),
+        ]
+
+        grid = Frame(btn_row, bg="#0f1419")
+        grid.pack(fill="x")
+        for i, (text, cmd, color) in enumerate(buttons):
+            r, c = divmod(i, 2)
+            b = Button(
+                grid,
+                text=text,
+                command=cmd,
+                font=("Segoe UI", 10),
+                fg="#ffffff",
+                bg=color,
+                activebackground=color,
+                activeforeground="#ffffff",
+                relief="flat",
+                cursor="hand2",
+                padx=10,
+                pady=8,
+            )
+            b.grid(row=r, column=c, sticky="ew", padx=4, pady=4)
+        grid.columnconfigure(0, weight=1)
+        grid.columnconfigure(1, weight=1)
+
+        status = Frame(body, bg="#0f1419")
+        status.pack(fill="x", pady=(0, 6))
+        self.status_var = Label(
+            status,
+            text="就绪 · 请先点「预览店铺列表」确认筛选结果",
+            font=("Segoe UI", 9),
+            fg="#94a3b8",
+            bg="#0f1419",
+            anchor="w",
+        )
+        self.status_var.pack(side=LEFT, fill="x", expand=True)
+
+        log_frame = Frame(body, bg="#1a222c")
+        log_frame.pack(fill=BOTH, expand=True)
+        Label(
+            log_frame,
+            text="运行输出",
+            font=("Segoe UI", 9, "bold"),
+            fg="#cbd5e1",
+            bg="#1a222c",
+            anchor="w",
+        ).pack(fill="x", padx=8, pady=(8, 4))
+
+        text_wrap = Frame(log_frame, bg="#1a222c")
+        text_wrap.pack(fill=BOTH, expand=True, padx=8, pady=(0, 8))
+        scroll = Scrollbar(text_wrap)
+        scroll.pack(side=RIGHT, fill="y")
+        self.log = Text(
+            text_wrap,
+            wrap=WORD,
+            font=("Consolas", 9),
+            bg="#0b1220",
+            fg="#e2e8f0",
+            insertbackground="#e2e8f0",
+            relief="flat",
+            yscrollcommand=scroll.set,
+        )
+        self.log.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.config(command=self.log.yview)
+
+        foot = Frame(self, bg="#0f1419", padx=16, pady=8)
+        foot.pack(fill="x")
+        Label(
+            foot,
+            text=str(ROOT),
+            font=("Segoe UI", 8),
+            fg="#64748b",
+            bg="#0f1419",
+            anchor="w",
+        ).pack(side=LEFT)
+
+    def _append(self, line: str) -> None:
+        self.log.configure(state=NORMAL)
+        self.log.insert(END, line + "\n")
+        self.log.see(END)
+        self.log.configure(state=DISABLED)
+
+    def _new_run_log_path(self, title: str) -> Path:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in title)[:40]
+        return LOGS / f"gui-{stamp}-{safe}.log"
+
+    def _set_status(self, text: str) -> None:
+        self.status_var.configure(text=text)
+
+    def _drain_queue(self) -> None:
+        try:
+            while True:
+                line = self._q.get_nowait()
+                self._append(line)
+        except queue.Empty:
+            pass
+        self.after(100, self._drain_queue)
+
+    def _busy(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
+    @staticmethod
+    def _bridge_hint(text: str) -> Optional[str]:
+        markers = (
+            "127.0.0.1:9481",
+            "bridge",
+            "无法连接",
+            "连不上",
+            "store list failed",
+        )
+        low = text.lower()
+        if any(m in text or m in low for m in markers):
+            return (
+                "无法连接紫鸟 Bridge（本机 127.0.0.1:9481）。\n\n"
+                "请按顺序检查：\n"
+                "1. 已安装并打开「紫鸟」桌面客户端\n"
+                "2. 已登录（不要只开着托盘图标未登录）\n"
+                "3. 等客户端完全启动后再点「预览店铺列表」\n"
+                "4. 启动器点「环境自检」确认 ziniao-cli 正常\n\n"
+                "说明：仅装 Node / ziniao-cli 不够，必须本机紫鸟客户端在线。"
+            )
+        return None
+
+    def _on_task_done(self, title: str, code: int, collected: str, log_path: Path) -> None:
+        self._log_path = log_path
+        self._set_status(f"完成：{title} (exit={code}) · 日志 {log_path.name}")
+        if code == 0:
+            return
+        hint = self._bridge_hint(collected)
+        if hint:
+            messagebox.showerror("紫鸟未连接", hint)
+        else:
+            messagebox.showwarning(
+                "任务失败",
+                f"{title} 失败 (exit={code})。\n\n完整输出已写入：\n{log_path}\n\n"
+                "可点「打开日志目录」把该文件发给运维。",
+            )
+
+    def _run(self, title: str, cmd: list[str], confirm: str | None = None) -> None:
+        if self._busy():
+            messagebox.showwarning("进行中", "已有任务在运行，请先「停止当前任务」或等待结束。")
+            return
+        if confirm and not messagebox.askyesno("确认", confirm):
+            return
+        if not Path(cmd[-1] if cmd[-2] != "-File" else cmd[cmd.index("-File") + 1]).exists() and "-File" in cmd:
+            idx = cmd.index("-File") + 1
+            if not Path(cmd[idx]).exists():
+                messagebox.showerror("错误", f"脚本不存在:\n{cmd[idx]}")
+                return
+
+        log_path = self._new_run_log_path(title)
+        self._log_path = log_path
+        header = [
+            "",
+            f"======== {datetime.now():%H:%M:%S} {title} ========",
+            " ".join(cmd),
+            f"[log] {log_path}",
+        ]
+        for h in header:
+            self._append(h)
+
+        self._set_status(f"运行中：{title} · 日志 {log_path.name}")
+
+        def worker() -> None:
+            collected: list[str] = []
+            try:
+                with open(log_path, "w", encoding="utf-8", newline="\n") as fp:
+                    def emit(s: str) -> None:
+                        collected.append(s)
+                        self._q.put(s)
+                        try:
+                            fp.write(s + "\n")
+                            fp.flush()
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                    for h in header:
+                        try:
+                            fp.write(h + "\n")
+                        except Exception:  # noqa: BLE001
+                            pass
+                    fp.flush()
+
+                    creation = 0
+                    if sys.platform == "win32":
+                        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    self._proc = subprocess.Popen(
+                        cmd,
+                        cwd=str(ROOT),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        creationflags=creation,
+                    )
+                    assert self._proc.stdout is not None
+                    for line in self._proc.stdout:
+                        emit(line.rstrip("\r\n"))
+                    code = self._proc.wait()
+                    emit(f"--- 结束 exit={code} ---")
+                    emit(f"[log] saved: {log_path}")
+                    blob = "\n".join(collected)
+                    self.after(
+                        0,
+                        lambda c=code, b=blob, p=log_path: self._on_task_done(title, c, b, p),
+                    )
+            except Exception as e:  # noqa: BLE001
+                self._q.put(f"ERROR: {e}")
+                self._q.put(f"[log] saved: {log_path}")
+                try:
+                    with open(log_path, "a", encoding="utf-8") as fp:
+                        fp.write(f"ERROR: {e}\n")
+                except Exception:  # noqa: BLE001
+                    pass
+                self.after(0, lambda: self._set_status(f"失败：{title} · 见 {log_path.name}"))
+            finally:
+                self._proc = None
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def run_list_only(self) -> None:
+        script = SCRIPTS / "run-multi-store.ps1"
+        self._run("预览店铺列表", _ps_file(script, "-ListOnly"))
+
+    def run_dry(self) -> None:
+        script = SCRIPTS / "run-multi-store.ps1"
+        self._run(
+            "干跑抓取（不写飞书）",
+            _ps_file(script, "-DryRun", "true"),
+            confirm="将串行打开紫鸟店铺窗口并抓取（不写飞书）。\n请确认紫鸟客户端已登录。\n继续？",
+        )
+
+    def run_write(self) -> None:
+        script = SCRIPTS / "run-multi-store.ps1"
+        self._run(
+            "正式写入飞书",
+            _ps_file(script, "-DryRun", "false"),
+            confirm="将串行抓取并【正式写入飞书】。\n请确认配置与筛选无误。\n继续？",
+        )
+
+    def run_daily(self) -> None:
+        script = SCRIPTS / "run-daily-report.ps1"
+        self._run(
+            "立即跑日报",
+            _ps_file(script),
+            confirm="执行与 17:20 计划任务相同的日报流程（写飞书）。\n继续？",
+        )
+
+    def install_task(self) -> None:
+        script = SCRIPTS / "install-daily-task.ps1"
+        self._run(
+            "安装每日 17:20 任务",
+            _ps_file(script, "-Time", "17:20"),
+            confirm="安装/更新 Windows 计划任务 TK-Ad-Daily-Report（每天 17:20）。\n继续？",
+        )
+
+    def install_deps(self) -> None:
+        script = SCRIPTS / "install-deps.ps1"
+        self._run(
+            "安装环境依赖 (Node + ziniao-cli)",
+            _ps_file(script),
+            confirm=(
+                "将检查/安装：\n"
+                "· Node.js LTS（winget）\n"
+                "· 全局 npm 包 @ziniao-open/cli（ziniao-cli）\n\n"
+                "不包含紫鸟桌面客户端（需自行安装登录）。\n"
+                "若需写入 API Key，请用「安装环境.bat」或命令行 -ApiKey。\n继续？"
+            ),
+        )
+
+    def doctor_only(self) -> None:
+        script = SCRIPTS / "install-deps.ps1"
+        self._run("环境自检", _ps_file(script, "-DoctorOnly"))
+
+    def open_logs(self) -> None:
+        LOGS.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(LOGS))  # type: ignore[attr-defined]
+        self._set_status("已打开日志目录")
+
+    def open_reports(self) -> None:
+        REPORTS.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(REPORTS))  # type: ignore[attr-defined]
+        self._set_status("已打开日报目录")
+
+    def open_config(self) -> None:
+        if CONFIG.exists():
+            os.startfile(str(CONFIG))  # type: ignore[attr-defined]
+        else:
+            example = ROOT / "config" / "stores.config.example.json"
+            messagebox.showinfo(
+                "配置",
+                f"未找到 stores.config.json\n请复制:\n{example}\n为 stores.config.json 后填写飞书凭证。",
+            )
+            if example.parent.exists():
+                os.startfile(str(example.parent))  # type: ignore[attr-defined]
+        self._set_status("配置文件")
+
+    def open_latest_analysis(self) -> None:
+        REPORTS.mkdir(parents=True, exist_ok=True)
+        latest = REPORTS / "最新日报.md"
+        if latest.exists():
+            os.startfile(str(latest))  # type: ignore[attr-defined]
+            self._set_status("已打开 最新日报.md")
+            return
+        files = sorted(
+            list(REPORTS.glob("日报-*.md")) + list(LOGS.glob("daily-analysis-*.md")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not files:
+            messagebox.showinfo(
+                "日报",
+                "还没有日报。\n请先执行「干跑」或「正式写入/日报」。\n生成后见项目下「日报」文件夹。",
+            )
+            os.startfile(str(REPORTS))  # type: ignore[attr-defined]
+            return
+        os.startfile(str(files[0]))  # type: ignore[attr-defined]
+        self._set_status(f"已打开 {files[0].name}")
+
+    def stop_proc(self) -> None:
+        if not self._busy() or self._proc is None:
+            messagebox.showinfo("停止", "当前没有运行中的任务。")
+            return
+        try:
+            self._proc.terminate()
+            self._append("--- 已请求停止 ---")
+            self._set_status("已停止")
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("停止失败", str(e))
+
+    def _on_close(self) -> None:
+        if self._busy():
+            if not messagebox.askyesno("退出", "任务仍在运行，确定退出？"):
+                return
+            try:
+                if self._proc:
+                    self._proc.terminate()
+            except Exception:  # noqa: BLE001
+                pass
+        self.destroy()
+
+
+def main() -> None:
+    app = App()
+    app.mainloop()
+
+
+if __name__ == "__main__":
+    main()

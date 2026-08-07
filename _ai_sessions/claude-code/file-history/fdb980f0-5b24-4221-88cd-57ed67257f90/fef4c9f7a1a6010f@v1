@@ -1,0 +1,190 @@
+# -*- coding: utf-8 -*-
+"""
+待办2：验证 WMS「多快递方轮转」编排逻辑（RM 失败 -> DPD -> EH）。
+
+真跑时黑猫 6 单 RM 全成功，从没触发"某快递方发失败 -> 换下一个快递方再发"的分支，
+故该分支一直"未实测"。这里用 mock 把 wms 模块里所有和浏览器交互的函数替换成
+纯内存的假实现，只保留 process_shop 的**编排逻辑**（循环快递方、每轮重新计数/全选/
+发货、发完即停、试完仍未发的留存），从而在不依赖真实失败订单的情况下验证轮转正确。
+
+运行：  python capture/wms_rotation_selftest.py
+不连任何系统、不需要登录，纯逻辑自测。
+"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config, core, wms
+
+
+class FakePage:
+    """占位 page，mock 里不真正用它。"""
+    pass
+
+
+class Scenario:
+    """模拟 WMS 未发货列表状态：
+    orders = {订单号: 该单能成功发货的快递方集合}
+    每轮 batch_ship 时，当前设置的快递方若在某单的可发集合里，则该单发出（离开列表）。
+    """
+    def __init__(self, orders):
+        self.orders = dict(orders)          # 剩余未发货
+        self.current_courier = None
+        self.selected = False
+        self.courier_history = []           # 依次设置过的快递方
+        self.ship_rounds = 0
+
+    # ---- 下面这些替换 wms.* 与 core.wms_login ----
+    def wms_login(self, page, account):
+        return True
+
+    def open_platform_orders(self, page):
+        self.selected = False
+
+    def ensure_unshipped_filter(self, page):
+        pass
+
+    def count_rows(self, page):
+        return len(self.orders)
+
+    def read_order_numbers(self, page):
+        return list(self.orders.keys())
+
+    def select_all(self, page):
+        if not self.orders:
+            return False
+        self.selected = True
+        return True
+
+    def set_courier(self, page, courier):
+        if not self.selected:
+            return False
+        self.current_courier = courier
+        self.courier_history.append(courier)
+        return True
+
+    def batch_ship(self, page):
+        self.ship_rounds += 1
+        shipped = [o for o, ok in self.orders.items()
+                   if self.current_courier in ok]
+        for o in shipped:
+            del self.orders[o]
+        self.selected = False
+        return True
+
+
+def install(scn):
+    """把 scenario 的方法装到 wms / core 上，返回还原函数。"""
+    saved = {
+        "wms.open_platform_orders": wms.open_platform_orders,
+        "wms.ensure_unshipped_filter": wms.ensure_unshipped_filter,
+        "wms.count_rows": wms.count_rows,
+        "wms.read_order_numbers": wms.read_order_numbers,
+        "wms.select_all": wms.select_all,
+        "wms.set_courier": wms.set_courier,
+        "wms.batch_ship": wms.batch_ship,
+        "core.wms_login": core.wms_login,
+    }
+    wms.open_platform_orders = scn.open_platform_orders
+    wms.ensure_unshipped_filter = scn.ensure_unshipped_filter
+    wms.count_rows = scn.count_rows
+    wms.read_order_numbers = scn.read_order_numbers
+    wms.select_all = scn.select_all
+    wms.set_courier = scn.set_courier
+    wms.batch_ship = scn.batch_ship
+    core.wms_login = scn.wms_login
+
+    def restore():
+        wms.open_platform_orders = saved["wms.open_platform_orders"]
+        wms.ensure_unshipped_filter = saved["wms.ensure_unshipped_filter"]
+        wms.count_rows = saved["wms.count_rows"]
+        wms.read_order_numbers = saved["wms.read_order_numbers"]
+        wms.select_all = saved["wms.select_all"]
+        wms.set_courier = saved["wms.set_courier"]
+        wms.batch_ship = saved["wms.batch_ship"]
+        core.wms_login = saved["core.wms_login"]
+    return restore
+
+
+def run_case(name, account, orders, expect_history, expect_left_orders):
+    scn = Scenario(orders)
+    restore = install(scn)
+    try:
+        res = wms.process_shop(FakePage(), account)
+    finally:
+        restore()
+
+    left = sorted(res.get("left_orders") or [])
+    ok_hist = scn.courier_history == expect_history
+    ok_left = left == sorted(expect_left_orders)
+    ok = ok_hist and ok_left and res.get("left", -1) == len(expect_left_orders)
+    print(f"\n[用例] {name}")
+    print(f"  快递方使用顺序: {scn.courier_history}   期望: {expect_history}   {'OK' if ok_hist else 'X'}")
+    print(f"  仍未发货订单:   {left}   期望: {sorted(expect_left_orders)}   {'OK' if ok_left else 'X'}")
+    print(f"  发货轮数: {scn.ship_rounds}   before={res.get('before')} left={res.get('left')}")
+    print(f"  => {'通过' if ok else '失败'}")
+    return ok
+
+
+def main():
+    # 自测不碰真实系统，DRY 无所谓；显式置 True 以防误触
+    config.DRY_RUN = True
+    黑猫 = {"login": "JMCAT", "shop": "黑猫"}
+    金猫 = {"login": "JMSM", "shop": "金猫"}
+
+    results = []
+
+    # 用例1：黑猫6单，2单RM发不出但DPD能发 -> 顺序应 RM,DPD（第3轮EH时已空，不再设EH）
+    results.append(run_case(
+        "黑猫-RM失败2单-DPD补发",
+        黑猫,
+        orders={
+            "P0001": {"RM"}, "P0002": {"RM"}, "P0003": {"RM"}, "P0004": {"RM"},
+            "P0005": {"DPD"}, "P0006": {"DPD"},
+        },
+        expect_history=["RM", "DPD"],
+        expect_left_orders=[],
+    ))
+
+    # 用例2：黑猫，1单RM/DPD都发不出，只有EH能发 -> 顺序 RM,DPD,EH，最终全发出
+    results.append(run_case(
+        "黑猫-单单需降级到EH",
+        黑猫,
+        orders={"P1001": {"RM"}, "P1002": {"EH"}},
+        expect_history=["RM", "DPD", "EH"],
+        expect_left_orders=[],
+    ))
+
+    # 用例3：黑猫，1单所有快递方都发不出 -> 试完RM,DPD,EH仍留存该单并提醒
+    results.append(run_case(
+        "黑猫-1单任何快递方都失败-留存",
+        黑猫,
+        orders={"P2001": {"RM"}, "P2002": set()},
+        expect_history=["RM", "DPD", "EH"],
+        expect_left_orders=["P2002"],
+    ))
+
+    # 用例4：金猫只有 RM,DPD（无EH）。1单只能EH发 -> 试完RM,DPD后留存
+    results.append(run_case(
+        "金猫-无EH-需EH的单留存",
+        金猫,
+        orders={"P3001": {"RM"}, "P3002": {"EH"}},
+        expect_history=["RM", "DPD"],
+        expect_left_orders=["P3002"],
+    ))
+
+    # 用例5：全部RM一轮发完 -> 只设一次RM（复刻黑猫真跑6单全成功）
+    results.append(run_case(
+        "黑猫-RM一轮全发完",
+        黑猫,
+        orders={f"P40{i:02d}": {"RM"} for i in range(6)},
+        expect_history=["RM"],
+        expect_left_orders=[],
+    ))
+
+    print("\n" + "=" * 50)
+    print(f"总计 {len(results)} 个用例，通过 {sum(results)} 个，失败 {len(results) - sum(results)} 个")
+    sys.exit(0 if all(results) else 1)
+
+
+if __name__ == "__main__":
+    main()

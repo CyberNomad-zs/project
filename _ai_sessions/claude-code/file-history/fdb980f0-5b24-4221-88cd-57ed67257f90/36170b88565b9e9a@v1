@@ -1,0 +1,73 @@
+# 部署说明（给同事）
+
+一份从零到能跑的安装指引。全程约 10 分钟。系统：Windows 10/11。
+
+---
+
+## 1. 安装 Python 3.12
+- 官网 https://www.python.org/downloads/ 下载 3.12.x，安装时**务必勾选 "Add python.exe to PATH"**。
+- 装完打开 PowerShell 验证：
+  ```powershell
+  python --version      # 应显示 Python 3.12.x
+  ```
+
+## 2. 安装依赖
+在解压后的 `automation` 目录里打开 PowerShell（地址栏输 `powershell` 回车），执行：
+```powershell
+pip install -r requirements.txt      # 装 Playwright
+python -m playwright install chromium # 下载浏览器内核（约几十MB，必须！）
+```
+
+## 3. 确认账号配置
+打开 `secrets.py` 核对里面的 ERP / WMS 账号密码是否正确（金猫 JMSM、黑猫 JMCAT、ERP 手机号账号）。
+> ⚠️ 此文件含明文密码，勿外传、勿上传网盘/仓库。
+
+## 4. 首次：手动登录一次 ERP（关键）
+ERP（赛狐）登录有**图形验证码 + 腾讯滑块**，无法全自动，需人工过一次，之后会话可复用：
+```powershell
+python capture/erp_manual_login.py
+```
+弹出的浏览器里手动登录赛狐 ERP（输账号/密码/验证码/拖滑块），脚本会自动检测登录成功并保存会话。
+> WMS 无验证码，脚本会用 `secrets.py` 里的账号自动登录，无需手动。
+
+## 5. 空跑演练（安全，不会真发货）
+`config.py` 里 `DRY_RUN=True` 时**只筛选/勾选/统计、不真正下单发货**。先跑这个核对：
+```powershell
+python run_shipping.py
+```
+看日志：ERP 会话有效、各渠道筛选数量、WMS 双账号登录、未发货订单数是否合理。
+
+## 6. 真实发货
+确认空跑无误后：
+1. 把 `config.py` 里 `DRY_RUN` 改成 `False`。
+2. **先登录**（会话约 10 分钟过期）：`python capture/erp_manual_login.py`
+3. **立刻**跑：`python run_shipping.py`（10 分钟内跑完，会真实下单 + 发货）。
+
+## 7. 获取跟踪单号（可长期常驻）
+发货后跟踪号要过一会儿才由平台回传，用独立脚本定时拉取（每 10 分钟一次）：
+```powershell
+python status_update_loop.py         # Ctrl+C 停止
+```
+
+---
+
+## 日志在哪看
+- `logs/run_YYYYMMDD.log`：人类可读日志（带 INFO/WARN/ERROR 级别）。
+- `logs/events_YYYYMMDD.jsonl`：结构化审计流水，一行一条，记录每笔物流下单/发货/跟踪号结果，用于对账。
+- `logs/failures_YYYYMMDD.txt`：失败订单留存（缺货 / 试完所有快递方仍未发出）。
+
+## 快递方规则（见 rules.py）
+- 金猫 JMSM：RM → DPD
+- 黑猫 JMCAT：RM → DPD → EH
+- 按渠道逐个闭环：ERP 该渠道物流下单 → WMS 对应账号按快递方优先级重试发货 → 失败留存 → 下一个渠道。
+
+## 自测（不连系统，验证轮转逻辑）
+```powershell
+python capture/wms_rotation_selftest.py    # 5 个用例应全部通过
+```
+
+## 常见问题
+- **`python` 不是内部命令**：Python 没加进 PATH，重装勾选 "Add to PATH"。
+- **`playwright install` 慢/失败**：网络问题，重试；或设代理。
+- **ERP 会话失效**：重新 `python capture/erp_manual_login.py` 登录即可。
+- **详细业务流程/异常处理**：见同目录《操作手册_海外仓订单发货.md》。

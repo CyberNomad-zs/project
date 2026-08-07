@@ -1,0 +1,21 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据（广告只是第一域）。下一刀：**订单 P2a**。
+
+## 2026-07-30 夜
+- [x] 路线图 / 005 迁移 / ingest tiktok_orders / run-orders / night-loop
+- [x] 推送 `feature/tk-ads-dual` → PR https://github.com/JMZLAI/qingquan-kuajing/pull/1
+
+## 2026-07-31
+- [x] 广告英区 dual 实跑 OK（Deal to deal + SHOP INOUT → 飞书+清泉）
+- [x] 订单 DOM 实页校准：html-table 列位 订单/客户/商品/状态/物流/合计
+- [x] UK 两店订单实跑：Deal 20 单、SHOP INOUT 50 单进清泉（幂等）
+- [x] 件数/金额/状态/物流方式字段可用；列表页商品名为「N 件商品」（后台列表限制）
+- [ ] 订单翻页抓全量（当前仅首屏）
+- [ ] 订单飞书表（可选）
+- [ ] P2b 商品 / P2c 店级 KPI / 欧盟 Pop 网络
+
+## 阻塞
+- 欧盟 Pop 代理不稳，采集先 exclude
+- 订单列表无 SKU 标题，需点进详情才能补商品名（后做）

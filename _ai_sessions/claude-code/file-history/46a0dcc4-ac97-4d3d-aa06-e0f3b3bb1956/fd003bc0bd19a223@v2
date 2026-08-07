@@ -1,0 +1,54 @@
+# -*- coding: utf-8 -*-
+"""扫描赛狐72列，找出哪个列对 Amazon 订单能对上内部货号索引。"""
+import os, sys
+sys.path.insert(0, r"E:\project\AIc\ship-sentinel\backend")
+from xlsx_reader import read_records, read_rows
+import build as B
+
+SAMPLES = r"E:\project\AIc\ship-sentinel\samples"
+SELLFOX = os.path.join(SAMPLES, "sellfox", "Package2026_07_16(0).xlsx")
+
+inv = B.build_inventory()
+codes = set(inv.keys())
+print("库存索引货号数:", len(codes), " 例:", list(codes)[:6])
+
+hdr, recs = read_records(SELLFOX)
+print("\n赛狐全部列(%d):" % len(hdr))
+for i, h in enumerate(hdr):
+    print("  [%2d] %s" % (i, h))
+
+# 对每一列，统计 Amazon 订单里该列值命中库存索引的比例
+from collections import Counter, defaultdict
+amazon = [r for r in recs if str(r.get("平台","")).strip()=="Amazon"]
+print("\nAmazon 订单数:", len(amazon))
+col_hits = Counter()
+for h in hdr:
+    hits = 0
+    for r in amazon:
+        v = str(r.get(h,"")).strip()
+        if v and v in codes:
+            hits += 1
+    if hits:
+        col_hits[h] = hits
+print("\n各列命中库存索引的 Amazon 订单数(降序):")
+for h, c in col_hits.most_common():
+    print("  %-16s %d" % (h, c))
+
+# 看一个 Amazon 订单的所有字段(找内部货号线索)
+print("\n=== 一个 Amazon 订单的全字段 ===")
+a0 = amazon[0]
+for h in hdr:
+    v = str(a0.get(h,"")).strip()
+    if v:
+        print("  %-16s = %s" % (h, v[:60]))
+
+# 扫描哪些列的值看起来像内部货号(JMCAT/VIP 前缀)
+print("\n=== 含 JMCAT/VIP 前缀值的列(Amazon) ===")
+pref = defaultdict(int)
+for h in hdr:
+    for r in amazon:
+        v = str(r.get(h,"")).strip().upper()
+        if v.startswith("JMCAT") or v.startswith("VIP"):
+            pref[h]+=1
+for h,c in sorted(pref.items(), key=lambda x:-x[1]):
+    print("  %-16s %d" % (h, c))

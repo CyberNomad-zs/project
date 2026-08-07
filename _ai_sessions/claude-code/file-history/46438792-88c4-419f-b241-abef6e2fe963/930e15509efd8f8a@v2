@@ -1,0 +1,574 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+from contextlib import contextmanager
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Iterator
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class Database:
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_schema()
+
+    @contextmanager
+    def connect(self) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(self.path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def _init_schema(self) -> None:
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS kv (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    biz_date TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    total_rows INTEGER DEFAULT 0,
+                    pages INTEGER DEFAULT 0,
+                    error TEXT,
+                    meta_json TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS asin_daily (
+                    biz_date TEXT NOT NULL,
+                    marketplace TEXT NOT NULL DEFAULT '',
+                    shop_name TEXT NOT NULL DEFAULT '',
+                    shop_id TEXT NOT NULL DEFAULT '',
+                    asin TEXT NOT NULL,
+                    parent_asin TEXT,
+                    sku TEXT,
+                    msku TEXT,
+                    title TEXT,
+                    title_cn TEXT,
+                    brand TEXT,
+                    open_date TEXT,
+                    product_grade TEXT,
+                    owner TEXT,
+                    sale_price REAL,
+                    sale_num REAL,
+                    order_num REAL,
+                    avg_sale_price REAL,
+                    sale_price_change_pct REAL,
+                    order_num_change_pct REAL,
+                    sessions REAL,
+                    sessions_change_pct REAL,
+                    page_view REAL,
+                    conversion_rate REAL,
+                    conversion_rate_change_pp REAL,
+                    buy_box_percent REAL,
+                    ad_impression REAL,
+                    ad_clicks REAL,
+                    ad_ctr REAL,
+                    ad_cost REAL,
+                    ad_cost_change_pct REAL,
+                    cpc REAL,
+                    acos REAL,
+                    ad_sales REAL,
+                    available REAL,
+                    in_transit REAL,
+                    available_days REAL,
+                    inv_age_365_plus REAL,
+                    rating REAL,
+                    rating_change REAL,
+                    rating_count REAL,
+                    low_review_num REAL,
+                    review_num REAL,
+                    raw_json TEXT,
+                    sync_run_id INTEGER,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (biz_date, marketplace, shop_name, asin)
+                );
+
+                CREATE TABLE IF NOT EXISTS anomaly_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    biz_date TEXT NOT NULL,
+                    shop_name TEXT NOT NULL,
+                    asin TEXT NOT NULL,
+                    product_title TEXT,
+                    product_title_cn TEXT,
+                    anomaly_type TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    current_value REAL,
+                    baseline_value REAL,
+                    change_value REAL,
+                    owner TEXT,
+                    reviewer TEXT,
+                    status TEXT NOT NULL DEFAULT 'open',
+                    due_at TEXT,
+                    streak INTEGER DEFAULT 1,
+                    need_boss INTEGER DEFAULT 0,
+                    payload_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_tasks_open
+                    ON anomaly_tasks (shop_name, asin, anomaly_type, status);
+
+                CREATE TABLE IF NOT EXISTS notify_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """
+            )
+            self._migrate_columns()
+
+    def _migrate_columns(self) -> None:
+        """Idempotent ADD COLUMN for existing DBs created before schema extensions."""
+        with self.connect() as conn:
+            def cols(table: str) -> set[str]:
+                return {
+                    str(r[1])
+                    for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+
+            asin_cols = cols("asin_daily")
+            if "title_cn" not in asin_cols:
+                conn.execute("ALTER TABLE asin_daily ADD COLUMN title_cn TEXT")
+
+            task_cols = cols("anomaly_tasks")
+            if "product_title_cn" not in task_cols:
+                conn.execute(
+                    "ALTER TABLE anomaly_tasks ADD COLUMN product_title_cn TEXT"
+                )
+
+    # --- kv / token ---
+    def get_kv(self, key: str) -> str | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM kv WHERE key = ?", (key,)
+            ).fetchone()
+            return row["value"] if row else None
+
+    def set_kv(self, key: str, value: str) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO kv(key, value, updated_at) VALUES(?,?,?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value=excluded.value,
+                    updated_at=excluded.updated_at
+                """,
+                (key, value, _utc_now()),
+            )
+
+    # --- sync runs ---
+    def start_sync_run(self, biz_date: str, meta: dict[str, Any] | None = None) -> int:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO sync_runs(biz_date, status, started_at, meta_json)
+                VALUES(?,?,?,?)
+                """,
+                (biz_date, "running", _utc_now(), json.dumps(meta or {}, ensure_ascii=False)),
+            )
+            return int(cur.lastrowid)
+
+    def finish_sync_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        total_rows: int = 0,
+        pages: int = 0,
+        error: str | None = None,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE sync_runs
+                SET status=?, finished_at=?, total_rows=?, pages=?, error=?
+                WHERE id=?
+                """,
+                (status, _utc_now(), total_rows, pages, error, run_id),
+            )
+
+    # --- asin daily upsert ---
+    def upsert_asin_rows(self, rows: list[dict[str, Any]], sync_run_id: int) -> int:
+        if not rows:
+            return 0
+        cols = [
+            "biz_date",
+            "marketplace",
+            "shop_name",
+            "shop_id",
+            "asin",
+            "parent_asin",
+            "sku",
+            "msku",
+            "title",
+            "title_cn",
+            "brand",
+            "open_date",
+            "product_grade",
+            "owner",
+            "sale_price",
+            "sale_num",
+            "order_num",
+            "avg_sale_price",
+            "sale_price_change_pct",
+            "order_num_change_pct",
+            "sessions",
+            "sessions_change_pct",
+            "page_view",
+            "conversion_rate",
+            "conversion_rate_change_pp",
+            "buy_box_percent",
+            "ad_impression",
+            "ad_clicks",
+            "ad_ctr",
+            "ad_cost",
+            "ad_cost_change_pct",
+            "cpc",
+            "acos",
+            "ad_sales",
+            "available",
+            "in_transit",
+            "available_days",
+            "inv_age_365_plus",
+            "rating",
+            "rating_change",
+            "rating_count",
+            "low_review_num",
+            "review_num",
+            "raw_json",
+            "sync_run_id",
+            "updated_at",
+        ]
+        placeholders = ",".join("?" * len(cols))
+        col_list = ",".join(cols)
+        updates = ",".join(
+            f"{c}=excluded.{c}" for c in cols if c not in ("biz_date", "marketplace", "shop_name", "asin")
+        )
+        sql = f"""
+            INSERT INTO asin_daily ({col_list}) VALUES ({placeholders})
+            ON CONFLICT(biz_date, marketplace, shop_name, asin) DO UPDATE SET {updates}
+        """
+        now = _utc_now()
+        values = []
+        for r in rows:
+            row = {c: r.get(c) for c in cols}
+            row["sync_run_id"] = sync_run_id
+            row["updated_at"] = now
+            if isinstance(row.get("raw_json"), (dict, list)):
+                row["raw_json"] = json.dumps(row["raw_json"], ensure_ascii=False)
+            values.append(tuple(row[c] for c in cols))
+        with self.connect() as conn:
+            conn.executemany(sql, values)
+        return len(values)
+
+    def list_asin_daily(self, biz_date: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM asin_daily WHERE biz_date = ? ORDER BY shop_name, asin",
+                (biz_date,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def merge_inventory_into_asin_daily(
+        self, biz_date: str, inv_rows: list[dict[str, Any]]
+    ) -> int:
+        """用 FBA 库存结果更新当日 asin_daily 的库存字段。
+
+        匹配优先级：shop_name+asin → shop_id+asin → asin（单店兜底）。
+        """
+        if not inv_rows:
+            return 0
+        updated = 0
+        now = _utc_now()
+        with self.connect() as conn:
+            for inv in inv_rows:
+                asin = inv.get("asin")
+                if not asin:
+                    continue
+                shop_name = inv.get("shop_name") or ""
+                shop_id = inv.get("shop_id") or ""
+                sets = []
+                params: list[Any] = []
+                for col in (
+                    "available",
+                    "in_transit",
+                    "available_days",
+                    "inv_age_365_plus",
+                ):
+                    if inv.get(col) is not None:
+                        sets.append(f"{col}=?")
+                        params.append(inv.get(col))
+                if not sets:
+                    continue
+                sets.append("updated_at=?")
+                params.append(now)
+
+                row = None
+                if shop_name:
+                    row = conn.execute(
+                        """
+                        SELECT marketplace, shop_name, asin FROM asin_daily
+                        WHERE biz_date=? AND shop_name=? AND asin=?
+                        """,
+                        (biz_date, shop_name, asin),
+                    ).fetchone()
+                if row is None and shop_id:
+                    row = conn.execute(
+                        """
+                        SELECT marketplace, shop_name, asin FROM asin_daily
+                        WHERE biz_date=? AND shop_id=? AND asin=?
+                        """,
+                        (biz_date, shop_id, asin),
+                    ).fetchone()
+                if row is None:
+                    cands = conn.execute(
+                        """
+                        SELECT marketplace, shop_name, asin FROM asin_daily
+                        WHERE biz_date=? AND asin=?
+                        """,
+                        (biz_date, asin),
+                    ).fetchall()
+                    if len(cands) == 1:
+                        row = cands[0]
+                if row is None:
+                    continue
+                sql = f"""
+                    UPDATE asin_daily SET {", ".join(sets)}
+                    WHERE biz_date=? AND marketplace=? AND shop_name=? AND asin=?
+                """
+                params.extend(
+                    [biz_date, row["marketplace"], row["shop_name"], row["asin"]]
+                )
+                cur = conn.execute(sql, params)
+                updated += int(cur.rowcount or 0)
+        return updated
+
+    # --- anomaly tasks ---
+    def get_open_task(
+        self, shop_name: str, asin: str, anomaly_type: str
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM anomaly_tasks
+                WHERE shop_name=? AND asin=? AND anomaly_type=?
+                  AND status NOT IN ('closed', 'resolved')
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (shop_name, asin, anomaly_type),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def upsert_task(self, task: dict[str, Any]) -> None:
+        cols = [
+            "task_id",
+            "biz_date",
+            "shop_name",
+            "asin",
+            "product_title",
+            "product_title_cn",
+            "anomaly_type",
+            "level",
+            "current_value",
+            "baseline_value",
+            "change_value",
+            "owner",
+            "reviewer",
+            "status",
+            "due_at",
+            "streak",
+            "need_boss",
+            "payload_json",
+            "created_at",
+            "updated_at",
+        ]
+        now = _utc_now()
+        task = dict(task)
+        task.setdefault("created_at", now)
+        task["updated_at"] = now
+        if isinstance(task.get("payload_json"), (dict, list)):
+            task["payload_json"] = json.dumps(task["payload_json"], ensure_ascii=False)
+        placeholders = ",".join("?" * len(cols))
+        updates = ",".join(
+            f"{c}=excluded.{c}"
+            for c in cols
+            if c not in ("task_id", "created_at")
+        )
+        sql = f"""
+            INSERT INTO anomaly_tasks ({",".join(cols)}) VALUES ({placeholders})
+            ON CONFLICT(task_id) DO UPDATE SET {updates}
+        """
+        with self.connect() as conn:
+            conn.execute(sql, tuple(task.get(c) for c in cols))
+
+    def list_tasks(
+        self, *, biz_date: str | None = None, status: str | None = None
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[Any] = []
+        if biz_date:
+            clauses.append("biz_date = ?")
+            params.append(biz_date)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM anomaly_tasks {where} ORDER BY level DESC, updated_at DESC",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def clear_open_tasks(self, biz_date: str | None = None) -> int:
+        """试运行清场：删除未关闭任务（或指定日全部任务）。"""
+        with self.connect() as conn:
+            if biz_date:
+                cur = conn.execute(
+                    "DELETE FROM anomaly_tasks WHERE biz_date = ?", (biz_date,)
+                )
+            else:
+                cur = conn.execute(
+                    "DELETE FROM anomaly_tasks WHERE status NOT IN ('closed','resolved')"
+                )
+            return int(cur.rowcount)
+
+    def log_notify(self, kind: str, payload: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                "INSERT INTO notify_log(kind, payload_json, created_at) VALUES(?,?,?)",
+                (kind, json.dumps(payload, ensure_ascii=False), _utc_now()),
+            )
+
+    # --- daily summary aggregation ---
+    def aggregate_daily_summary(
+        self,
+        biz_date: str,
+        *,
+        shop_names: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """聚合当日异常数据，返回每日汇总所需字段。
+
+        shop_names: 若提供，仅统计这些原始/变体店名（用于按店子表汇总）。
+        """
+        import json as _json
+
+        tasks = self.list_tasks(biz_date=biz_date)
+        # 含 closed/resolved 的所有任务（用于统计生成量）
+        open_tasks = [t for t in tasks if t.get("status") not in ("closed", "resolved")]
+        if shop_names:
+            name_set = {str(s) for s in shop_names if s}
+            open_tasks = [
+                t for t in open_tasks if str(t.get("shop_name") or "") in name_set
+            ]
+
+        # 按等级分组
+        red = [t for t in open_tasks if t.get("level") == "red"]
+        orange = [t for t in open_tasks if t.get("level") == "orange"]
+        yellow = [t for t in open_tasks if t.get("level") == "yellow"]
+
+        # 按类型分组
+        type_counts: dict[str, int] = {}
+        for t in open_tasks:
+            at = str(t.get("anomaly_type") or "unknown")
+            type_counts[at] = type_counts.get(at, 0) + 1
+
+        # TOP 异常类型
+        top_type = ""
+        top_count = 0
+        for at, cnt in sorted(type_counts.items(), key=lambda x: x[1], reverse=True):
+            if cnt > top_count:
+                top_type = at
+                top_count = cnt
+
+        # 库存预警
+        inv_red = sum(1 for t in red if t.get("anomaly_type") == "inventory_low")
+        inv_orange = sum(1 for t in orange if t.get("anomaly_type") == "inventory_low")
+
+        # 广告异常
+        ad_count = sum(
+            1
+            for t in open_tasks
+            if t.get("anomaly_type") in ("acos_abnormal", "ad_spend_abnormal")
+        )
+
+        # 销量异常
+        sales_count = sum(
+            1
+            for t in open_tasks
+            if t.get("anomaly_type") in ("sales_drop", "order_drop")
+        )
+
+        # 负责人分布
+        owner_dist: dict[str, int] = {}
+        for t in open_tasks:
+            owner = str(t.get("owner") or "未分配")
+            owner_dist[owner] = owner_dist.get(owner, 0) + 1
+
+        # 逾期任务
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        overdue = sum(
+            1
+            for t in open_tasks
+            if (due := t.get("due_at")) and due < now
+        )
+
+        # 店铺和 ASIN 数量
+        with self.connect() as conn:
+            if shop_names:
+                placeholders = ",".join("?" * len(shop_names))
+                row = conn.execute(
+                    f"SELECT COUNT(DISTINCT shop_name) as shops, COUNT(DISTINCT asin) as asins "
+                    f"FROM asin_daily WHERE biz_date = ? AND shop_name IN ({placeholders})",
+                    [biz_date, *shop_names],
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT COUNT(DISTINCT shop_name) as shops, COUNT(DISTINCT asin) as asins "
+                    "FROM asin_daily WHERE biz_date = ?",
+                    (biz_date,),
+                ).fetchone()
+            shop_count = row["shops"] if row else 0
+            asin_count = row["asins"] if row else 0
+
+        return {
+            "biz_date": biz_date,
+            "shop_count": shop_count,
+            "asin_count": asin_count,
+            "red_count": len(red),
+            "orange_count": len(orange),
+            "yellow_count": len(yellow),
+            "total_tasks": len(open_tasks),
+            "overdue_count": overdue,
+            "inv_red": inv_red,
+            "inv_orange": inv_orange,
+            "ad_count": ad_count,
+            "sales_count": sales_count,
+            "top_anomaly_type": top_type,
+            "owner_dist_json": _json.dumps(owner_dist, ensure_ascii=False),
+        }

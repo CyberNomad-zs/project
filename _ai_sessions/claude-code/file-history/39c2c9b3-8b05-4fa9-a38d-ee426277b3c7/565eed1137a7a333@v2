@@ -1,0 +1,116 @@
+import { log } from './logger.js';
+import { closePopups } from './popups.js';
+
+/**
+ * 抓取当前店铺（聚合「全球」视图）的监测指标：
+ *   - onSaleCount          「在售中 N」数量（顶部状态 tab，beast-core-tab-itemLabel）
+ *   - trafficWatchCount    「商品流量待关注」数量（点快速筛选 chip → 读「共有 N 条」）
+ *   - trafficDeclineExists 是否存在「商品流量近期有下降」商品（用「批量处理流量下降商品」按钮存在性判断）
+ *   - trafficAnomalyTotal  流量异常合计（当前 = 待关注数；下降无精确计数入口，单独用布尔信号告警）
+ *
+ * 说明：真实后台是 Temu 自研 beast-core UI 库，选择器优先用稳定的 data-testid。
+ */
+export async function scanStore(page, storeName, cfg) {
+  // 确保在商品列表页
+  if (!/goods\/list/.test(page.url())) {
+    await page.goto(cfg.goodsListUrl, { waitUntil: 'commit' }).catch(() => {});
+    await page.waitForTimeout(3000);
+  }
+  await closePopups(page);
+  await waitGrid(page);
+
+  const onSaleCount = await readOnSaleCount(page);
+  const { trafficWatchCount, trafficDeclineExists } = await readTraffic(page);
+  const trafficAnomalyTotal = trafficWatchCount ?? 0;
+
+  return {
+    store: storeName,
+    onSaleCount,
+    trafficWatchCount,
+    trafficDeclineExists,
+    trafficAnomalyTotal,
+  };
+}
+
+/** 等商品表格真正渲染出行 */
+async function waitGrid(page) {
+  await page
+    .locator('[data-testid="beast-core-table-body-tr"]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 20000 })
+    .catch(() => {});
+}
+
+/** 读「在售中 N」——tab 叶子文本形如「在售中 13」 */
+async function readOnSaleCount(page) {
+  const tabs = page.locator('[data-testid="beast-core-tab-itemLabel"]');
+  const n = await tabs.count().catch(() => 0);
+  for (let i = 0; i < n; i++) {
+    const t = (await tabs.nth(i).innerText().catch(() => '')).trim();
+    const m = t.match(/在售中\s*([\d,]+)/);
+    if (m) return Number(m[1].replace(/,/g, ''));
+  }
+  // 兜底：纯文本匹配
+  const loc = page.getByText(/在售中\s*[\d,]+/).first();
+  const txt = await loc.innerText({ timeout: 2000 }).catch(() => '');
+  const m = txt.match(/在售中\s*([\d,]+)/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+/** 读流量异常：点「商品流量待关注」筛选读计数 + 判「流量下降」是否存在 */
+async function readTraffic(page) {
+  let trafficWatchCount = null;
+
+  const chip = page.getByText('商品流量待关注', { exact: false }).first();
+  if (await chip.isVisible({ timeout: 2000 }).catch(() => false)) {
+    const before = await readTotal(page); // 筛选前的总数（如 408）
+    await chip.click({ timeout: 3000 }).catch(() => {});
+    // 关键：等列表真正刷新——「共有 N 条」的数值发生变化才算筛选生效（避免读到旧的总数）
+    await page.waitForFunction((prev) => {
+      const e = [...document.querySelectorAll('*')].find(
+        (x) => x.children.length === 0 && /共有\s*[\d,]+\s*条/.test(x.textContent || '')
+      );
+      if (!e) return false;
+      const m = e.textContent.match(/共有\s*([\d,]+)\s*条/);
+      return m && Number(m[1].replace(/,/g, '')) !== prev;
+    }, before, { timeout: 8000 }).catch(() => {});
+    const after = await readTotal(page);
+    // 仅当筛选确实生效（数值变化且小于总数）才采纳，绝不把"未筛选的总数"当作待关注数
+    if (after != null && before != null && after !== before && after < before) {
+      trafficWatchCount = after;
+    } else {
+      log.warn(`「商品流量待关注」筛选疑似未生效(before=${before}, after=${after})，本轮待关注计数记为未知。`);
+    }
+    // 复位快速筛选，避免影响后续读数
+    await clickReset(page);
+    await page.waitForTimeout(2000);
+  } else {
+    log.warn('未找到「商品流量待关注」快速筛选 chip。');
+  }
+
+  // 「商品流量近期有下降」没有独立筛选/计数入口，用批量处理按钮的存在性作为「有下降商品」信号
+  const declineBtn = page.getByText('批量处理流量下降商品', { exact: false }).first();
+  const trafficDeclineExists = await declineBtn.isVisible({ timeout: 1500 }).catch(() => false);
+
+  return { trafficWatchCount, trafficDeclineExists };
+}
+
+/** 读列表底部「共有 N 条」 */
+async function readTotal(page) {
+  const txt = await page.evaluate(() => {
+    const e = [...document.querySelectorAll('*')].find(
+      (x) => x.children.length === 0 && /共有\s*[\d,]+\s*条/.test(x.textContent || '')
+    );
+    return e ? e.textContent.trim() : '';
+  });
+  const m = txt.match(/共有\s*([\d,]+)\s*条/);
+  return m ? Number(m[1].replace(/,/g, '')) : null;
+}
+
+/** 点「重置」清空快速筛选 */
+async function clickReset(page) {
+  const reset = page.getByText(/^重置$/).first();
+  if (await reset.isVisible({ timeout: 1000 }).catch(() => false)) {
+    await reset.click({ timeout: 2000 }).catch(() => {});
+  }
+}

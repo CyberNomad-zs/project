@@ -1,0 +1,62 @@
+import { writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { ROOT } from './config.js';
+import { launchBrowser, isLoggedIn } from './browser.js';
+import { closePopups } from './popups.js';
+import { log } from './logger.js';
+
+/**
+ * 校准脚本：有头登录态下，抓取商品列表页 & 店铺切换相关的
+ *   - 所有 XHR/fetch 接口 URL（帮助确定商品列表 API）
+ *   - 顶部 header / 店铺切换器的 HTML（帮助确定选择器）
+ * 结果写入 data/calibrate-*.txt，供人工核对后微调选择器。
+ */
+export async function calibrate(cfg) {
+  const { context, page } = await launchBrowser(cfg, { headless: false });
+  const apiUrls = new Set();
+  page.on('request', (req) => {
+    const t = req.resourceType();
+    if (t === 'xhr' || t === 'fetch') apiUrls.add(`${req.method()} ${req.url()}`);
+  });
+
+  if (!(await isLoggedIn(page, cfg))) {
+    log.error('未登录，请先 npm run login');
+    await context.close();
+    return;
+  }
+  await closePopups(page);
+  log.info('已进入商品列表页，采集接口与 DOM 中…（10 秒）');
+  await page.waitForTimeout(4000);
+
+  // 点一下「在售中」标签，触发列表接口
+  const tab = page.getByText(/在售中\s*\d*/).first();
+  await tab.click({ timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(4000);
+
+  // 保存接口清单
+  const apiList = [...apiUrls].filter((u) => /goods|product|list|query|mms|mall|shop|search/i.test(u));
+  writeFileSync(
+    resolve(ROOT, 'data', 'calibrate-apis.txt'),
+    [...apiUrls].sort().join('\n'),
+    'utf8'
+  );
+  log.info(`接口清单已保存（${apiUrls.size} 条），疑似相关：`);
+  for (const u of apiList.slice(0, 40)) log.info('  ', u);
+
+  // 保存顶部 header HTML（含店铺切换器）
+  const headerHtml = await page
+    .locator('header, [class*="header" i], [class*="Header" i]')
+    .first()
+    .innerHTML()
+    .catch(() => '');
+  writeFileSync(resolve(ROOT, 'data', 'calibrate-header.html'), headerHtml, 'utf8');
+
+  // 保存整页可见文本片段（辅助核对标签/芯片文案）
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  writeFileSync(resolve(ROOT, 'data', 'calibrate-bodytext.txt'), bodyText, 'utf8');
+
+  log.info('校准文件已写入 data/：calibrate-apis.txt / calibrate-header.html / calibrate-bodytext.txt');
+  log.info('浏览器保持打开，请手动点开右上角店铺切换器，观察下拉结构。20 秒后自动关闭。');
+  await page.waitForTimeout(20000);
+  await context.close().catch(() => {});
+}

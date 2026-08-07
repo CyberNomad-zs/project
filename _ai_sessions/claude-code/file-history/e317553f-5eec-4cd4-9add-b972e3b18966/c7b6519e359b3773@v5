@@ -1,0 +1,70 @@
+// 隔离世界：① 把 inject.js 注入页面 MAIN world；② 接收接口响应转发给后台；
+// ③ 读当前店铺名 + 快速筛选「商品流量待关注 N」的数字，一起上报（多店铺按店名区分）。
+(function () {
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) { /* ignore */ }
+
+  // 读右上角当前店铺名（英文店名，如 HomeCove / Twilight Cove / Agnis）。
+  // mallId 在 anti-content 里读不到，改用页面顶栏现成显示的店名来区分店铺。
+  function readStoreName() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      // 英文店名：字母开头，最多 4 个单词
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (t.length < 2 || t.length > 30) continue;
+      if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue; // 只看顶栏
+      if (r.left < W * 0.5) continue;                          // 只看右半边
+      if (!best || r.left > best.left) best = { t, left: r.left }; // 取最靠右的
+    }
+    return best ? best.t : null;
+  }
+
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body, store: readStoreName() });
+    } catch (err) { /* service worker 可能休眠，忽略 */ }
+  });
+
+  // 读快速筛选「商品流量待关注 N」chip 上的数字 = 待关注商品数（页面现成渲染，无需点筛选）。
+  function readTrafficWatch() {
+    const nodes = [];
+    for (const el of document.querySelectorAll('*')) {
+      const t = el.textContent || '';
+      if (/商品流量待关注/.test(t) && t.length < 30) nodes.push(el);
+    }
+    nodes.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of nodes) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(/商品流量待关注\s*([\d,]+)/);
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+    }
+    return null;
+  }
+
+  // 页面渲染出 chip 后读一次上报（每次加载/刷新/切店后都会重新执行）
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    const n = readTrafficWatch();
+    if (n != null) {
+      try { chrome.runtime.sendMessage({ type: 'chipStats', trafficWatch: n, store: readStoreName() }); } catch (e) { /* ignore */ }
+      clearInterval(iv);
+    } else if (tries > 20) {
+      clearInterval(iv);
+    }
+  }, 2000);
+})();

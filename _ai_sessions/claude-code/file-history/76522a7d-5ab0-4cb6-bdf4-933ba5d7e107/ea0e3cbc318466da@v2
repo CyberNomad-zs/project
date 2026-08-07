@@ -1,0 +1,187 @@
+# TK · P2.0 内容分析（视频 + 商品卡）采集 POC 结论
+
+> 日期：2026-08-04  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · **经营计划 P2**（≠ 采集路线图已完成的 P2a/b/c）  
+> 镜像写法：[P1.7 广告细粒度 POC](./TK-P1-广告细粒度POC结论.md)  
+> **Verdict（门禁）：进行中 — 待紫鸟实跑 debug JSON 后三选一填写**
+
+---
+
+## 0. 命名冻结（本轮即生效，避免与现网飞书冲突）
+
+| 用途 | 建议编号 | 说明 |
+|------|----------|------|
+| 内容/视频日事实 → 飞书多维表 | **T6 内容日** | **不要**用 T4（现网健康日等） |
+| 内容看板 | **D4 视频内容** | **不要**用 D3（建表方案里商品 / 重绑清单里 AI 素材） |
+| 异常 `object_type` | **`content`** | 仅文档预留；**本轮不改** `010` CHECK |
+| 异常域中文 | **视频内容** | 任务台分析域文案；与店铺分析/广告/库存并列 |
+
+**本轮禁止：** 新建 `fact_tiktok_content_daily` / `product_traffic_daily`、注册生产 ingest、飞书建 T6、任务台 `tk-content` 空页。
+
+---
+
+## 1. POC 问题
+
+运营五维 / XMind / 三大块 **② 视频内容分析** 需要：
+
+1. **视频和照片概览**：视频归因 GMV、SKU 订单、曝光/播放、客户、视频排行  
+2. **商品卡 / 商品数据分析**：曝光、点击、CTR、订单、GMV、CVR（多渠道若有则记）  
+3. 可重复紫鸟抓取 → 样例进 `logs/`（可选日后 `ingest_raw` only）  
+4. **字段字典 + 门禁 verdict**，通过后才开 P2.1 schema
+
+---
+
+## 2. 仓库已交付（脚本，待实跑）
+
+| 文件 | 作用 |
+|------|------|
+| `collectors/tiktok-ads/scripts/scrape-content-overview-page.js` | 视频概览 KPI + 表行 |
+| `collectors/tiktok-ads/scripts/scrape-product-traffic-page.js` | 商品卡/流量 KPI + 表行 |
+| `collectors/tiktok-ads/scripts/_probe-content-page.js` | 粗 dump body/表头/链接 |
+| `collectors/tiktok-ads/scripts/run-content-poc.ps1` | 编排；**默认 SkipIngest**；必写 debug JSON |
+| `config/stores.config.example.json` | `contentUrl` / `productTrafficUrl` 示例键 |
+
+```powershell
+cd collectors\tiktok-ads
+# 建议先单店 config（deal-only / gardena-only），并把实页 URL 写入 contentUrl.default
+powershell -ExecutionPolicy Bypass -File .\scripts\run-content-poc.ps1 `
+  -ConfigPath .\config\stores.config.deal-only.json `
+  -Modules content_overview,product_traffic
+
+# URL 不对时先 probe
+powershell -ExecutionPolicy Bypass -File .\scripts\run-content-poc.ps1 `
+  -ConfigPath .\config\stores.config.deal-only.json `
+  -Modules content_probe
+```
+
+默认猜测 URL（**极易 404/错页，必须以紫鸟地址栏为准改 config**）：
+
+- content: `https://seller-uk.tiktok.com/compass/content-analysis/video`
+- product: `https://seller-uk.tiktok.com/compass/content-analysis/product-card`
+
+---
+
+## 3. 页面实勘（人工填）
+
+| 项 | 视频概览 (A) | 商品卡/商品数据 (B) |
+|----|--------------|---------------------|
+| 实页完整 URL | _待填_ | _待填_ |
+| 数字卡 / 表 / 导出 | _待填_ | _待填_ |
+| 日期：能否单日 / 默认窗口 | _待填_ | _待填_ |
+| 稳定 id（content_id / product_id） | _待填_ | _待填_ |
+| 样例 debug 路径 | `logs/content_overview-debug-…` | `logs/product_traffic-debug-…` |
+| 连跑 2 次是否结构稳定 | _待填_ | _待填_ |
+
+**已知风险（开跑前已知）：**
+
+- Compass SPA 曾 KPI 占位不刷新（shop-modules 已避走 homepage）  
+- 「近 N 天」vs 业务日 `biz_date` 不对齐  
+- EU Pop：`opsExclude*` 已复用，POC 用 UK Deal/Gardena  
+
+---
+
+## 4. 可采字段表（实跑后勾选）
+
+### 4.1 视频 / 内容（→ 未来 `tk.fact_tiktok_content_daily`）
+
+| 后台文案（示例） | 建议列 | 类型 | 粒度 | 可采? |
+|------------------|--------|------|------|-------|
+| 视频归因 GMV | `attributed_gmv` | numeric | 店×日 或 店×日×content | ⬜ |
+| 视频归因 SKU 订单 | `attributed_sku_orders` | int | 同上 | ⬜ |
+| 曝光 / 商品曝光 | `impressions` | int | 同上 | ⬜ |
+| 播放 | `play_count` | int | 同上 | ⬜ |
+| 点击 | `clicks` | int | 同上 | ⬜ |
+| CTR | `ctr` | numeric | 同上 | ⬜ |
+| 客户数 | `customers` | int | 同上 | ⬜ |
+| 视频标题 | `content_title` | text | 行 | ⬜ |
+| 视频 ID / 链接 | `content_id` | text | 行 | ⬜ |
+| 渠道 | `channel` | text | short_video/photo/live/other | ⬜ |
+| 关联商品 | `product_id` | text nullable | 行 | ⬜ |
+| 窗口文案 | `raw_extra.window` | text | — | ⬜ |
+
+### 4.2 商品卡流量（→ 未来 `tk.fact_tiktok_product_traffic_daily`）
+
+| 后台文案（示例） | 建议列 | 类型 | 粒度 | 可采? |
+|------------------|--------|------|------|-------|
+| 曝光 | `impressions` | int | 店×日×product×channel | ⬜ |
+| 点击 | `clicks` | int | 同上 | ⬜ |
+| CTR | `ctr` | numeric | 同上 | ⬜ |
+| 订单 | `orders` | int | 同上 | ⬜ |
+| GMV | `gmv` | numeric | 同上 | ⬜ |
+| CVR | `cvr` | numeric | 同上 | ⬜ |
+| 商品 ID | `product_id` | text | 行 | ⬜ |
+| 渠道 | `channel` | text | product_card 等 | ⬜ |
+
+### 4.3 不可采 / 不稳定
+
+| 项 | 说明 |
+|----|------|
+| _待填_ | |
+
+---
+
+## 5. biz_date 与关联键（实跑后填）
+
+| 议题 | 结论 |
+|------|------|
+| 单日可选？ | _待填_ |
+| 若仅近 7 天 | 禁止 7 日均摊填日表；或仅窗口快照 + 规则延后 |
+| content ↔ product | 能 / 不能 / 仅 title → P2.6 策略 |
+| content ↔ ads creative | 依赖 P1.7；本轮不 POC 创意页 |
+
+---
+
+## 6. 门禁 Verdict
+
+**开 P2.1（schema + ingest + 最小规则）前必须：**
+
+1. ≥1 店（争取 2 店）视频侧：非空核心指标（归因 GMV **或** 曝光+订单可解释组合）  
+2. ≥1 店商品卡侧：非空曝光/点击或 CTR；尽量有 `product_id`  
+3. 同一 URL/脚本结构连跑稳定  
+4. 字段字典本节勾选完成；`biz_date` 策略书面签字  
+5. **仍不**用 campaign 日假填内容行  
+
+| Verdict | 含义 | 下一步 |
+|---------|------|--------|
+| ✅ 通过 | A+B 均达最低线 | P2.1 迁移 content + product_traffic；ingest；规则 POC |
+| 🟡 部分通过 | 仅一侧达标 | 只建有数一侧；另一侧继续 POC |
+| ❌ 不通过 | 两侧均无稳数 | **冻结**；不建空表/空任务台/空飞书 |
+
+**当前：⬜ 进行中（脚本已交，缺实页 debug）**
+
+填写人 / 日期：____________
+
+---
+
+## 7. 过渡期运营用法
+
+- 任务台 / 飞书：**无**内容 TAB；异常筛选仍为 店铺分析 / 广告 / 库存  
+- 内容巡检：人工进商家中心 内容分析  
+- 广告继续系列规则（含 burn/cpa）  
+- 采集日更：**不**把 `run-content-poc` 挂计划任务，直至门禁通过并产品化  
+
+---
+
+## 8. 验收勾选（P2.0）
+
+- [x] 探针 + scrape + run 脚本入库  
+- [x] example config 增加 URL 键说明  
+- [x] 本结论文档骨架 + 命名冻结 T6/D4 / object_type=content  
+- [x] 明确不建空 schema  
+- [ ] 紫鸟实跑 ≥1 店 debug JSON  
+- [ ] 字段表勾选 + biz_date 策略  
+- [ ] Verdict 三选一签字  
+
+---
+
+## 9. 门禁通过后 backlog（预告，非本轮）
+
+| # | 项 |
+|---|-----|
+| P2.1 | `tk.fact_tiktok_content_daily` + `product_traffic_daily`；dim 内容异常码；可选 CHECK 加 `content` |
+| P2.2 | ingest `tiktok_content` / `tiktok_product_traffic` |
+| P2.3 | `tk_content_rules` + job（掉量 / 有曝无单 / CTR·CVR） |
+| P2.4 | 飞书 **T6 / D4**（新编号） |
+| P2.5 | 任务台 `tk-content` + 分析域「视频内容」 |
+| P2.6 | 关联键策略落地 |
+| 可选 | 广告创意全量（**另过 P1.7 门禁**） |

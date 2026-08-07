@@ -1,0 +1,26 @@
+(function () {
+  function t(el) {
+    return (el && el.textContent ? el.textContent : '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  }
+  var out = {
+    url: location.href,
+    title: document.title,
+    tables: document.querySelectorAll('table').length,
+    roleRows: document.querySelectorAll('[role="row"]').length,
+    orderIdNodes: document.querySelectorAll('.order_id_number, [class*="order_id"]').length,
+    ths: [],
+    bodyPreview: (document.body && document.body.innerText ? document.body.innerText : '').slice(0, 1800),
+    candidates: []
+  };
+  var ths = document.querySelectorAll('th');
+  for (var i = 0; i < ths.length && i < 20; i++) out.ths.push(t(ths[i]));
+  var all = document.querySelectorAll('div,span,th,td,a');
+  for (var j = 0; j < all.length && out.candidates.length < 25; j++) {
+    var s = t(all[j]);
+    if (!s || s.length > 50) continue;
+    if (/订单|Order|待发货|已发货|商品|合计|Total|Customer/i.test(s)) {
+      out.candidates.push({ tag: all[j].tagName, text: s, cls: (all[j].className || '').toString().slice(0, 70) });
+    }
+  }
+  return JSON.stringify(out);
+})();

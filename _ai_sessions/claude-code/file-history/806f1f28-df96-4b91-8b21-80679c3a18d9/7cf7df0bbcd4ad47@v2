@@ -1,0 +1,229 @@
+"""采集上报：幂等写入 ingest_raw，并按 source 分发到事实表。"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infra.db import get_db
+from app.infra.security import require_ingest_key
+
+router = APIRouter(prefix="/api/v1/ingest", tags=["ingest"])
+
+
+class Evidence(BaseModel):
+    screenshot_url: str | None = None
+    source_url: str | None = None
+    raw_ref: str | None = None
+
+
+class IngestEnvelope(BaseModel):
+    platform: str | None = None
+    shop_id: str | None = Field(default=None, description="外部店铺 ID")
+    shop_name: str | None = None
+    biz_date: date | None = None
+    collected_at: datetime | None = None
+    idempotency_key: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    evidence: Evidence | None = None
+
+
+class IngestBatch(BaseModel):
+    items: list[IngestEnvelope] = Field(min_length=1, max_length=500)
+
+
+async def _resolve_shop_uuid(db: AsyncSession, platform: str | None, external_id: str | None) -> str | None:
+    if not external_id:
+        return None
+    if platform:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text FROM shop
+                    WHERE external_shop_id = :eid AND platform = :platform
+                    LIMIT 1
+                    """
+                ),
+                {"eid": external_id, "platform": platform},
+            )
+        ).first()
+        if row:
+            return row[0]
+    row = (
+        await db.execute(
+            text("SELECT id::text FROM shop WHERE external_shop_id = :eid LIMIT 1"),
+            {"eid": external_id},
+        )
+    ).first()
+    return row[0] if row else None
+
+
+async def _process_tiktok_ads(
+    db: AsyncSession,
+    *,
+    ingest_id: str,
+    env: IngestEnvelope,
+    shop_uuid: str | None,
+) -> None:
+    p = env.payload
+    campaign = str(p.get("campaign_name") or p.get("campaign") or "").strip()
+    if not campaign or not env.biz_date or not env.shop_id:
+        raise ValueError("tiktok_ads 需要 shop_id, biz_date, payload.campaign_name")
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO fact_ads_campaign_daily (
+                id, shop_id, shop_external_id, shop_name, biz_date, campaign_name,
+                spend, orders, roi, revenue, currency, row_status, source_url,
+                collected_at, ingest_id, created_at, updated_at
+            ) VALUES (
+                :id, :shop_id, :shop_external_id, :shop_name, :biz_date, :campaign_name,
+                :spend, :orders, :roi, :revenue, :currency, :row_status, :source_url,
+                :collected_at, :ingest_id, now(), now()
+            )
+            ON CONFLICT (shop_external_id, campaign_name, biz_date) DO UPDATE SET
+                spend = EXCLUDED.spend,
+                orders = EXCLUDED.orders,
+                roi = EXCLUDED.roi,
+                revenue = EXCLUDED.revenue,
+                currency = EXCLUDED.currency,
+                row_status = EXCLUDED.row_status,
+                source_url = EXCLUDED.source_url,
+                collected_at = EXCLUDED.collected_at,
+                ingest_id = EXCLUDED.ingest_id,
+                shop_id = COALESCE(EXCLUDED.shop_id, fact_ads_campaign_daily.shop_id),
+                shop_name = COALESCE(EXCLUDED.shop_name, fact_ads_campaign_daily.shop_name),
+                updated_at = now()
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "shop_id": shop_uuid,
+            "shop_external_id": env.shop_id,
+            "shop_name": env.shop_name,
+            "biz_date": env.biz_date,
+            "campaign_name": campaign,
+            "spend": float(p.get("spend") or 0),
+            "orders": float(p.get("orders") or 0),
+            "roi": float(p["roi"]) if p.get("roi") is not None else None,
+            "revenue": float(p.get("revenue") or 0),
+            "currency": p.get("currency") or "GBP",
+            "row_status": p.get("row_status") or "success",
+            "source_url": (env.evidence.source_url if env.evidence else None) or p.get("source_url"),
+            "collected_at": env.collected_at,
+            "ingest_id": ingest_id,
+        },
+    )
+
+
+async def _ingest_one(
+    db: AsyncSession,
+    source: str,
+    env: IngestEnvelope,
+) -> dict[str, Any]:
+    platform = env.platform or ("tiktok" if source.startswith("tiktok") else None)
+    shop_uuid = await _resolve_shop_uuid(db, platform, env.shop_id)
+    ingest_id = str(uuid4())
+    evidence = (env.evidence.model_dump() if env.evidence else {}) or {}
+
+    try:
+        await db.execute(
+            text(
+                """
+                INSERT INTO ingest_raw (
+                    id, source, platform, shop_external_id, shop_id, biz_date,
+                    idempotency_key, payload, evidence, collected_at, process_status
+                ) VALUES (
+                    :id, :source, :platform, :shop_external_id, :shop_id, :biz_date,
+                    :idempotency_key, CAST(:payload AS jsonb), CAST(:evidence AS jsonb),
+                    :collected_at, 'accepted'
+                )
+                """
+            ),
+            {
+                "id": ingest_id,
+                "source": source,
+                "platform": platform,
+                "shop_external_id": env.shop_id,
+                "shop_id": shop_uuid,
+                "biz_date": env.biz_date,
+                "idempotency_key": env.idempotency_key,
+                "payload": json.dumps(env.payload, ensure_ascii=False, default=str),
+                "evidence": json.dumps(evidence, ensure_ascii=False),
+                "collected_at": env.collected_at,
+            },
+        )
+    except IntegrityError:
+        await db.rollback()
+        existing = (
+            await db.execute(
+                text("SELECT id::text FROM ingest_raw WHERE idempotency_key = :k"),
+                {"k": env.idempotency_key},
+            )
+        ).first()
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": existing[0] if existing else None,
+            "status": "duplicated",
+            "error": None,
+        }
+
+    try:
+        if source == "tiktok_ads":
+            await _process_tiktok_ads(db, ingest_id=ingest_id, env=env, shop_uuid=shop_uuid)
+        # 其它 source Phase1+ 再挂处理器；原始仍保留
+        await db.execute(
+            text("UPDATE ingest_raw SET process_status = 'processed' WHERE id = :id"),
+            {"id": ingest_id},
+        )
+        await db.commit()
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": ingest_id,
+            "status": "created",
+            "error": None,
+        }
+    except Exception as exc:
+        await db.rollback()
+        # 重新标记失败：原事务已回滚，补写失败状态可能丢 id，简化返回 failed
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": ingest_id,
+            "status": "failed",
+            "error": str(exc),
+        }
+
+
+@router.post("/{source}")
+async def ingest(
+    source: str,
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_ingest_key),
+) -> dict[str, Any]:
+    if "items" in body:
+        batch = IngestBatch.model_validate(body)
+        items = batch.items
+    else:
+        items = [IngestEnvelope.model_validate(body)]
+
+    results = []
+    for env in items:
+        results.append(await _ingest_one(db, source, env))
+
+    return {
+        "accepted": sum(1 for r in results if r["status"] == "created"),
+        "duplicated": sum(1 for r in results if r["status"] == "duplicated"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+        "results": results,
+    }

@@ -1,0 +1,45 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from app.api import (
+    amazon_sync,
+    auth,
+    export_feishu,
+    health,
+    ingest,
+    kb,
+    procurement,
+    shops,
+    tasks,
+    tk_anomaly_tasks,
+    tk_ops,
+)
+from app.config import get_settings
+
+
+def create_app() -> FastAPI:
+    settings = get_settings()
+    app = FastAPI(title=settings.app_name, version="0.1.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(shops.router)
+    app.include_router(ingest.router)
+    app.include_router(tasks.router)
+    app.include_router(tk_anomaly_tasks.router)
+    app.include_router(tk_ops.router)
+    app.include_router(kb.router)
+    app.include_router(amazon_sync.router)
+    app.include_router(procurement.router)
+    app.include_router(export_feishu.router_export)
+    app.include_router(export_feishu.router_collectors)
+    return app
+
+
+app = create_app()

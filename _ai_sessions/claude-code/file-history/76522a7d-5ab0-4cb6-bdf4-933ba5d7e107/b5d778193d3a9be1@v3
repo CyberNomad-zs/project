@@ -1,0 +1,152 @@
+{
+  "feishu": {
+    "appId": "cli_aae1a925e9fa9bed",
+    "appSecret": "PSkubOEHzRkPkOl55gTsFb1O2Ql51fYD",
+    "appToken": "C1iHbw6TVad6rUsbZnbc2gSDnHg",
+    "tableId": "tblmr3ayTmWF3G7J",
+    "writeMode": "dual",
+    "_note": "TK广告日报 tblmr3ayTmWF3G7J；P0+P1 列"
+  },
+  "qingquan": {
+    "enabled": true,
+    "baseUrl": "https://qingquan.jmzlai.com",
+    "apiKey": "2badba5de266ed9c749307ddb252b8a5",
+    "source": "tiktok_ads",
+    "failOpen": true,
+    "timeoutSec": 120,
+    "_timeout_note": "2026-08-04：大批量 orders/products 30s 易超时/断连，正式改为 120s"
+  },
+  "filter": {
+    "platformContains": [
+      "TikTok"
+    ],
+    "nameContains": [],
+    "nameExclude": [],
+    "requireIp": true,
+    "includeStoreIds": [
+      "27328767468273"
+    ],
+    "excludeStoreIds": [
+      "27841084722470"
+    ],
+    "_note": "广告默认三店都跑（含欧盟 Pop）。Nookora 核验未完成仍排除。"
+  },
+  "adsUrl": {
+    "default": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+    }
+  },
+  "orderUrl": {
+    "default": "https://seller-uk.tiktok.com/order?selected_sort=6&tab=all",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/order?selected_sort=6&tab=all",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/order?selected_sort=6&tab=all"
+    }
+  },
+  "modules": {
+    "ads": true,
+    "orders": true,
+    "_orders_note": "欧盟 Pop 订单页常出拼图验证，订单模块先排除；广告仍采集 Pop",
+    "products": true,
+    "opsExcludeStoreIds": [
+      "27758103898326"
+    ],
+    "opsExcludePlatformContains": [
+      "欧盟"
+    ],
+    "ordersExcludeStoreIds": [
+      "27758103898326"
+    ],
+    "ordersExcludePlatformContains": [
+      "欧盟"
+    ],
+    "_ops_exclude_note": "欧盟 Pop：订单/商品/店模块(KPI健康财务)一律 exclude；广告 dual 仍可采 Pop（不进 filter.excludeStoreIds）"
+  },
+  "storeNameMap": {
+    "Tiktok_Shop2": "Deal to deal",
+    "Nookora Home": "Nookora Home",
+    "Tiktok - KK Seagull": "Gardena",
+    "TikTok - Pop": "TikTok - Pop",
+    "TT-L": "TT-L"
+  },
+  "options": {
+    "dryRun": true,
+    "dateMode": "yesterday",
+    "setPageDateRange": true,
+    "waitAfterDateChangeMs": 8000,
+    "closeAfter": true,
+    "waitAfterOpenMs": 25000,
+    "waitAfterVisitMs": 25000,
+    "delayBetweenStoresMs": 5000,
+    "scrapeRetries": 3,
+    "scrapeRetryWaitMs": 15000,
+    "reopenOnBlank": true,
+    "bridgeRetryWaitMs": 20000,
+    "maximizeWindow": true,
+    "windowRatio": "full",
+    "skipZeroDisabledCampaigns": true,
+    "orderMaxPages": 8,
+    "orderPageWaitMs": 4500,
+    "_window_note": "maximizeWindow=开店后 Win32+页面 resize 拉大窗口；windowRatio 传给 ziniao store open --window-ratio（none 可关闭）",
+    "_skipZeroDisabled_note": "策略C：计划开关=关 且 花费=0 且 销售额=0 时跳过；关停但仍有花费/销售额的计划仍写入",
+    "_order_paging_note": "订单列表翻页：最多 orderMaxPages 页，页间等待 orderPageWaitMs",
+    "productMaxPages": 5,
+    "productPageWaitMs": 5000
+  },
+  "analysis": {
+    "enabled": true,
+    "lowRoiThreshold": 3,
+    "writeSummaryToFeishu": true
+  },
+  "currency": {
+    "target": "USD",
+    "pageDefault": "USD",
+    "convert": true,
+    "ratesToUsd": {
+      "USD": 1,
+      "GBP": 1.27,
+      "EUR": 1.08,
+      "CNY": 0.14
+    },
+    "_comment": "广告花费/销售额与 TikTok 广告后台一致，统一按美金(USD)。"
+  },
+  "productUrl": {
+    "default": "https://seller-uk.tiktok.com/product/manage",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/product/manage",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/product/manage"
+    }
+  },
+  "shopDailyUrl": {
+    "default": "https://seller-uk.tiktok.com/homepage"
+  },
+  "healthUrl": {
+    "default": "https://seller-uk.tiktok.com/health-center"
+  },
+  "financeUrl": {
+    "default": "https://seller-uk.tiktok.com/finance/bills"
+  },
+  "contentUrl": {
+    "default": "https://seller-uk.tiktok.com/compass/video-analytics?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/compass/video-analytics?shop_region=GB"
+    },
+    "_note": "2026-08-04 实勘：内容分析落地 video-analytics（KPI）。勿用 content-analysis/*（会回 data-overview）。"
+  },
+  "productTrafficUrl": {
+    "default": "https://seller-uk.tiktok.com/compass/product-card-analytics?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/compass/product-card-analytics?shop_region=GB"
+    },
+    "_note": "2026-08-04 实勘：商品卡 product-card-analytics。"
+  },
+  "videoListUrl": {
+    "default": "https://seller-uk.tiktok.com/compass/video-analytics/video-details?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/compass/video-analytics/video-details?shop_region=GB"
+    },
+    "_note": "2026-08-05：视频详情 video-details；content_id=video-detail-item?id=。Gardena 第二店复跑待做。"
+  }
+}

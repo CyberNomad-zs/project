@@ -1,0 +1,126 @@
+# -*- coding: utf-8 -*-
+"""
+主流程编排：按【渠道】逐个闭环。
+  遍历 rules.CHANNEL_ORDER（= 优先级顺序）：
+    ① ERP：待处理视图 -> 按「全部渠道」筛选=该渠道 -> 全选 -> 物流下单 -> 记录失败单
+    ② 该渠道有单才继续 -> WMS：登录该渠道对应账号(BLACKCAT->JMCAT / 昇新->JMSM)
+       -> 平台订单未发货 -> 按账号快递方优先级(RM->DPD->EH)逐轮：改快递方+批量发货，失败的换下个快递方再试
+    ③ 该渠道闭环完成，再做下一个渠道
+  失败订单（下单失败/试完所有快递方仍未发货）不自动挪渠道，统一留存 + 提醒。
+
+安全：config.DRY_RUN=True 时不真正点击 物流下单/批量发货，只走筛选与统计。
+用法：
+    1) 先手动登录一次 ERP： python capture/erp_manual_login.py
+    2) 空跑核对：          python run_shipping.py         （config.DRY_RUN=True）
+    3) 核对无误后改 config.DRY_RUN=False 再跑真实发货。
+"""
+import os, time
+import config, core, secrets, erp, wms, rules
+from core import log
+from playwright.sync_api import sync_playwright
+
+# ---- 环节开关 ----
+DO_ERP_REPORT = True          # 只读：ERP 各阶段数量
+DO_PER_CHANNEL = True         # 按渠道逐个闭环 ERP下单 -> WMS发货
+DO_ERP_TRACKING = False       # ERP 获取跟踪单号（建议全部发完后再单独跑）
+DO_ERP_CONFIRM_SHIP = False   # ERP 确认发货（高风险，暂缓）
+
+
+def account_by_login(login):
+    for a in secrets.WMS_ACCOUNTS:
+        if a["login"] == login:
+            return a
+    return None
+
+
+def write_failures(failures):
+    """把失败订单留存到 logs/failures_YYYYMMDD.txt，便于人工跟进。"""
+    path = os.path.join(config.LOG_DIR, f"failures_{time.strftime('%Y%m%d', time.localtime(time.time()))}.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} =====\n")
+            for x in failures:
+                f.write(f"[{x['stage']}] 渠道={x.get('channel')} 账号={x.get('account','')} 原因={x['reason']}\n")
+                for o in x["orders"]:
+                    f.write(f"    {o}\n")
+        log(f"[留存] 失败订单已写入 {path}")
+    except Exception as e:
+        log(f"[留存] 写失败订单文件出错: {e}")
+
+
+def run_pipeline(page, report=True):
+    """按渠道逐个闭环跑一遍（ERP物流下单->WMS发货）。返回失败订单留存 list。
+    供 run_shipping.main() 与 shipping_loop.py 复用。假定 page 已登录 ERP。"""
+    failures = []
+    if report:
+        erp.open_order_ship(page)
+        erp.report_counts(page)
+
+    for channel in rules.CHANNEL_ORDER:
+        login = rules.channel_account_login(channel)
+        account = account_by_login(login)
+        if not account:
+            log(f"[渠道] {channel} 找不到对应账号 {login}，跳过"); continue
+        log("-" * 50)
+        log(f"[渠道] 处理: {channel}  ->  {account['shop']}({login})")
+
+        # ① ERP 该渠道物流下单
+        r = erp.place_logistics_orders(page, channel_keyword=channel) or {}
+        if r.get("fail_orders"):
+            failures.append({"stage": "ERP物流下单", "channel": channel,
+                             "account": account["shop"], "orders": r["fail_orders"],
+                             "reason": "物流下单失败(多为所选仓库无库存)"})
+        placed = r.get("success")
+        if placed is None:
+            placed = r.get("count", 0) if not r.get("error") else 0
+        if not placed:
+            log(f"[渠道] {channel} 无成功下单订单，跳过 WMS 发货")
+            continue
+
+        # ② WMS 该渠道对应账号发货（按快递方优先级重试）
+        res = wms.process_shop(page, account) or {}
+        if res.get("left_orders"):
+            failures.append({"stage": "WMS发货", "channel": channel,
+                             "account": account["shop"], "orders": res["left_orders"],
+                             "reason": "试完所有快递方仍未发货"})
+        log(f"[渠道] {channel} 闭环完成")
+
+    # ---- 失败订单汇总留存 + 提醒 ----
+    log("=" * 60)
+    if failures:
+        log("[!] 本次失败订单留存（不自动处理，需人工跟进）：")
+        for x in failures:
+            log(f"   [{x['stage']}] 渠道={x.get('channel')} 账号={x.get('account','')} "
+                f"原因={x['reason']}  订单={x['orders']}")
+        write_failures(failures)
+    else:
+        log("[OK] 本次无失败订单。")
+    return failures
+
+
+def main():
+    log("=" * 60)
+    log(f"开始运行  DRY_RUN={config.DRY_RUN}  MAX/次={config.MAX_ORDERS_PER_RUN}")
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+        if not core.ensure_erp(page):
+            log("[ERP] 会话失效，无法按渠道下单。请先： python capture/erp_manual_login.py")
+            ctx.close(); return
+
+        run_pipeline(page, report=DO_ERP_REPORT)
+
+        if DO_ERP_CONFIRM_SHIP:
+            erp.confirm_shipping(page)
+        if DO_ERP_TRACKING:
+            erp.open_order_ship(page)
+            erp.get_tracking(page)
+
+        log("运行结束。")
+        time.sleep(2)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

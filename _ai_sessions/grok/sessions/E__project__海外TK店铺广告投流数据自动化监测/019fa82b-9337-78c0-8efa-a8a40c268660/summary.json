@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fa82b-9337-78c0-8efa-a8a40c268660",
+    "cwd": "E:\\project\\海外TK店铺广告投流数据自动化监测"
+  },
+  "session_summary": "Feishu Official Write Operation Completed",
+  "created_at": "2026-07-28T10:00:55.869607700Z",
+  "updated_at": "2026-07-29T01:14:08.120107Z",
+  "num_messages": 427,
+  "num_chat_messages": 200,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 9,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外TK店铺广告投流数据自动化监测/",
+  "git_remotes": [
+    "https://github.com/JMCATTT/tk-shop-ad-monitor.git"
+  ],
+  "head_commit": "de71178a2990f69cad3cdf83c2b6324e9184e5d9",
+  "head_branch": "main",
+  "request_id": "8dce816f-0a04-46de-bce1-360a69832853",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-29T01:14:08.120107Z",
+  "generated_title": "Feishu Official Write Operation Completed",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

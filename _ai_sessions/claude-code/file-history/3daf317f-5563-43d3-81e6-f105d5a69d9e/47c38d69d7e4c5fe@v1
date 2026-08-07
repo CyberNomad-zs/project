@@ -1,0 +1,29 @@
+APP_ENV=dev
+APP_SECRET_KEY=change-me-to-a-long-random-string
+APP_NAME=清泉跨境系统
+API_PORT=8000
+
+POSTGRES_USER=qingquan
+POSTGRES_PASSWORD=qingquan
+POSTGRES_DB=qingquan
+POSTGRES_PORT=5432
+DATABASE_URL=postgresql+asyncpg://qingquan:qingquan@127.0.0.1:5432/qingquan
+
+REDIS_URL=redis://127.0.0.1:6379/0
+REDIS_PORT=6379
+
+JWT_EXPIRE_MINUTES=1440
+INGEST_DEFAULT_API_KEY=dev-ingest-key
+
+# 首次 seed 管理员
+ADMIN_USERNAME=admin
+ADMIN_PASSWORD=admin123
+
+# 飞书（Phase0 任务表同步；可与 TK 项目分表）
+FEISHU_APP_ID=
+FEISHU_APP_SECRET=
+FEISHU_BITABLE_APP_TOKEN=
+FEISHU_BITABLE_TABLE_TASKS=
+
+DEFAULT_TASK_DUE_DAYS=3
+TZ=Asia/Shanghai

@@ -1,0 +1,87 @@
+/* TikTok account health daily snapshot (P3a). Heuristic DOM scrape. */
+(function () {
+  function clean(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    var pct = /%/.test(s);
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '').replace(/%/g, '');
+    var n = Number(s);
+    if (!isFinite(n)) return null;
+    // store rates as fraction if came with %
+    if (pct && n > 1) n = n / 100;
+    return n;
+  }
+  function walkTexts(limit) {
+    var out = [];
+    var nodes = document.querySelectorAll('div,span,p,li,td,th,h1,h2,h3,strong,label');
+    for (var i = 0; i < nodes.length && out.length < limit; i++) {
+      var el = nodes[i];
+      if (el.children && el.children.length > 4) continue;
+      var t = clean(el.textContent);
+      if (!t || t.length < 2 || t.length > 100) continue;
+      out.push(t);
+    }
+    return out;
+  }
+  function findNear(labels) {
+    var texts = walkTexts(500);
+    for (var i = 0; i < texts.length; i++) {
+      var low = texts[i].toLowerCase();
+      var hit = false;
+      for (var j = 0; j < labels.length; j++) {
+        if (low.indexOf(String(labels[j]).toLowerCase()) >= 0) { hit = true; break; }
+      }
+      if (!hit) continue;
+      var n = parseNumber(texts[i]);
+      if (n != null) return { value: n, label: texts[i], raw: texts[i] };
+      for (var k = 1; k <= 3 && i + k < texts.length; k++) {
+        n = parseNumber(texts[i + k]);
+        if (n != null) return { value: n, label: texts[i], raw: texts[i + k] };
+      }
+      // status label without number
+      if (/良好|优秀|一般|差|健康|风险|Good|Poor|Fair|At risk/i.test(texts[i])) {
+        return { value: null, label: texts[i], raw: texts[i], status: texts[i] };
+      }
+    }
+    return null;
+  }
+  try {
+    var score = findNear(['健康分', '账号健康', 'Health score', 'Shop health', '体验分']);
+    var late = findNear(['迟发率', '晚发', 'Late dispatch', 'Late shipment', '超时发货']);
+    var neg = findNear(['差评率', '负面反馈', 'Negative feedback', 'Bad review']);
+    var status =
+      (score && score.status) ||
+      (function () {
+        var t = walkTexts(200).join(' ');
+        var m = t.match(/(优秀|良好|一般|差|健康|有风险|Good|Fair|Poor|Excellent)/);
+        return m ? m[1] : null;
+      })();
+    var ok = !!(score || late || neg || status);
+    return JSON.stringify({
+      ok: ok,
+      module: 'health_daily',
+      source: 'dom-labels',
+      url: location.href || '',
+      title: document.title || '',
+      healthScore: score && score.value != null ? score.value : null,
+      lateDispatchRate: late ? late.value : null,
+      negativeFeedbackRate: neg ? neg.value : null,
+      statusLabel: status || null,
+      raw: {
+        score: score && score.label,
+        late: late && late.label,
+        neg: neg && neg.label
+      },
+      error: ok ? null : 'no health metrics found. url=' + (location.href || '')
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false, module: 'health_daily', url: location.href || '', error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

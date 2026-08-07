@@ -1,0 +1,53 @@
+# -*- coding: utf-8 -*-
+"""登录 WMS 后，直接打开 平台订单 内容页 orderInfo.html，抓取核心 DOM（表格/按钮/筛选/弹窗）。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = secrets.WMS_ACCOUNTS[1]  # JMCAT=黑猫
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+        for _ in range(5):
+            try:
+                page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        print("after login url:", page.url)
+
+        print(">>> 直接打开 平台订单 内容页")
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000)
+        time.sleep(5)
+        html = page.content()
+        with open(os.path.join(config.DUMP_DIR, "wms_orderInfo.html"), "w", encoding="utf-8") as f:
+            f.write(html)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "wms_orderInfo.png"), full_page=True)
+        print(f"  [OK] wms_orderInfo: {len(html)} bytes, url={page.url}")
+
+        # 列出按钮 / 关键控件
+        btns = page.eval_on_selector_all("button, a.btn, .layui-btn, input[type=button]",
+            "els=>els.filter(e=>!!(e.offsetWidth||e.offsetHeight)).map(e=>({tag:e.tagName,txt:(e.innerText||e.value||'').trim(),id:e.id,cls:e.className}))")
+        print("---- 可见按钮 ----")
+        for b in btns:
+            if b['txt']:
+                print("  ", b)
+        # 列出表格表头
+        ths = page.eval_on_selector_all("th", "els=>els.map(e=>e.innerText.trim()).filter(Boolean)")
+        print("---- 表头 ----", ths)
+        # 下拉/select
+        sels = page.eval_on_selector_all("select", "els=>els.map(e=>({id:e.id,name:e.name,cls:e.className}))")
+        print("---- selects ----", sels)
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,154 @@
+/**
+ * 本地单测：复现 2026-07-30 HomeCove 误报（unique 漏数 → 假下架 → 假上架）
+ * 运行：node src/sellfox/diff.selftest.js
+ */
+import { diffOnSale } from './diff.js';
+
+function assert(cond, msg) {
+  if (!cond) throw new Error('FAIL: ' + msg);
+  console.log('  OK', msg);
+}
+
+function basePrev() {
+  // 15 个在售
+  const onSaleMap = {};
+  for (let i = 1; i <= 15; i++) {
+    onSaleMap['skc' + i] = {
+      skcId: 'skc' + i,
+      parentId: 'p' + i,
+      name: '商品' + i,
+      selectStatus: '12',
+    };
+  }
+  // 上轮本店约 300 条
+  return {
+    onSaleMap,
+    allCount: 300,
+    statusCounts: { 12: 15, 13: 100 },
+    ts: 1,
+  };
+}
+
+function fullAllMap(onSaleIds, extra = 280) {
+  const all = {};
+  for (const id of onSaleIds) {
+    all[id] = {
+      skcId: id,
+      parentId: 'p',
+      name: id,
+      selectStatus: '12',
+    };
+  }
+  for (let i = 0; i < extra; i++) {
+    const id = 'other' + i;
+    all[id] = { skcId: id, parentId: 'o', name: id, selectStatus: '13' };
+  }
+  return all;
+}
+
+console.log('1) 漏数假下架（5 个在售从结果中消失，all 也变少）→ 必须 skip，不告警 delist');
+{
+  const prev = basePrev();
+  const keep = Object.keys(prev.onSaleMap).slice(0, 10);
+  const onSaleMap = {};
+  for (const id of keep) onSaleMap[id] = prev.onSaleMap[id];
+  // allMap 也缺那 5 个 + 整体少一截（模拟 954→918）
+  const allMap = fullAllMap(keep, 250);
+  const r = diffOnSale(prev, {
+    onSaleMap,
+    allMap,
+    statusCounts: { 12: 10, 13: 90 },
+    pullUnique: 918,
+    prevPullUnique: 954,
+  });
+  assert(r.skipUpdate === true, 'skipUpdate');
+  assert(r.delistedCount === 0, 'no delist');
+  assert(!r.events.some((e) => e.type === 'delist' && e.severity === 'alert'), 'no delist alert');
+  assert(Object.keys(r.nextSnap.onSaleMap).length === 15, 'baseline kept 15');
+}
+
+console.log('2) 真·下架：商品仍在 allMap，status 从 12→13');
+{
+  const prev = basePrev();
+  const ids = Object.keys(prev.onSaleMap);
+  const gone = ids.slice(0, 2);
+  const keep = ids.slice(2);
+  const onSaleMap = {};
+  for (const id of keep) onSaleMap[id] = prev.onSaleMap[id];
+  const allMap = fullAllMap(keep, 280);
+  for (const id of gone) {
+    allMap[id] = {
+      skcId: id,
+      parentId: prev.onSaleMap[id].parentId,
+      name: prev.onSaleMap[id].name,
+      selectStatus: '13',
+    };
+  }
+  const r = diffOnSale(prev, {
+    onSaleMap,
+    allMap,
+    statusCounts: { 12: 13, 13: 102 },
+    pullUnique: 954,
+    prevPullUnique: 954,
+  });
+  assert(r.skipUpdate === false, 'not skip');
+  assert(r.delistedCount === 2, 'delist 2');
+  assert(r.events.some((e) => e.type === 'delist' && e.items.length === 2), 'delist event');
+  assert(Object.keys(r.nextSnap.onSaleMap).length === 13, 'snap 13');
+}
+
+console.log('3) 真·上架：新 skc 进 12');
+{
+  const prev = basePrev();
+  const onSaleMap = { ...prev.onSaleMap };
+  onSaleMap.skcNew = {
+    skcId: 'skcNew',
+    parentId: 'pn',
+    name: '新品',
+    selectStatus: '12',
+  };
+  const allMap = fullAllMap(Object.keys(onSaleMap), 280);
+  const r = diffOnSale(prev, {
+    onSaleMap,
+    allMap,
+    statusCounts: { 12: 16 },
+    pullUnique: 955,
+    prevPullUnique: 954,
+  });
+  assert(r.skipUpdate === false, 'not skip');
+  assert(r.listedCount === 1, 'onshelf 1');
+  assert(r.events.some((e) => e.type === 'onshelf'), 'onshelf event');
+}
+
+console.log('4) 首轮不告警');
+{
+  const onSaleMap = { a: { skcId: 'a', selectStatus: '12', name: 'x' } };
+  const r = diffOnSale(null, {
+    onSaleMap,
+    allMap: { a: onSaleMap.a },
+    statusCounts: { 12: 1 },
+  });
+  assert(r.isFirst === true, 'first');
+  assert(r.delistedCount === 0 && r.listedCount === 0, 'no alerts');
+}
+
+console.log('5) 旧半降护栏仍在：15→3 且无 allMap 线索');
+{
+  const prev = basePrev();
+  const keep = Object.keys(prev.onSaleMap).slice(0, 3);
+  const onSaleMap = {};
+  for (const id of keep) onSaleMap[id] = prev.onSaleMap[id];
+  // allCount 也腰斩
+  const allMap = fullAllMap(keep, 50);
+  const r = diffOnSale(prev, {
+    onSaleMap,
+    allMap,
+    statusCounts: { 12: 3 },
+    pullUnique: 200,
+    prevPullUnique: 954,
+  });
+  assert(r.skipUpdate === true, 'half-drop or unique skip');
+  assert(r.delistedCount === 0, 'no delist on incomplete');
+}
+
+console.log('\nAll selftests passed.');

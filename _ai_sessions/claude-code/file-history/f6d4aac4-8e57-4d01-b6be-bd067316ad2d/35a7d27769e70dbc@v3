@@ -1,0 +1,193 @@
+import { MSG } from '../lib/constants.js';
+
+const $ = (id) => document.getElementById(id);
+
+const els = {
+  dateMode: $('dateMode'),
+  customDate: $('customDate'),
+  customDateRow: $('customDateRow'),
+  dryRun: $('dryRun'),
+  btnScrape: $('btnScrape'),
+  btnTest: $('btnTest'),
+  btnExportLogs: $('btnExportLogs'),
+  statusDot: $('statusDot'),
+  statusText: $('statusText'),
+  preview: $('preview'),
+  logList: $('logList')
+};
+
+init();
+
+async function init() {
+  const { config } = await send({ type: MSG.GET_CONFIG });
+  if (config) {
+    els.dateMode.value = config.dateMode || 'yesterday';
+    els.customDate.value = config.customDate || '';
+    els.dryRun.checked = config.dryRun !== false;
+    toggleCustom();
+  }
+  await refreshLogs();
+  const last = await send({ type: MSG.GET_LAST_RESULT });
+  if (last?.result) showResult(last.result, true);
+
+  els.dateMode.addEventListener('change', async () => {
+    toggleCustom();
+    await persistPartial();
+  });
+  els.customDate.addEventListener('change', persistPartial);
+  els.dryRun.addEventListener('change', persistPartial);
+  els.btnScrape.addEventListener('click', onScrape);
+  els.btnTest.addEventListener('click', onTest);
+  els.btnExportLogs.addEventListener('click', onExportLogs);
+}
+
+function toggleCustom() {
+  els.customDateRow.hidden = els.dateMode.value !== 'custom';
+}
+
+async function persistPartial() {
+  await send({
+    type: MSG.SAVE_CONFIG,
+    config: {
+      dateMode: els.dateMode.value,
+      customDate: els.customDate.value,
+      dryRun: els.dryRun.checked
+    }
+  });
+}
+
+async function onScrape() {
+  setBusy(true, '正在抓取…');
+  els.preview.hidden = true;
+  try {
+    await persistPartial();
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const result = await send({
+      type: MSG.RUN_FULL,
+      reason: 'manual',
+      tabId: tab?.id,
+      dryRun: els.dryRun.checked
+    });
+    showResult(result);
+    await refreshLogs();
+  } catch (e) {
+    setStatus('err', String(e.message || e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function onTest() {
+  setBusy(true, '测试飞书连接…');
+  try {
+    const r = await send({ type: MSG.TEST_FEISHU });
+    if (r.ok) {
+      setStatus('ok', `飞书连接成功（表记录约 ${r.total ?? '?'} 条）`);
+    } else {
+      setStatus('err', r.error || '连接失败');
+    }
+    await refreshLogs();
+  } catch (e) {
+    setStatus('err', String(e.message || e));
+  } finally {
+    setBusy(false);
+  }
+}
+
+function showResult(result, soft = false) {
+  if (!result) return;
+  if (result.ok) {
+    const n = result.rows?.length || 0;
+    const w = result.write?.written ?? 0;
+    const dry = result.dryRun || result.write?.dryRun;
+    setStatus(
+      'ok',
+      dry
+        ? `抓取成功 ${n} 条（干跑未写入）· ${result.storeName || ''} · ${result.date || ''}`
+        : `抓取成功 ${n} 条，已写入 ${w} · ${result.storeName || ''}`
+    );
+    const previewRows = (result.rows || []).slice(0, 8).map((r) => ({
+      店铺: r.store,
+      品名: r.campaign,
+      广告花费: r.spend,
+      销量: r.orders,
+      ROI: r.roi,
+      销售额: r.revenue
+    }));
+    els.preview.hidden = false;
+    els.preview.textContent = JSON.stringify(
+      {
+        source: result.source,
+        store: result.storeName,
+        date: result.date,
+        count: n,
+        sample: previewRows
+      },
+      null,
+      2
+    );
+  } else if (!soft) {
+    setStatus('err', result.error || '失败');
+    if (result.rows?.length) {
+      els.preview.hidden = false;
+      els.preview.textContent = JSON.stringify(result.rows.slice(0, 5), null, 2);
+    }
+  }
+}
+
+async function refreshLogs() {
+  const { logs } = await send({ type: MSG.GET_LOGS });
+  els.logList.innerHTML = '';
+  for (const item of (logs || []).slice(0, 12)) {
+    const li = document.createElement('li');
+    li.className = item.level || '';
+    const t = (item.time || '').replace('T', ' ').slice(0, 19);
+    li.innerHTML = `<span class="lv">${item.level || 'info'}</span> ${t} · ${escapeHtml(
+      item.message || ''
+    )}`;
+    els.logList.appendChild(li);
+  }
+}
+
+async function onExportLogs() {
+  const { logs } = await send({ type: MSG.GET_LOGS });
+  const blob = new Blob([JSON.stringify(logs || [], null, 2)], {
+    type: 'application/json'
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `tk-ad-logs-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function setBusy(busy, text) {
+  els.btnScrape.disabled = busy;
+  els.btnTest.disabled = busy;
+  if (busy) setStatus('busy', text || '处理中…');
+}
+
+function setStatus(kind, text) {
+  els.statusDot.className = `dot ${kind || ''}`;
+  els.statusText.textContent = text;
+}
+
+function send(message) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      resolve(response || {});
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}

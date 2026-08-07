@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""给飞书「异常任务」表补指标语义字段（幂等），并可选回填现有任务。
+
+新增字段：
+  - 当前值含义 / 对比值含义 / 变化幅度含义
+  - 指标摘要
+（「说明」字段已存在则写入规则文案）
+
+用法：
+  python scripts/add_task_metric_fields.py
+  python scripts/add_task_metric_fields.py --backfill   # 重算本地任务语义并写回飞书
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient, FeishuError
+from app.config import get_settings
+from app.rules.engine import evaluate_rows
+from app.rules.tasks import apply_anomalies_to_tasks
+from app.store.db import Database
+from app.sync.feishu_schema import T_TEXT, task_to_fields
+from app.sync.writer import write_tasks_to_feishu
+from app.config import get_rules_config
+
+
+NEW_FIELDS = [
+    "当前值含义",
+    "对比值含义",
+    "变化幅度含义",
+    "指标摘要",
+]
+
+
+def _ensure_text_field(
+    client: FeishuClient,
+    app: str,
+    table: str,
+    field_name: str,
+) -> str | None:
+    fields = client.list_fields(app, table)
+    by_name = {f.get("field_name"): f for f in fields}
+    if field_name in by_name:
+        fid = by_name[field_name].get("field_id")
+        print(f"  exists: {field_name} -> {fid}")
+        return fid
+    print(f"  create: {field_name} ...")
+    data = client.create_field(app, table, field_name, T_TEXT)
+    fid = data.get("field_id") or (data.get("field") or {}).get("field_id")
+    print(f"  OK field_id={fid}")
+    return fid
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="异常任务指标语义字段")
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="按本地 asin_daily 重跑规则并写回飞书任务",
+    )
+    parser.add_argument("--date", default="", help="回填业务日 YYYY-MM-DD，默认取任务最新日")
+    args = parser.parse_args()
+
+    settings = get_settings()
+    if not settings.has_feishu or not settings.feishu_bitable_app_token:
+        print("ERROR: 需要 FEISHU_APP_ID/SECRET 与 FEISHU_BITABLE_APP_TOKEN")
+        return 2
+    table = settings.feishu_table_tasks
+    if not table:
+        print("ERROR: 未配置 FEISHU_TABLE_TASKS")
+        return 2
+    app = settings.feishu_bitable_app_token
+
+    try:
+        with FeishuClient(settings) as client:
+            targets: list[tuple[str, str]] = [("母表-异常任务", table)]
+            # 按店子表也补字段，避免 dual_write 写入时缺列
+            try:
+                from app.sync.shops import ShopTableRegistry
+
+                reg = ShopTableRegistry.load()
+                for shop, tid in reg.all_table_ids("tasks"):
+                    targets.append((f"子表-{shop}", tid))
+            except Exception as e:  # noqa: BLE001
+                print(f"  提示: 未加载店铺子表注册表 ({e})")
+
+            for label, tid in targets:
+                print(f"== {label} ({tid}) ==")
+                for name in NEW_FIELDS:
+                    _ensure_text_field(client, app, tid, name)
+                _ensure_text_field(client, app, tid, "说明")
+    except FeishuError as e:
+        print(f"飞书字段失败: {e}")
+        return 1
+
+    if not args.backfill:
+        print("字段就绪。需要刷新任务内容请加 --backfill")
+        return 0
+
+    db = Database(settings.db_path)
+    biz_date = args.date.strip()
+    if not biz_date:
+        with db.connect() as conn:
+            row = conn.execute(
+                "SELECT biz_date FROM anomaly_tasks ORDER BY biz_date DESC LIMIT 1"
+            ).fetchone()
+            biz_date = row["biz_date"] if row else ""
+    if not biz_date:
+        print("无任务可回填")
+        return 0
+
+    print(f"回填业务日 {biz_date} ...")
+    rows = db.list_asin_daily(biz_date)
+    if not rows:
+        print("当日无 asin_daily，跳过规则重算，仅用已有 payload 写飞书")
+        tasks = [
+            t
+            for t in db.list_tasks()
+            if t.get("status") not in ("closed", "resolved")
+        ]
+    else:
+        rules = get_rules_config()
+        anomalies = evaluate_rows(rows, rules)
+        stats = apply_anomalies_to_tasks(
+            anomalies, biz_date=biz_date, db=db, rules_cfg=rules
+        )
+        print("rules stats:", stats)
+        tasks = [
+            t
+            for t in db.list_tasks()
+            if t.get("status") not in ("closed", "resolved")
+        ]
+
+    # 从 payload 补齐缺失的语义列（旧任务）
+    fixed = 0
+    for t in tasks:
+        payload = t.get("payload_json")
+        if isinstance(payload, str) and payload:
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        if not isinstance(payload, dict):
+            continue
+        changed = False
+        for k in (
+            "current_label",
+            "baseline_label",
+            "change_label",
+            "value_summary",
+            "message",
+        ):
+            if not t.get(k) and payload.get(k):
+                t[k] = payload[k]
+                changed = True
+        if changed:
+            db.upsert_task(t)
+            fixed += 1
+    print(f"从 payload 补齐本地列: {fixed}")
+
+    # 预览
+    for t in tasks[:5]:
+        print(
+            " sample:",
+            t.get("task_id"),
+            t.get("anomaly_type"),
+            task_to_fields(t).get("指标摘要"),
+            "|",
+            task_to_fields(t).get("说明"),
+        )
+
+    n = write_tasks_to_feishu(tasks, settings=settings)
+    print(f"飞书写入任务 {n} 条")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

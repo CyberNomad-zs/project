@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "海外仓发货助手 — 排雷Spike",
+  "version": "0.0.1",
+  "description": "验证浏览器扩展的合成点击能否驱动 ERP 的 vxe-table（全选/物流下单）。只做 DRY 排雷，不真下单。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": [
+    "https://www.sellfox.com/*",
+    "http://193.112.93.60:9999/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "海外仓发货助手（排雷）"
+  }
+}

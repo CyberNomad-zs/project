@@ -1,0 +1,37 @@
+from functools import lru_cache
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    app_env: str = "dev"
+    app_name: str = "清泉跨境系统"
+    app_secret_key: str = "change-me"
+    database_url: str = "postgresql+asyncpg://qingquan:qingquan@127.0.0.1:5432/qingquan"
+    redis_url: str = "redis://127.0.0.1:6379/0"
+    jwt_expire_minutes: int = 1440
+    ingest_default_api_key: str = "dev-ingest-key"
+    admin_username: str = "admin"
+    admin_password: str = "admin123"
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_bitable_app_token: str = ""
+    feishu_bitable_table_tasks: str = ""
+    # AMZ 驾驶舱多维表（同一 Base 下三张表；可与 tasks 分 Base）
+    feishu_bitable_app_token_amz: str = ""
+    feishu_bitable_table_amz_shop_daily: str = ""
+    feishu_bitable_table_amz_link_daily: str = ""
+    feishu_bitable_table_amz_risk: str = ""
+    # TK 驾驶舱（模块 2 多店对比 / 模块 3 广告；空 token 回退 FEISHU_BITABLE_APP_TOKEN）
+    feishu_bitable_app_token_tk: str = ""
+    feishu_bitable_table_tk_shop_daily: str = ""
+    feishu_bitable_table_tk_ads_campaign: str = ""
+    default_task_due_days: int = 3
+    tz: str = "Asia/Shanghai"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

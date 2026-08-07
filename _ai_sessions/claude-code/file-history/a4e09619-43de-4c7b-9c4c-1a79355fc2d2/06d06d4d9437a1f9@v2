@@ -1,0 +1,82 @@
+/**
+ * 赛狐 Temu 在售集合 diff → 下架
+ * 在售定义：selectStatus === "12"（已加入站点）
+ */
+import { SELECT_STATUS } from './products.js';
+
+/**
+ * @param {object|null} prevSnap { onSaleMap, statusCounts, ts }
+ * @param {{ onSaleMap: object, statusCounts?: object }} curr
+ */
+export function diffOnSale(prevSnap, curr) {
+  const prevMap = (prevSnap && prevSnap.onSaleMap) || null;
+  const currMap = curr.onSaleMap || {};
+  const currIds = Object.keys(currMap);
+  const events = [];
+  let skipUpdate = false;
+
+  if (prevMap) {
+    const prevN = Object.keys(prevMap).length;
+    const currN = currIds.length;
+    // 防残缺：在售骤降过半且基准≥5 → 跳过（接口窗口漏数）
+    if (prevN >= 5 && currN < Math.floor(prevN * 0.5)) {
+      skipUpdate = true;
+      events.push({
+        type: 'scan_incomplete',
+        severity: 'warn',
+        message: `在售疑似不全：基准 ${prevN} → 本轮 ${currN}，跳过下架判定`,
+      });
+    }
+  }
+
+  let delisted = [];
+  if (prevMap && !skipUpdate) {
+    delisted = Object.keys(prevMap).filter((id) => !(id in currMap));
+    if (delisted.length) {
+      events.push({
+        type: 'delist',
+        severity: 'alert',
+        items: delisted.map((id) => ({
+          skcId: id,
+          parentId: prevMap[id]?.parentId || '',
+          name: prevMap[id]?.name || '',
+          prevStatus: prevMap[id]?.selectStatus || SELECT_STATUS.ON_SALE,
+        })),
+        from: Object.keys(prevMap).length,
+        to: currIds.length,
+      });
+    }
+  }
+
+  const isFirst = !prevMap;
+  const nextSnap = {
+    onSaleMap: skipUpdate && prevMap ? prevMap : currMap,
+    statusCounts: curr.statusCounts || {},
+    onSaleCount: skipUpdate && prevMap ? Object.keys(prevMap).length : currIds.length,
+    ts: Date.now(),
+  };
+
+  return { events, nextSnap, isFirst, skipUpdate, delistedCount: delisted.length };
+}
+
+export function editLink(editBaseUrl, parentIdOrProductId) {
+  const base = String(editBaseUrl || 'https://agentseller.temu.com').replace(/\/$/, '');
+  // 后台编辑页参数多为 productId；赛狐 parentId 实测常等于商品父 ID，可点
+  return `${base}/goods/edit?from=productList&productId=${parentIdOrProductId}`;
+}
+
+export function formatDelistLines(storeName, events, { editBaseUrl } = {}) {
+  const lines = [`**🏬 ${storeName}**（赛狐 OpenAPI）`];
+  for (const ev of events) {
+    if (ev.severity !== 'alert' || ev.type !== 'delist') continue;
+    lines.push(`📉 在售商品下架 ${ev.items.length} 个（在售 ${ev.from} → ${ev.to}，selectStatus 离开 12）：`);
+    for (const it of ev.items.slice(0, 40)) {
+      const nm = String(it.name || '商品').replace(/[[\]]/g, '').slice(0, 36);
+      const pid = it.parentId || it.skcId;
+      lines.push(`• [${nm}](${editLink(editBaseUrl, pid)})  SKC ${it.skcId || '-'}`);
+    }
+    if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
+  }
+  lines.push('', `_检查时间：${new Date().toLocaleString('zh-CN')}_`);
+  return lines;
+}

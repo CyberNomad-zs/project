@@ -1,0 +1,66 @@
+# -*- coding: utf-8 -*-
+"""评估 ddddocr 对 Sellfox 验证码的识别率：抓 N 个验证码原图(base64)，OCR，拼图供人工核对。"""
+import sys, os, time, base64, re
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+from PIL import Image, ImageDraw
+import ddddocr, io
+
+LOGIN = "https://www.sellfox.com/amzup-web-main/login.html"
+N = 8
+OCR = ddddocr.DdddOcr(show_ad=False)
+
+
+def get_captcha_b64(page):
+    return page.eval_on_selector_all("img", """els=>{
+        for(const e of els){const b=e.getBoundingClientRect();
+          if(b.width>=60&&b.width<=200&&b.height>=20&&b.height<=50&&e.src.startsWith('data:image')) return e.src;}
+        return null;}""")
+
+
+def refresh(page):
+    img = page.eval_on_selector_all("img", """els=>{for(const e of els){const b=e.getBoundingClientRect();
+        if(b.width>=60&&b.width<=200&&b.height>=20&&b.height<=50&&e.src.startsWith('data:image')){e.click();return true;}}return false;}""")
+    return img
+
+
+def main():
+    tiles = []
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        page = browser.new_context(ignore_https_errors=True).new_page()
+        page.goto(LOGIN, wait_until="domcontentloaded", timeout=45000)
+        page.wait_for_selector("#password", timeout=20000)
+        time.sleep(2)
+        for i in range(N):
+            src = get_captcha_b64(page)
+            if not src:
+                print("no captcha src"); break
+            b64 = re.sub(r"^data:image/\w+;base64,", "", src)
+            raw = base64.b64decode(b64)
+            guess = OCR.classification(raw)
+            print(f"#{i}: OCR={guess!r}")
+            im = Image.open(io.BytesIO(raw)).convert("RGB")
+            tiles.append((im, guess))
+            refresh(page); time.sleep(1.2)
+        browser.close()
+
+    # 拼图：每行 一个验证码 + OCR结果
+    if tiles:
+        w = max(im.width for im, _ in tiles) + 160
+        h = sum(im.height for im, _ in tiles) + 10 * len(tiles)
+        sheet = Image.new("RGB", (w, h), (255, 255, 255))
+        d = ImageDraw.Draw(sheet)
+        y = 5
+        for im, g in tiles:
+            sheet.paste(im, (5, y))
+            d.text((im.width + 15, y + 8), f"OCR: {g}", fill=(200, 0, 0))
+            y += im.height + 10
+        out = os.path.join(config.DUMP_DIR, "captcha_accuracy.png")
+        sheet.save(out)
+        print("SHEET:", out)
+
+
+if __name__ == "__main__":
+    main()

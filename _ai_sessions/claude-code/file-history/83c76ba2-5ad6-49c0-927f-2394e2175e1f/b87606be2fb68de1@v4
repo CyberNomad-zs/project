@@ -1,0 +1,27 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据（广告只是第一域）。订单 P2a 已通；欧盟订单暂排除。
+
+## 2026-07-31
+- [x] 广告英区 dual 实跑 OK
+- [x] **欧盟 Pop 广告 dual OK**（热销品7/15 → 清泉+飞书）
+- [x] 订单英区列表校准 + 首屏入库
+- [x] **订单翻页**：SHOP INOUT 3 页 = 150 唯一单，accepted 50 新单
+- [x] 配置：广告含 Pop；`modules.ordersExclude*` 排除欧盟订单（拼图验证）
+- [ ] 订单默认拉更多页 / 全量（注意耗时与验证码）
+- [ ] 订单飞书表（可选）
+- [ ] P2b 商品 / P2c 店级 KPI
+
+## 阻塞
+- 欧盟 Pop **订单**页拼图验证 → 自动化暂排除
+- 列表页商品名多为「N 件商品」（需详情页才能补 SKU 名）
+
+## 怎么跑
+```powershell
+cd collectors/tiktok-ads
+# 广告三店（含 Pop）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1
+# 订单（自动排除欧盟）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders.ps1
+```

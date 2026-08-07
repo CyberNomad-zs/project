@@ -1,0 +1,89 @@
+@echo off
+rem Colleague / local PC launcher: traffic only. No Sellfox menu.
+cd /d "%~dp0"
+title Temu Traffic Monitor
+
+where node >nul 2>nul
+if errorlevel 1 (
+  echo.
+  echo   [ERR] Node.js not found. Install LTS: https://nodejs.org
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "node_modules\playwright" (
+  echo.
+  echo   [First run] npm install ...
+  echo.
+  call npm install
+  if errorlevel 1 (
+    echo   npm install failed.
+    pause
+    exit /b 1
+  )
+)
+
+:menu
+cls
+echo ============================================
+echo      Temu Traffic Monitor (local PC)
+echo   Delist/onshelf runs on company server
+echo   Docs: 使用说明.txt
+echo ============================================
+echo.
+echo    1.  Login Temu           (first time / expired)
+echo    2.  Traffic once         (watch / decline / on-sale)
+echo    3.  Traffic loop         (foreground, keep open)
+echo    4.  Enable auto-start    (Task TemuMonitor)
+echo    5.  Disable auto-start
+echo    0.  Exit
+echo.
+set /p "c=Choice: "
+
+if "%c%"=="1" goto do_login
+if "%c%"=="2" goto do_once
+if "%c%"=="3" goto do_start
+if "%c%"=="4" goto do_autostart
+if "%c%"=="5" goto do_unautostart
+if "%c%"=="0" exit /b 0
+goto menu
+
+:do_login
+echo.
+echo Browser will open. Log in to Temu Seller Central.
+node src\cli.js login
+echo.
+pause
+goto menu
+
+:do_once
+echo.
+echo Traffic only. Need Temu login in .userdata.
+node src\cli.js once
+echo.
+pause
+goto menu
+
+:do_start
+echo.
+echo Traffic loop. Keep window open. Ctrl+C to stop.
+echo.
+node src\cli.js start
+echo.
+pause
+goto menu
+
+:do_autostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install-autostart.ps1"
+echo.
+pause
+goto menu
+
+:do_unautostart
+echo.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall-autostart.ps1"
+echo.
+pause
+goto menu

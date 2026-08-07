@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "prompt_mode": "extend",
+  "audience": "primary",
+  "agents_md_files": [],
+  "persona_summaries": [],
+  "build_timestamp_utc": "2026-07-29T01:35:25.204929200+00:00",
+  "memory_enabled": false,
+  "os_name": "windows",
+  "shell_path": "powershell",
+  "working_directory": "E:\\project\\海外TK店铺广告投流数据自动化监测",
+  "current_date": "2026-07-29",
+  "is_non_interactive": false,
+  "system_prompt_label": "Grok 4.5"
+}

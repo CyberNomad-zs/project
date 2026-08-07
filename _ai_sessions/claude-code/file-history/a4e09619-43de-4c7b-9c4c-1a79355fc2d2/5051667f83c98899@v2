@@ -1,0 +1,70 @@
+========================================
+  Temu 店铺监测 使用说明（无需 Chrome 插件）
+========================================
+
+功能（等同原 Chrome 插件，全部在 temu-monitor 内）：
+  1) 下架点名 + 编辑链接（赛狐 OpenAPI，selectStatus 离开「在售=12」）
+  2) 商品流量待关注：数量增加 + 商品名/链接
+  3) 商品流量近期有下降：徽标数增加 + 商品名/链接
+  4) 在售数量变化（浏览器 countStatus；有赛狐时默认不重复刷「仅数字」）
+  5) 多店轮巡：Agnis / HomeCove / Twilight Cove（会话级切店）
+  6) 飞书群告警；登录过期提醒
+
+  默认命令 npm run once / npm start 即「全量监测」，不必再装插件。
+
+
+==== A. 发送方打包前，删除私人内容 ====
+
+  - .userdata\              浏览器登录态（本机绑定）
+  - data\state.json         浏览器侧监测基线
+  - data\sellfox-state.json 赛狐下架基线
+  - sellfox.config.json     赛狐密钥（勿外发）
+  - openapi.config.json     Partner 密钥（若有）
+  - logs\
+
+
+==== B. 首次使用 ====
+
+  1) 安装 Node.js LTS + Chrome
+  2) 在 temu-monitor 目录：npm install
+  3) 配置 config.json
+       - feishuWebhooks：自己的飞书机器人
+       - storeList：["Agnis","HomeCove","Twilight Cove"]（与顶栏英文店名一致）
+       - fullRun: true（默认）
+  4) 配置 sellfox.config.json（可从 sellfox.config.example.json 复制）
+       - clientId / clientSecret：与赛狐开放平台 / sellfox-bridge 相同
+       - 本机出口 IP 须在赛狐白名单
+  5) npm run login
+       浏览器里登录 Temu 卖家后台，保存到 .userdata
+  6) npm run once
+       首轮只建基准、一般不告警；看日志是否读到三店在售/流量
+  7) npm run start
+       或 启动.bat 选常驻 / 开机自启
+
+
+==== C. 日常 ====
+
+  - npm run start 或开机自启：每 intervalMinutes（默认 15）全量一轮
+  - 登录过期：日志报未登录 / 飞书橙色提醒 → npm run login
+  - 仅赛狐下架：npm run sellfox:start
+  - 仅浏览器（不要赛狐）：set FULL_RUN=0 后 npm run once
+  - 详细对齐说明：PLUGIN_PARITY.md、SELLFOX.md
+
+
+==== D. 注意 ====
+
+  - 监测跑的时候不要用同一 .userdata 再开人工 Chrome 登 Temu
+  - 赛狐接口有频率限制，连续多次 once 可能短暂 40019，会自动退避
+  - 待关注/下降明细默认一页约 20 条；chip 计数为全量
+  - 切店偶发失败会打日志，并尽量扫当前页
+  - 已装 Chrome 插件的请卸掉或关掉，避免和本程序双报
+
+
+==== E. 命令速查 ====
+
+  npm run login
+  npm run once          # 全量一轮
+  npm run start         # 常驻
+  npm run sellfox:probe
+  npm run sellfox:once
+  npm run sellfox:start

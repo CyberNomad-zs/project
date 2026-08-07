@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>发货哨兵 · FulfillSentinel</title>
+<style>
+  :root{
+    --bg:#EBEEF2; --panel:#FBFCFD; --panel-2:#F0F3F6; --panel-3:#E9EDF1;
+    --ink:#131A22; --ink-2:#4A5563; --ink-3:#8A94A2;
+    --line:#D6DDE5; --line-2:#E6EBF0;
+    --accent:#1B7FC4; --accent-2:#1C9BB8;
+    --crit:#D03B3B; --crit-bg:rgba(208,59,59,.11); --crit-line:rgba(208,59,59,.42);
+    --warn:#B5770E; --warn-bg:rgba(200,130,20,.14); --warn-line:rgba(200,130,20,.42);
+    --good:#0C8A3C; --good-bg:rgba(12,138,60,.12); --good-line:rgba(12,138,60,.4);
+    --info:#5B5AA6; --info-bg:rgba(91,90,166,.12);
+    /* 平台分类色（dataviz 校验过的前 4 槽：blue/aqua/yellow/green，固定顺序） */
+    --p-amazon:#2a78d6; --p-tiktok:#1baf7a; --p-temu:#eda100; --p-shein:#008300; --p-other:#8A94A2;
+    --shadow:0 1px 2px rgba(19,26,34,.05),0 6px 20px rgba(19,26,34,.07);
+    --font-sans:"Microsoft YaHei","PingFang SC","Hiragino Sans GB","Noto Sans CJK SC",-apple-system,"Segoe UI",Roboto,sans-serif;
+    --font-mono:"Cascadia Code","JetBrains Mono","SF Mono","Consolas",ui-monospace,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{
+      --bg:#0C1117; --panel:#141A22; --panel-2:#1A212B; --panel-3:#212a35;
+      --ink:#E9EEF3; --ink-2:#99A5B3; --ink-3:#5E6A78;
+      --line:#242D38; --line-2:#1D2530;
+      --accent:#3AA4E6; --accent-2:#3FC0D4;
+      --crit:#EF565C; --crit-bg:rgba(239,86,92,.15); --crit-line:rgba(239,86,92,.5);
+      --warn:#E0A63B; --warn-bg:rgba(224,166,59,.15); --warn-line:rgba(224,166,59,.45);
+      --good:#41BF89; --good-bg:rgba(65,191,137,.14); --good-line:rgba(65,191,137,.45);
+      --info:#9085e9; --info-bg:rgba(144,133,233,.16);
+      --p-amazon:#3987e5; --p-tiktok:#199e70; --p-temu:#c98500; --p-shein:#33a033; --p-other:#5E6A78;
+      --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.36);
+    }
+  }
+  :root[data-theme="light"]{--bg:#EBEEF2;--panel:#FBFCFD;--panel-2:#F0F3F6;--panel-3:#E9EDF1;--ink:#131A22;--ink-2:#4A5563;--ink-3:#8A94A2;--line:#D6DDE5;--line-2:#E6EBF0;--accent:#1B7FC4;--accent-2:#1C9BB8;--crit:#D03B3B;--crit-bg:rgba(208,59,59,.11);--crit-line:rgba(208,59,59,.42);--warn:#B5770E;--warn-bg:rgba(200,130,20,.14);--warn-line:rgba(200,130,20,.42);--good:#0C8A3C;--good-bg:rgba(12,138,60,.12);--good-line:rgba(12,138,60,.4);--info:#5B5AA6;--info-bg:rgba(91,90,166,.12);--p-amazon:#2a78d6;--p-tiktok:#1baf7a;--p-temu:#eda100;--p-shein:#008300;--p-other:#8A94A2;--shadow:0 1px 2px rgba(19,26,34,.05),0 6px 20px rgba(19,26,34,.07);}
+  :root[data-theme="dark"]{--bg:#0C1117;--panel:#141A22;--panel-2:#1A212B;--panel-3:#212a35;--ink:#E9EEF3;--ink-2:#99A5B3;--ink-3:#5E6A78;--line:#242D38;--line-2:#1D2530;--accent:#3AA4E6;--accent-2:#3FC0D4;--crit:#EF565C;--crit-bg:rgba(239,86,92,.15);--crit-line:rgba(239,86,92,.5);--warn:#E0A63B;--warn-bg:rgba(224,166,59,.15);--warn-line:rgba(224,166,59,.45);--good:#41BF89;--good-bg:rgba(65,191,137,.14);--good-line:rgba(65,191,137,.45);--info:#9085e9;--info-bg:rgba(144,133,233,.16);--p-amazon:#3987e5;--p-tiktok:#199e70;--p-temu:#c98500;--p-shein:#33a033;--p-other:#5E6A78;--shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.36);}
+
+  *{box-sizing:border-box;}
+  html,body{margin:0;}
+  body{background:var(--bg);color:var(--ink);font-family:var(--font-sans);font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;}
+  .mono{font-family:var(--font-mono);font-variant-numeric:tabular-nums;}
+  .app{max-width:1320px;margin:0 auto;padding:clamp(12px,2vw,22px);display:flex;flex-direction:column;gap:14px;}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px;}
+  button{font-family:inherit;cursor:pointer;color:inherit;}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);}
+
+  /* topbar */
+  .top{display:flex;align-items:center;gap:12px 18px;flex-wrap:wrap;padding:13px 18px;}
+  .brand{display:flex;align-items:center;gap:11px;}
+  .logo{width:40px;height:40px;border-radius:11px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;color:#fff;font-size:20px;position:relative;overflow:hidden;flex-shrink:0;}
+  .logo::after{content:"";position:absolute;inset:0;background:conic-gradient(from 0deg,transparent 0deg,rgba(255,255,255,.4) 42deg,transparent 84deg);animation:sweep 3.6s linear infinite;}
+  @keyframes sweep{to{transform:rotate(360deg);}}
+  .bt{font-weight:800;font-size:1.14rem;letter-spacing:-.01em;}
+  .bs{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-3);}
+  .badges{display:flex;gap:7px;flex-wrap:wrap;}
+  .badge{font-family:var(--font-mono);font-size:.6rem;letter-spacing:.1em;color:var(--good);border:1px solid var(--good-line);background:var(--good-bg);border-radius:6px;padding:3px 8px;font-weight:700;text-transform:uppercase;}
+  .sources{display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;}
+  .src{display:flex;align-items:center;gap:7px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:6px 11px;font-size:.78rem;}
+  .src .dot{width:8px;height:8px;border-radius:50%;background:var(--good);box-shadow:0 0 0 3px var(--good-bg);}
+  .src b{font-weight:700;}
+  .src .c{font-family:var(--font-mono);color:var(--ink-3);font-size:.7rem;}
+  .ttoggle{background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:7px 10px;font-size:.9rem;}
+
+  /* AI summary */
+  .ai{display:flex;gap:13px;align-items:flex-start;padding:14px 18px;background:linear-gradient(100deg,var(--crit-bg),transparent 62%);border-left:3px solid var(--crit);}
+  .ai.ok{background:linear-gradient(100deg,var(--good-bg),transparent 62%);border-left-color:var(--good);}
+  .ai .ic{font-size:18px;flex-shrink:0;margin-top:1px;}
+  .ai .txt{font-size:.93rem;color:var(--ink);line-height:1.62;}
+  .ai .txt b{color:var(--crit);font-weight:800;}
+  .ai .txt .g{color:var(--warn);font-weight:700;}
+  .ai .txt .ok{color:var(--good);font-weight:700;}
+
+  /* KPI */
+  .kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:11px;}
+  .kpi{padding:13px 15px;display:flex;flex-direction:column;gap:3px;position:relative;overflow:hidden;}
+  .kpi .k-l{font-size:.72rem;color:var(--ink-3);font-weight:600;letter-spacing:.02em;}
+  .kpi .k-v{font-size:1.85rem;font-weight:800;letter-spacing:-.02em;line-height:1.05;}
+  .kpi .k-s{font-size:.7rem;color:var(--ink-3);}
+  .kpi.crit .k-v{color:var(--crit);} .kpi.warn .k-v{color:var(--warn);} .kpi.good .k-v{color:var(--good);}
+  .kpi .spark{position:absolute;right:10px;top:11px;font-size:1rem;opacity:.5;}
+
+  .grid{display:grid;grid-template-columns:340px 1fr;gap:14px;align-items:start;}
+  @media(max-width:980px){.grid{grid-template-columns:1fr;}.kpis{grid-template-columns:repeat(3,1fr);}}
+  @media(max-width:560px){.kpis{grid-template-columns:repeat(2,1fr);}}
+
+  .card{padding:14px 16px;}
+  .card h3{margin:0 0 11px;font-size:.82rem;font-weight:800;letter-spacing:.02em;display:flex;align-items:center;gap:8px;}
+  .card h3 .n{margin-left:auto;font-family:var(--font-mono);font-size:.72rem;color:var(--ink-3);font-weight:600;}
+
+  /* anomaly triage */
+  .anom{display:flex;flex-direction:column;gap:7px;}
+  .arow{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:10px;border:1px solid var(--line-2);background:var(--panel-2);cursor:pointer;transition:.12s;}
+  .arow:hover{border-color:var(--accent);transform:translateX(2px);}
+  .arow.active{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-2) inset;}
+  .arow .ai-ic{font-size:15px;width:18px;text-align:center;}
+  .arow .a-name{font-weight:700;font-size:.86rem;}
+  .arow .a-desc{font-size:.7rem;color:var(--ink-3);margin-top:1px;}
+  .arow .a-cnt{margin-left:auto;font-family:var(--font-mono);font-weight:800;font-size:1.05rem;min-width:28px;text-align:right;}
+  .arow.crit{background:var(--crit-bg);border-color:var(--crit-line);} .arow.crit .a-cnt{color:var(--crit);}
+  .arow.warn .a-cnt{color:var(--warn);}
+  .arow.info .a-cnt{color:var(--info);}
+  .arow.zero{opacity:.5;} .arow.zero .a-cnt{color:var(--ink-3);}
+
+  /* mini distributions */
+  .distrow{display:flex;align-items:center;gap:9px;margin-bottom:7px;}
+  .distrow .lb{width:78px;font-size:.76rem;color:var(--ink-2);flex-shrink:0;}
+  .distrow .track{flex:1;height:16px;background:var(--panel-3);border-radius:5px;overflow:hidden;position:relative;}
+  .distrow .fill{height:100%;border-radius:5px;}
+  .distrow .vv{font-family:var(--font-mono);font-size:.74rem;color:var(--ink-2);width:66px;text-align:right;flex-shrink:0;}
+
+  .sla{display:flex;gap:14px;align-items:center;flex-wrap:wrap;}
+  .sla .hero{font-size:2.6rem;font-weight:800;color:var(--good);letter-spacing:-.03em;line-height:1;}
+  .sla .sub{font-size:.76rem;color:var(--ink-3);margin-top:2px;}
+  .sla .pill{font-family:var(--font-mono);font-size:.74rem;background:var(--panel-2);border:1px solid var(--line-2);border-radius:7px;padding:4px 9px;}
+
+  /* toolbar */
+  .toolbar{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:11px;}
+  .search{flex:1;min-width:180px;display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:9px;padding:8px 12px;}
+  .search input{border:0;background:transparent;outline:0;color:var(--ink);font-family:inherit;font-size:.86rem;width:100%;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;}
+  .chip{font-size:.76rem;border:1px solid var(--line-2);background:var(--panel-2);border-radius:20px;padding:5px 12px;color:var(--ink-2);}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:700;}
+  .chip .pf{display:inline-flex;align-items:center;gap:6px;}
+  .btn{border:1px solid var(--line);background:var(--panel-2);border-radius:9px;padding:8px 13px;font-size:.82rem;font-weight:700;display:inline-flex;align-items:center;gap:7px;}
+  .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));border-color:transparent;color:#fff;}
+
+  /* table */
+  .twrap{overflow:auto;max-height:min(74vh,720px);border-radius:10px;border:1px solid var(--line-2);}
+  table{border-collapse:collapse;width:100%;font-size:.8rem;min-width:920px;}
+  thead th{position:sticky;top:0;background:var(--panel-3);text-align:left;padding:9px 11px;font-size:.72rem;color:var(--ink-2);font-weight:700;white-space:nowrap;cursor:pointer;user-select:none;border-bottom:1px solid var(--line);}
+  thead th:hover{color:var(--accent);}
+  tbody td{padding:9px 11px;border-bottom:1px solid var(--line-2);white-space:nowrap;vertical-align:middle;}
+  tbody tr:hover{background:var(--panel-2);}
+  tbody tr.sev-crit{box-shadow:inset 3px 0 0 var(--crit);}
+  tbody tr.sev-warn{box-shadow:inset 3px 0 0 var(--warn);}
+  tbody tr.sev-info{box-shadow:inset 3px 0 0 var(--info);}
+  .pf{display:inline-flex;align-items:center;gap:6px;font-weight:600;}
+  .pf .pdot{width:8px;height:8px;border-radius:2px;flex-shrink:0;}
+  .st{font-size:.7rem;padding:2px 8px;border-radius:6px;font-weight:700;border:1px solid transparent;}
+  .st.pending{color:var(--warn);background:var(--warn-bg);border-color:var(--warn-line);}
+  .st.shipped{color:var(--good);background:var(--good-bg);border-color:var(--good-line);}
+  .st.void{color:var(--ink-3);background:var(--panel-3);}
+  .cd{display:flex;align-items:center;gap:7px;min-width:128px;}
+  .cd .ct{width:60px;height:7px;border-radius:4px;background:var(--panel-3);overflow:hidden;flex-shrink:0;}
+  .cd .cf{height:100%;border-radius:4px;}
+  .cd .cl{font-family:var(--font-mono);font-size:.72rem;}
+  .tags{display:flex;gap:4px;flex-wrap:wrap;}
+  .tg{font-size:.64rem;padding:2px 6px;border-radius:5px;font-weight:700;white-space:nowrap;}
+  .tg.crit{color:var(--crit);background:var(--crit-bg);} .tg.warn{color:var(--warn);background:var(--warn-bg);} .tg.info{color:var(--info);background:var(--info-bg);}
+  .empty{padding:26px;text-align:center;color:var(--ink-3);}
+  .stock0{color:var(--crit);font-weight:800;}
+  .foot{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:.72rem;color:var(--ink-3);padding:4px 6px 12px;}
+  .foot code{font-family:var(--font-mono);background:var(--panel-2);padding:1px 5px;border-radius:4px;}
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;}}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="top panel">
+    <div class="brand">
+      <div class="logo">🛰️</div>
+      <div>
+        <div class="bt">发货哨兵 <span style="color:var(--ink-3);font-weight:600;font-size:.8rem;">FulfillSentinel</span></div>
+        <div class="bs">Cross-platform Fulfillment Watchtower</div>
+      </div>
+    </div>
+    <div class="badges">
+      <span class="badge">只读 READ-ONLY</span>
+      <span class="badge">PII 已脱敏</span>
+      <span class="badge">离线可用 OFFLINE</span>
+    </div>
+    <div class="sources" id="sources"></div>
+    <button class="ttoggle" id="ttoggle" title="切换主题">🌓</button>
+  </div>
+
+  <div class="ai panel" id="ai"></div>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div class="card panel">
+        <h3>⚠️ 履约异常预警 <span class="n" id="anomTotal"></span></h3>
+        <div class="anom" id="anom"></div>
+      </div>
+      <div class="card panel">
+        <h3>🛒 跨系统库存联动 <span class="n" id="invN"></span></h3>
+        <div id="inv"></div>
+      </div>
+      <div class="card panel">
+        <h3>📦 平台分布 <span class="n" id="platN"></span></h3>
+        <div id="platDist"></div>
+      </div>
+      <div class="card panel">
+        <h3>⏱️ 发货时效（已发订单）</h3>
+        <div class="sla" id="sla"></div>
+      </div>
+    </div>
+
+    <div class="card panel">
+      <h3>🗂️ 统一订单看板 <span class="n" id="rowN"></span></h3>
+      <div class="toolbar">
+        <div class="search">🔎 <input id="q" placeholder="搜索 包裹号 / 平台单号 / SKU / 店铺 …（试试：待发、Temu、断货、卡仓）"></div>
+        <div class="chips" id="stateChips"></div>
+        <button class="btn primary" id="exportBtn">⬇ 导出催发清单</button>
+      </div>
+      <div class="chips" id="platChips" style="margin-bottom:11px;"></div>
+      <div class="twrap">
+        <table id="tbl">
+          <thead><tr id="thead"></tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+      <div class="foot">
+        <span id="footInfo"></span>
+        <span>点左侧异常/平台标签联动筛选 · 表头可排序</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="foot" style="justify-content:center;">
+    数据源 <code id="srcName"></code> · 快照 <code id="snapTime"></code> · 只读聚合，买家 PII 已在解析层剔除，全程无写操作
+  </div>
+</div>
+
+<script src="data.js"></script>
+<script>
+(function(){
+  const D = window.SENTINEL_DATA;
+  const app=document.getElementById('app');
+  if(!D){ app.innerHTML='<div class="empty panel" style="padding:40px">未找到数据。请先运行 <code>python backend/pack.py</code> 生成 data.js。</div>'; return; }
+
+  const $=(s)=>document.querySelector(s);
+  const platColor=(p)=>({'Amazon':'var(--p-amazon)','TikTok':'var(--p-tiktok)','Temu半托管':'var(--p-temu)','SHEIN':'var(--p-shein)'}[p]||'var(--p-other)');
+  const esc=(s)=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  const O = D.orders, k=D.kpis, ls=D.lead_stats, ac=D.anomaly_counts;
+
+  /* ---------- 顶部数据源 ---------- */
+  $('#sources').innerHTML = [
+    ['赛狐 ERP','包裹主干 · '+k.total_orders+' 单'],
+    ['Temu 库存','货号×库存 · '+D.inventory.codes_indexed],
+    ['海外仓 WMS','商品主数据 · '+D.inventory.wms_master_count],
+  ].map(([a,b])=>`<div class="src"><span class="dot"></span><b>${a}</b><span class="c">${esc(b)}</span></div>`).join('');
+  $('#srcName').textContent = D.meta.source;
+  $('#snapTime').textContent = D.meta.reference_now||'—';
+
+  /* ---------- AI 摘要 ---------- */
+  const critCombo = O.filter(o=>o.anomalies.includes('stuck_virtual')&&o.anomalies.includes('no_channel'));
+  const aiOk = k.actionable===0;
+  const dueSoon = ac.due_soon||0;
+  const aiHtml = `哨兵扫描 <b class="ok">${k.total_orders}</b> 个订单（${k.platforms} 平台 / ${k.shops} 店铺，赛狐已聚合），`+
+    `其中 <span class="ok">${k.shipped}</span> 单已发货、当日发货率 <span class="ok">${ls.within24_pct}%</span>，运营总体健康。`+
+    ` 需你关注：<span class="g">${k.pending}</span> 单待处理中有 <b>${k.actionable}</b> 单需立即动手`+
+    (dueSoon?`（<span class="g">${dueSoon}</span> 单 24h 内到期）`:'')+
+    (critCombo.length?`，其中 <b>${critCombo.length}</b> 单同时命中「卡虚拟仓＋缺渠道」将无法出库`:'')+
+    `；库存侧发现 <b>${D.inventory.temu_zero_stock.length}</b> 个 Temu 断货货号需补货。`;
+  $('#ai').className='ai panel'+(aiOk?' ok':'');
+  $('#ai').innerHTML = `<div class="ic">${aiOk?'✅':'🧭'}</div><div class="txt">${aiHtml}</div>`;
+
+  /* ---------- KPI ---------- */
+  const kpis=[
+    {l:'订单总数',v:k.total_orders,s:`${k.platforms} 平台 · ${k.shops} 店铺`,c:'',sp:'📦'},
+    {l:'待处理',v:k.pending,s:'尚未发货',c:'warn',sp:'⏳'},
+    {l:'需立即处理',v:k.actionable,s:'命中可执行异常',c:k.actionable?'crit':'good',sp:'🚨'},
+    {l:'当日发货率',v:ls.within24_pct+'%',s:`中位 ${ls.p50_h}h · P90 ${ls.p90_h}h`,c:'good',sp:'⚡'},
+    {l:'断货货号',v:D.inventory.temu_zero_stock.length,s:'Temu 库存=0',c:D.inventory.temu_zero_stock.length?'crit':'good',sp:'🛒'},
+    {l:'已作废',v:k.void,s:'不纳入履约',c:'',sp:'🗑️'},
+  ];
+  $('#kpis').innerHTML=kpis.map(x=>`<div class="kpi panel ${x.c}"><span class="spark">${x.sp}</span><div class="k-l">${x.l}</div><div class="k-v">${x.v}</div><div class="k-s">${esc(x.s)}</div></div>`).join('');
+
+  /* ---------- 异常预警 ---------- */
+  const tier=(w)=> w>=90?'crit': w>=40?'warn':'info';
+  const anomOrder=Object.keys(D.rules).sort((a,b)=>D.rules[b].weight-D.rules[a].weight);
+  let activeAnom=null;
+  function renderAnom(){
+    $('#anom').innerHTML=anomOrder.map(t=>{
+      const r=D.rules[t], c=ac[t]||0;
+      return `<div class="arow ${tier(r.weight)} ${c?'':'zero'} ${activeAnom===t?'active':''}" data-a="${t}">
+        <span class="ai-ic">${r.icon}</span>
+        <div><div class="a-name">${esc(r.name)}</div><div class="a-desc">${esc(r.desc)}</div></div>
+        <div class="a-cnt">${c}</div></div>`;
+    }).join('');
+    document.querySelectorAll('.arow').forEach(el=>el.onclick=()=>{
+      const t=el.dataset.a; activeAnom=(activeAnom===t)?null:t; renderAnom(); apply();
+    });
+  }
+  $('#anomTotal').textContent=`命中 ${Object.values(ac).reduce((a,b)=>a+b,0)} 项`;
+  renderAnom();
+
+  /* ---------- 库存联动 ---------- */
+  const zero=D.inventory.temu_zero_stock;
+  const linkedZero=O.filter(o=>o.matched_code && (o.temu_stock!=null&&o.temu_stock<=0) && o.state==='pending');
+  $('#invN').textContent=`索引 ${D.inventory.codes_indexed} 货号`;
+  $('#inv').innerHTML=
+    `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:9px;">
+       ${zero.map(c=>`<span class="tg crit mono" style="font-size:.72rem;padding:4px 9px;">🛒 ${esc(c)} · 库存0</span>`).join('')||'<span style="color:var(--ink-3)">暂无断货</span>'}
+     </div>
+     <div style="font-size:.76rem;color:var(--ink-2);line-height:1.6;">
+       赛狐订单 SKU 已与 海外仓/Temu 主数据自动对齐 <b>${D.inventory.linked_to_orders}</b> 个货号；
+       ${linkedZero.length?`<span style="color:var(--crit);font-weight:700">${linkedZero.length} 个待发订单命中断货货号，无法履约。</span>`:'当前无待发订单命中断货货号。'}
+       <br><span style="color:var(--ink-3)">匹配键：内部货号（赛狐 SKU/MSKU ↔ Temu SKU货号 ↔ WMS 仓库代码）</span>
+     </div>`;
+
+  /* ---------- 平台分布 ---------- */
+  const pd=D.dist.platform, pmax=Math.max(...Object.values(pd));
+  const porder=Object.keys(pd).sort((a,b)=>pd[b]-pd[a]);
+  $('#platN').textContent=`${k.total_orders} 单`;
+  $('#platDist').innerHTML=porder.map(p=>{
+    const v=pd[p], w=(v/pmax*100).toFixed(1);
+    return `<div class="distrow"><span class="lb">${esc(p)}</span><div class="track"><div class="fill" style="width:${w}%;background:${platColor(p)}"></div></div><span class="vv">${v} · ${(v/k.total_orders*100).toFixed(0)}%</span></div>`;
+  }).join('');
+
+  /* ---------- 发货时效 ---------- */
+  $('#sla').innerHTML=`<div><div class="hero">${ls.within24_pct}%</div><div class="sub">${ls.count} 单当日发货率</div></div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <span class="pill">中位 ${ls.p50_h}h</span><span class="pill">均值 ${ls.avg_h}h</span></div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <span class="pill">P90 ${ls.p90_h}h</span><span class="pill">超24h ${ls.over24} 单</span></div>`;
+
+  /* ---------- 订单表 ---------- */
+  const COLS=[
+    {k:'包裹号',t:'包裹号'}, {k:'平台',t:'平台'}, {k:'店铺',t:'店铺'},
+    {k:'订单号',t:'平台单号'}, {k:'SKU',t:'SKU'}, {k:'品名',t:'品名'},
+    {k:'仓库',t:'仓库'}, {k:'发货渠道',t:'发货渠道'},
+    {k:'remaining_h',t:'发货倒计时'}, {k:'state',t:'状态'},
+    {k:'temu_stock',t:'库存'}, {k:'anomalies',t:'异常'},
+  ];
+  let sortKey='severity', sortDir=-1;
+  let stateFilter='all', platFilter=null, q='';
+
+  const states=[['all','全部',O.length],['pending','待处理',k.pending],['shipped','已发货',k.shipped],['void','已作废',k.void]];
+  $('#stateChips').innerHTML=states.map(([v,l,n])=>`<button class="chip ${v==='all'?'on':''}" data-s="${v}">${l} ${n}</button>`).join('');
+  document.querySelectorAll('#stateChips .chip').forEach(c=>c.onclick=()=>{
+    stateFilter=c.dataset.s; document.querySelectorAll('#stateChips .chip').forEach(x=>x.classList.toggle('on',x===c)); apply();
+  });
+  $('#platChips').innerHTML=`<button class="chip on" data-p="__all">全部平台</button>`+porder.map(p=>`<button class="chip" data-p="${esc(p)}"><span class="pf"><span class="pdot" style="background:${platColor(p)}"></span>${esc(p)}</span></button>`).join('');
+  function syncPlatChips(){document.querySelectorAll('#platChips .chip').forEach(c=>c.classList.toggle('on',(c.dataset.p===platFilter)||(c.dataset.p==='__all'&&!platFilter)));}
+  document.querySelectorAll('#platChips .chip').forEach(c=>c.onclick=()=>{platFilter=c.dataset.p==='__all'?null:c.dataset.p; syncPlatChips(); apply();});
+
+  $('#thead').innerHTML=COLS.map(c=>`<th data-k="${c.k}">${c.t}</th>`).join('');
+  document.querySelectorAll('#thead th').forEach(th=>th.onclick=()=>{
+    const kk=th.dataset.k; if(sortKey===kk)sortDir*=-1; else{sortKey=kk;sortDir=(kk==='remaining_h')?1:-1;} apply();
+  });
+
+  const KW={'待发':['state','pending'],'待处理':['state','pending'],'已发':['state','shipped'],'断货':['anom','stockout'],'卡仓':['anom','stuck_virtual'],'虚拟仓':['anom','stuck_virtual'],'临期':['anom','due_soon'],'超期':['anom','overdue'],'缺渠道':['anom','no_channel'],'无渠道':['anom','no_channel']};
+  $('#q').oninput=(e)=>{
+    q=e.target.value.trim().toLowerCase();
+    for(const key in KW){ if(q.includes(key.toLowerCase())){ const[type,val]=KW[key]; if(type==='state'){stateFilter=val;document.querySelectorAll('#stateChips .chip').forEach(x=>x.classList.toggle('on',x.dataset.s===val));} if(type==='anom'){activeAnom=val;renderAnom();} } }
+    apply();
+  };
+
+  function countdownCell(o){
+    const r=o.remaining_h;
+    if(r==null) return `<span class="cl mono" style="color:var(--ink-3)">—</span>`;
+    const overdue=r<0, soon=r>=0&&r<24;
+    const col=overdue?'var(--crit)':soon?'var(--warn)':'var(--good)';
+    const pct=Math.max(4,Math.min(100,(1-Math.min(Math.abs(r),120)/120)*100));
+    const lab=overdue?`超期${Math.abs(r).toFixed(1)}h`:`${r.toFixed(1)}h`;
+    return `<div class="cd"><div class="ct"><div class="cf" style="width:${pct}%;background:${col}"></div></div><span class="cl mono" style="color:${col}">${lab}</span></div>`;
+  }
+  function tagCell(o){
+    if(!o.anomalies.length) return '<span style="color:var(--ink-3);font-size:.72rem">正常</span>';
+    return `<div class="tags">`+o.anomalies.map(t=>{const r=D.rules[t];const c=r.weight>=90?'crit':r.weight>=40?'warn':'info';return `<span class="tg ${c}" title="${esc(r.desc)}">${esc(r.name)}</span>`;}).join('')+`</div>`;
+  }
+  function cell(o,c){
+    const v=o[c.k];
+    if(c.k==='平台')return `<span class="pf"><span class="pdot" style="background:${platColor(v)}"></span>${esc(v)}</span>`;
+    if(c.k==='remaining_h')return countdownCell(o);
+    if(c.k==='state')return `<span class="st ${v}">${({pending:'待处理',shipped:'已发货',void:'已作废'})[v]}</span>`;
+    if(c.k==='anomalies')return tagCell(o);
+    if(c.k==='temu_stock'){ if(v==null)return '<span style="color:var(--ink-3)">—</span>'; return v<=0?`<span class="stock0 mono">${v}⚠</span>`:`<span class="mono">${v}</span>`;}
+    if(c.k==='品名')return `<span title="${esc(v)}">${esc((v||'').slice(0,14))||'—'}</span>`;
+    if(c.k==='店铺'||c.k==='发货渠道')return `<span title="${esc(v)}">${esc((v||'—').slice(0,12))}</span>`;
+    if(c.k==='SKU'||c.k==='包裹号')return `<span class="mono" style="font-size:.74rem">${esc(v)||'—'}</span>`;
+    if(c.k==='订单号')return `<span class="mono" style="font-size:.72rem;color:var(--ink-2)">${esc(v)||'—'}</span>`;
+    return esc(v)||'—';
+  }
+  function filtered(){
+    let rows=O.slice();
+    if(stateFilter!=='all')rows=rows.filter(o=>o.state===stateFilter);
+    if(platFilter)rows=rows.filter(o=>o['平台']===platFilter);
+    if(activeAnom)rows=rows.filter(o=>o.anomalies.includes(activeAnom));
+    if(q)rows=rows.filter(o=>['包裹号','订单号','SKU','MSKU','店铺','品名','产品标题','仓库','发货渠道'].some(f=>String(o[f]||'').toLowerCase().includes(q)));
+    rows.sort((a,b)=>{
+      if(sortKey==='remaining_h'||sortKey==='temu_stock'||sortKey==='severity'){
+        let x=a[sortKey],y=b[sortKey]; x=x==null?9e9:x; y=y==null?9e9:y; if(x!==y)return (x-y)*sortDir;
+        return (b.severity-a.severity);
+      }
+      return String(a[sortKey]||'').localeCompare(String(b[sortKey]||''))*sortDir || (b.severity-a.severity);
+    });
+    return rows;
+  }
+  function apply(){
+    const rows=filtered();
+    $('#tbody').innerHTML= rows.length? rows.map(o=>{
+      const sev=o.severity>=90?'sev-crit':o.severity>=40?'sev-warn':o.severity>0?'sev-info':'';
+      return `<tr class="${sev}">`+COLS.map(c=>`<td>${cell(o,c)}</td>`).join('')+`</tr>`;
+    }).join('') : `<tr><td colspan="${COLS.length}" class="empty">无匹配订单</td></tr>`;
+    $('#rowN').textContent=`${rows.length} / ${O.length} 单`;
+    $('#footInfo').textContent=`显示 ${rows.length} 单`+(activeAnom?` · 异常：${D.rules[activeAnom].name}`:'')+(platFilter?` · 平台：${platFilter}`:'');
+  }
+  apply();
+
+  /* ---------- 导出催发清单 ---------- */
+  $('#exportBtn').onclick=()=>{
+    const rows=O.filter(o=>o.severity>=40).sort((a,b)=>b.severity-a.severity);
+    const cols=['包裹号','平台','店铺','订单号','SKU','品名','仓库','发货渠道','剩余发货时间','跟踪号'];
+    const heads=['包裹号','平台','店铺','平台单号','SKU','品名','仓库','发货渠道','发货倒计时','运单号','异常'];
+    const q2=(s)=>`"${String(s==null?'':s).replace(/"/g,'""')}"`;
+    let csv='﻿'+heads.join(',')+'\n';
+    rows.forEach(o=>{ const tags=o.anomalies.map(t=>D.rules[t].name).join('|'); csv+=cols.map(c=>q2(o[c])).concat(q2(tags)).join(',')+'\n'; });
+    const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+    a.download='催发清单_'+(D.meta.reference_now||'').slice(0,10)+'.csv';a.click();
+  };
+
+  /* ---------- 主题切换 ---------- */
+  $('#ttoggle').onclick=()=>{
+    const cur=document.documentElement.getAttribute('data-theme');
+    const next=cur==='dark'?'light':cur==='light'?'':'dark';
+    if(next)document.documentElement.setAttribute('data-theme',next); else document.documentElement.removeAttribute('data-theme');
+  };
+})();
+</script>
+</body>
+</html>

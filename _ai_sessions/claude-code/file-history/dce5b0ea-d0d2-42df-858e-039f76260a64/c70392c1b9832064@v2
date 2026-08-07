@@ -1,0 +1,56 @@
+# -*- coding: utf-8 -*-
+"""抓取两个系统【登录页】的真实 DOM + 截图，用于编写自动登录选择器。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+
+def safe_goto(page, url, tries=5):
+    last = None
+    for i in range(tries):
+        for wait in ("commit", "domcontentloaded"):
+            try:
+                page.goto(url, wait_until=wait, timeout=30000)
+                return True
+            except Exception as e:
+                last = e
+        time.sleep(2)
+    print(f"  [WARN] goto 失败 {url}: {last}")
+    return False
+
+
+def dump(page, name):
+    os.makedirs(config.DUMP_DIR, exist_ok=True)
+    try:
+        html = page.content()
+        with open(os.path.join(config.DUMP_DIR, f"{name}.html"), "w", encoding="utf-8") as f:
+            f.write(html)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, f"{name}.png"))
+        print(f"  [OK] {name}: {len(html)} bytes, url={page.url}")
+    except Exception as e:
+        print(f"  [ERR] dump {name}: {e}")
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        page = ctx.new_page()
+
+        print(">>> WMS 登录页")
+        safe_goto(page, secrets.WMS_URL)
+        time.sleep(4)  # 等 SPA 渲染
+        dump(page, "wms_login")
+
+        print(">>> ERP 登录页")
+        safe_goto(page, secrets.ERP["url"])
+        time.sleep(5)
+        dump(page, "erp_login")
+
+        browser.close()
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()

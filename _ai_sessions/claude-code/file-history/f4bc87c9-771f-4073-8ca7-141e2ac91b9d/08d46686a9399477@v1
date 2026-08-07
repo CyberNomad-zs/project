@@ -1,0 +1,75 @@
+// 针对性探针：抓「商品列表」接口返回体（全部 + 点『商品流量待关注』筛选后），确认字段。
+// 用法：在 temu-monitor 目录下  node <此文件绝对路径>
+import { writeFileSync, mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { loadConfig } from './src/config.js';
+import { launchBrowser } from './src/browser.js';
+import { closePopups } from './src/popups.js';
+import { log } from './src/logger.js';
+
+const OUT = process.env.PROBE_OUT || resolve(process.cwd(), 'data', 'probe-list');
+mkdirSync(OUT, { recursive: true });
+const p = (f) => resolve(OUT, f);
+
+// 列表接口候选：产品/skc/分页查询相关，排除已知的消息/计数杂项
+const LIST_RE = /(product|goods|skc|sku|item).*(list|page|query|search)|pageQuery|queryGoods|list\/query/i;
+
+const cfg = loadConfig();
+const { context, page } = await launchBrowser(cfg, { headless: cfg.headless });
+
+let idx = 0;
+const index = [];
+const seen = new Set();
+
+async function capture(resp, tag) {
+  try {
+    const url = resp.url();
+    const ct = resp.headers()['content-type'] || '';
+    if (!ct.includes('json')) return;
+    // 只抓像业务列表的：URL 命中，或体内含商品数组字段
+    const text = await resp.text().catch(() => '');
+    const looksList = LIST_RE.test(url) ||
+      /"(goodsId|productId|skcId|productSkcId|goodsName|productName|skcName|thumbUrl|hdThumbUrl|imageUrl)"/i.test(text);
+    if (!looksList) return;
+    const key = url.split('?')[0] + ':' + text.length;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const id = String(++idx).padStart(2, '0');
+    const name = `list-${id}.json`;
+    writeFileSync(p(name), `// [${tag}] ${resp.request().method()} ${url}\n// ct=${ct} size=${text.length}\n${text.slice(0, 600000)}`, 'utf8');
+    index.push(`${name}  [${tag}]  ${resp.request().method()}  ${url}  size=${text.length}`);
+    log.info(`抓到列表接口 ${name}: ${url.slice(0, 90)}`);
+  } catch { /* ignore */ }
+}
+
+let phase = 'initial';
+page.on('response', (resp) => capture(resp, phase));
+
+// 1) 导航到商品列表
+log.info('导航到商品列表页…');
+await page.goto(cfg.goodsListUrl, { waitUntil: 'commit' }).catch(() => {});
+await page.waitForTimeout(6000);
+await closePopups(page);
+await page.locator('[data-testid="beast-core-table-body-tr"]').first()
+  .waitFor({ state: 'visible', timeout: 20000 }).catch(() => {});
+await page.waitForTimeout(2000);
+await page.screenshot({ path: p('shot-01-list.png') }).catch(() => {});
+
+// 2) 点「商品流量待关注」筛选，抓筛选后的列表接口
+phase = 'trafficWatch';
+const chip = page.getByText('商品流量待关注', { exact: false }).first();
+if (await chip.isVisible({ timeout: 3000 }).catch(() => false)) {
+  log.info('点击「商品流量待关注」筛选…');
+  await chip.click({ timeout: 3000 }).catch(() => {});
+  await page.waitForTimeout(6000);
+  await page.screenshot({ path: p('shot-02-watch.png') }).catch(() => {});
+} else {
+  log.warn('未找到「商品流量待关注」筛选 chip。');
+}
+
+// 3) 也把当前 DOM 存一份，便于对照渲染出的行结构
+writeFileSync(p('dom-after-filter.html'), await page.content().catch(() => ''), 'utf8');
+writeFileSync(p('_index.txt'), index.join('\n'), 'utf8');
+log.info(`完成，共抓 ${idx} 个候选接口，产物在 ${OUT}`);
+await context.close().catch(() => {});
+process.exit(0);

@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { font: 14px/1.6 -apple-system, "Microsoft YaHei", sans-serif; max-width: 560px; margin: 30px auto; padding: 0 16px; color: #1f2329; }
+    h1 { font-size: 18px; }
+    label { display: block; margin: 16px 0 6px; font-weight: 600; }
+    input[type=text], input[type=number] { width: 100%; padding: 8px 10px; border: 1px solid #dcdfe6; border-radius: 6px; box-sizing: border-box; font-size: 13px; }
+    .hint { color: #8a9099; font-size: 12px; margin-top: 4px; }
+    .chk { margin: 16px 0; }
+    button { margin-top: 20px; padding: 9px 20px; border: 0; background: #1456f0; color: #fff; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    #saved { color: #16a34a; margin-left: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Temu 店铺监测 · 设置</h1>
+  <label>飞书机器人 Webhook</label>
+  <input type="text" id="webhook" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx" />
+  <div class="hint">在你自己的飞书群里添加「自定义机器人」，把它的 Webhook 地址粘到这里。每人填自己的群。</div>
+
+  <label>店铺名称（可选）</label>
+  <input type="text" id="storeName" placeholder="例如：Trendful Treasures" />
+  <div class="hint">填了会显示在飞书告警里，方便区分是哪个店。留空则显示「当前店铺」。</div>
+
+  <label>检查间隔（分钟）</label>
+  <input type="number" id="interval" min="1" value="15" />
+  <div class="hint">插件会每隔这么久自动刷新一次后台商品页并检查（需保持 Chrome 开着、Temu 已登录）。</div>
+
+  <div class="chk"><label style="display:inline;font-weight:400;"><input type="checkbox" id="enabled" /> 启用监测告警</label></div>
+
+  <div class="chk"><label style="display:inline;font-weight:400;"><input type="checkbox" id="mustRemindEnabled" /> 启用定时必提醒</label></div>
+  <label>必提醒时间（本地时区）</label>
+  <input type="text" id="mustRemindTimes" placeholder="09:30, 16:30" />
+  <div class="hint">每天在这些时刻<strong>强制</strong>往飞书发一次各店状态汇报（无异常也会发，证明插件还活着）。多个时间用逗号分隔，格式 HH:MM。默认上午 9:30、下午 16:30。需保持 Chrome 开着。</div>
+
+  <button id="save">保存</button><span id="saved"></span>
+
+  <hr style="margin-top:24px;border:none;border-top:1px solid #eceef1;" />
+  <h2 style="font-size:15px;">📦 前台变体监测</h2>
+  <div class="hint" style="margin-bottom:12px;">配置各店铺的 Temu 前台商品页链接，插件会定期检查变体（颜色/尺码）是否下架或缺货。</div>
+  <div id="productUrlSection"></div>
+  <div style="display:flex;gap:8px;margin-top:10px;">
+    <select id="puStore" style="flex:1;padding:8px;border:1px solid #dcdfe6;border-radius:6px;font-size:13px;"></select>
+    <input type="text" id="puUrl" placeholder="https://www.temu.com/uk/..." style="flex:2;padding:8px;border:1px solid #dcdfe6;border-radius:6px;font-size:13px;" />
+    <button id="puAdd" style="flex:0 0 auto;margin-top:0;background:#fff;color:#1456f0;border:1px solid #1456f0;">添加</button>
+  </div>
+
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+# -*- coding: utf-8 -*-
+"""
+发货流水线 - 定时循环（每 5 分钟一次）。
+每轮：按渠道逐个闭环 —— ERP 该渠道物流下单 -> WMS 对应账号改快递方+批量发货，
+      失败订单留存到 logs/failures_*.txt 并日志提醒。
+
+⚠️ 真实动作：config.DRY_RUN=False 时会真实下单+发货。请确认后再常驻。
+   config.DRY_RUN=True 时只空跑演练（不真发），可先这样观察几轮。
+
+会话：ERP 会话约 10 分钟过期、有活动即续期。本循环每轮(≤5min)即活动 + 每轮开头 ping isLogin；
+      会话失效则退出（释放 profile 便于重新登录）。
+
+用法：
+    1) 先手动登录一次：  python capture/erp_manual_login.py
+    2) 启动循环：        python shipping_loop.py
+    Ctrl+C 停止。会话失效会自动退出，重登后再启动。
+"""
+import time
+import config, core, rules, notify
+from core import log, erp_is_logged_in
+from run_shipping import run_pipeline
+from playwright.sync_api import sync_playwright
+
+INTERVAL = 300   # 两轮之间目标间隔（秒）= 5 分钟（以“每轮开始”为准；单轮超时则连续跑）
+
+
+def _log(msg):
+    log(f"[发货循环] {msg}")
+
+
+def main():
+    _log(f"启动，目标间隔 {INTERVAL}s（{INTERVAL//60} 分钟）  DRY_RUN={config.DRY_RUN}")
+    if not config.DRY_RUN:
+        _log("⚠️ 真实发货模式：每轮会真实下单+发货！")
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            _log("ERP 会话无效。请先： python capture/erp_manual_login.py  再启动本脚本。")
+            ctx.close(); return
+
+        # WMS 用独立 browser（每店铺一个干净 context），与 ERP 持久 context 分开，避免账号串会话。
+        # 有头模式自动最大化窗口（见 core.open_wms_browser / new_wms_context）。
+        wms_browser = core.open_wms_browser(p)
+        cycle = 0
+        try:
+            while True:
+                cycle += 1
+                if not erp_is_logged_in(page):
+                    _log("会话失效，退出。请重新登录后再启动本脚本。")
+                    break
+                start = time.time()
+                _log(f"===== 第 {cycle} 轮开始 =====")
+                try:
+                    fails = run_pipeline(page, wms_browser, report=(cycle == 1))
+                    _log(f"第 {cycle} 轮结束，失败留存 {len(fails)} 组")
+                    notify.notify_shipping(run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                                           failures=fails, elapsed_sec=round(time.time() - start, 1),
+                                           channels=len(rules.CHANNEL_ORDER), cycle=cycle)
+                except Exception as e:
+                    _log(f"第 {cycle} 轮异常: {e}")
+                    notify.notify_shipping(
+                        run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                        failures=[{"stage": "发货循环异常", "channel": "-", "account": "",
+                                   "orders": [], "reason": str(e)}],
+                        elapsed_sec=round(time.time() - start, 1),
+                        channels=len(rules.CHANNEL_ORDER), cycle=cycle)
+                    if not erp_is_logged_in(page):
+                        _log("会话已失效，退出。请重新登录后再启动。")
+                        break
+
+                elapsed = time.time() - start
+                wait = INTERVAL - elapsed
+                if wait > 0:
+                    _log(f"本轮耗时 {int(elapsed)}s，等待 {int(wait)}s 后进入下一轮")
+                    time.sleep(wait)
+                else:
+                    _log(f"本轮耗时 {int(elapsed)}s ≥ {INTERVAL}s，立即进入下一轮")
+        finally:
+            try:
+                wms_browser.close()
+            except Exception:
+                pass
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

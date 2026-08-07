@@ -1,0 +1,31 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告 / 订单（英区翻页）已通；商品 P2b 骨架已落；欧盟订单排除。
+
+## 2026-07-31（1→2→3）
+### 1 订单翻页实跑
+- Deal to deal：5 页 **100** 单，accepted **78**
+- SHOP INOUT：5 页 **250** 单，accepted **100**
+- 默认建议 `orderMaxPages=8`
+
+### 2 欧盟 Pop
+- 广告 dual：已通（Gardena / 热销品7/15）
+- 订单：拼图验证 → `modules.ordersExclude*`
+
+### 3 P2b 商品骨架
+- 迁移 `006_tiktok_products.sql`（本机+生产表已建）
+- Ingest `tiktok_products`（生产幂等 smoke OK）
+- `scrape-products-page.js` + `run-products.ps1`
+- **待**：紫鸟实页校准商品表头后实跑
+
+### 代码
+- 分支 `feature/tk-ads-dual` → PR https://github.com/JMZLAI/qingquan-kuajing/pull/1
+
+## 日常
+```powershell
+cd collectors/tiktok-ads
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1   # 广告三店
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders.ps1       # 订单英区多页
+powershell -ExecutionPolicy Bypass -File .\scripts\run-products.ps1     # 商品（需校准）
+```

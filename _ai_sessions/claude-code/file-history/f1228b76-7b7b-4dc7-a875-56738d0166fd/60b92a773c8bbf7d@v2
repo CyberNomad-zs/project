@@ -1,0 +1,66 @@
+# -*- coding: utf-8 -*-
+"""只读地面真相：厘清『先选模板下拉变空』到底是模板正确排除、还是压制下拉。
+输出 UTF-8: capture/dumps/erp_probe_truth.txt
+1) 待处理 无任何筛选 的总单数
+2) 待处理 只选模板(不筛渠道) 的总单数  —— 若=0，说明当前唯一的单被模板排除(需求1正常)
+3) dump 待处理 每行的 订单号/渠道/关键状态文字，看那唯一的单是不是 取消/退款/换货 类
+绝不点物流下单。"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+config.DRY_RUN = True
+import core, erp
+from playwright.sync_api import sync_playwright
+
+out = []
+def w(s=""):
+    out.append(str(s))
+    try: print(s)
+    except Exception: pass
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            if not core.ensure_erp(page):
+                w("!! ERP 会话失效，先 python capture/erp_manual_login.py"); return
+
+            # 1) 无筛选总单数
+            erp.open_order_ship(page); erp.goto_view(page, "待处理")
+            erp.dismiss_notifications(page)
+            n_all = erp.count_orders(page)
+            w(f"[1] 待处理 无筛选 总单数 = {n_all}")
+
+            # 3) dump 每行文字（趁没筛选，看全部待处理单）
+            rows = page.evaluate(r"""() => {
+                const rs = [...document.querySelectorAll('.vxe-body--row')];
+                const seen = new Set(); const out = [];
+                for (const r of rs){
+                  const t = (r.innerText||'').replace(/\s+/g,' ').trim();
+                  if(!t || seen.has(t)) continue; seen.add(t); out.push(t);
+                }
+                return out;
+            }""")
+            w(f"\n[3] 待处理 各行文字（去重，共 {len(rows)} 行）：")
+            for i, t in enumerate(rows):
+                w(f"  行{i+1}: {t[:300]}")
+
+            # 2) 只选模板(不筛渠道)后的总单数
+            erp.open_order_ship(page); erp.goto_view(page, "待处理")
+            ok = erp.select_filter_template(page)
+            n_tpl = erp.count_orders(page)
+            w(f"\n[2] 待处理 只选模板(未取消等待发货) 总单数 = {n_tpl}  (select_filter_template 返回 {ok})")
+            w("    解读：若 [1]>0 且 [2]==0 => 模板把仅有的单排除了(可能是取消/退款单)，需求1正常，真跑本就该0发；")
+            w("          若 [2] 仍>0 => 模板没清空订单，之前渠道下拉变空另有原因(疑模板压制下拉/浮层)。")
+        finally:
+            try: ctx.close()
+            except Exception: pass
+
+    path = os.path.join(config.DUMP_DIR, "erp_probe_truth.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out))
+    print("WROTE", path)
+
+if __name__ == "__main__":
+    main()

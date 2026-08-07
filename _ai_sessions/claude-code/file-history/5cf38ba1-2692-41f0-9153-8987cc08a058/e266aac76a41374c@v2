@@ -1,0 +1,177 @@
+# -*- coding: utf-8 -*-
+from pathlib import Path
+import subprocess
+
+path = Path(r"E:\project\清泉跨境系统（企业级）\collectors\tiktok-ads\scripts\qingquan-client.ps1")
+text = path.read_text(encoding="utf-8")
+
+# Remove broken Resolve block if present; replace ConvertTo-QingquanOrderIngestItems
+markers = [
+    "function Resolve-TikTokOrderDateTime",
+    "function ConvertTo-QingquanOrderIngestItems",
+]
+start = -1
+for m in markers:
+    i = text.find(m)
+    if i >= 0 and (start < 0 or i < start):
+        start = i
+end = text.find("function ConvertTo-QingquanProductIngestItems")
+assert start >= 0 and end > start, (start, end)
+
+block = r'''function Resolve-TikTokOrderDateTime {
+  param(
+    [string]$Text,
+    [datetime]$Ref = $(Get-Date)
+  )
+  if ([string]::IsNullOrWhiteSpace($Text)) { return $null }
+  $s = $Text.Trim()
+  # reject pure delivery-deadline strings
+  if ($s -match '截止|送达日期|delivery\s*by') {
+    if ($s -notmatch '分钟前|小时前|天前|今天|昨天|星期|周') { return $null }
+  }
+  if ($s -match '^(\d+)\s*分钟前$') { return $Ref.AddMinutes(-[int]$Matches[1]) }
+  if ($s -match '^(\d+)\s*小时前$') { return $Ref.AddHours(-[int]$Matches[1]) }
+  if ($s -match '^(\d+)\s*天前$') { return $Ref.AddDays(-[int]$Matches[1]) }
+  if ($s -match '^(今天|昨天)\s*(\d{1,2}):(\d{2})(?::(\d{2}))?$') {
+    $day = if ($Matches[1] -eq '今天') { $Ref.Date } else { $Ref.Date.AddDays(-1) }
+    $sec = 0; if ($Matches[4]) { $sec = [int]$Matches[4] }
+    return $day.AddHours([int]$Matches[2]).AddMinutes([int]$Matches[3]).AddSeconds($sec)
+  }
+  if ($s -match '^(?:星期|周)([一二三四五六日天])\s*(\d{1,2}):(\d{2})(?::(\d{2}))?$') {
+    # .NET DayOfWeek: Sunday=0 .. Saturday=6
+    $map = @{ '一' = 1; '二' = 2; '三' = 3; '四' = 4; '五' = 5; '六' = 6; '日' = 0; '天' = 0 }
+    $target = [int]$map[$Matches[1]]
+    $cur = [int]$Ref.DayOfWeek
+    $delta = ($cur - $target + 7) % 7
+    $day = $Ref.Date.AddDays(-$delta)
+    $sec = 0; if ($Matches[4]) { $sec = [int]$Matches[4] }
+    return $day.AddHours([int]$Matches[2]).AddMinutes([int]$Matches[3]).AddSeconds($sec)
+  }
+  $formats = @(
+    'yyyy/M/d H:mm:ss', 'yyyy/M/d H:mm', 'yyyy-M-d H:mm:ss', 'yyyy-M-d H:mm',
+    'yyyy/MM/dd HH:mm:ss', 'yyyy-MM-dd HH:mm:ss', 'yyyy/MM/dd HH:mm', 'yyyy-MM-dd'
+  )
+  foreach ($f in $formats) {
+    try {
+      return [datetime]::ParseExact($s, $f, [System.Globalization.CultureInfo]::InvariantCulture)
+    } catch { }
+  }
+  try { return [datetime]::Parse($s) } catch { return $null }
+}
+
+function ConvertTo-QingquanOrderIngestItems {
+  param(
+    [Parameter(Mandatory = $true)] $Rows,
+    [Parameter(Mandatory = $true)] [string]$CollectedAt,
+    [Parameter(Mandatory = $true)] [string]$StoreId,
+    [string]$StoreName = '',
+    [string]$BizDate = '',
+    [string]$Currency = 'USD',
+    [string]$SourceUrl = ''
+  )
+  if ([string]::IsNullOrWhiteSpace($Currency)) { $Currency = 'USD' }
+  $items = New-Object System.Collections.ArrayList
+  $refNow = Get-Date
+  try { if ($CollectedAt) { $refNow = [datetime]::Parse($CollectedAt) } } catch { $refNow = Get-Date }
+
+  foreach ($r in @($Rows)) {
+    $orderId = ''
+    if ($r.orderId) { $orderId = [string]$r.orderId }
+    elseif ($r.order_id) { $orderId = [string]$r.order_id }
+    if (-not $orderId) { continue }
+
+    $qty = 0
+    if ($null -ne $r.quantity) { try { $qty = [double]$r.quantity } catch { $qty = 0 } }
+    $pay = 0
+    if ($null -ne $r.payAmount) { try { $pay = [double]$r.payAmount } catch { $pay = 0 } }
+    elseif ($null -ne $r.pay_amount) { try { $pay = [double]$r.pay_amount } catch { $pay = 0 } }
+
+    $rowCurrency = $Currency
+    if ($r.currency) { $rowCurrency = [string]$r.currency }
+    elseif ($r.currencyHint) { $rowCurrency = [string]$r.currencyHint }
+
+    $rowSourceUrl = $SourceUrl
+    if ($r.sourceUrl) { $rowSourceUrl = [string]$r.sourceUrl }
+
+    $rawCreate = ''
+    if ($r.createTime) { $rawCreate = [string]$r.createTime }
+    elseif ($r.create_time) { $rawCreate = [string]$r.create_time }
+    $rawPay = ''
+    if ($r.payTime) { $rawPay = [string]$r.payTime }
+    elseif ($r.pay_time) { $rawPay = [string]$r.pay_time }
+
+    $createDt = Resolve-TikTokOrderDateTime -Text $rawCreate -Ref $refNow
+    $payDt = Resolve-TikTokOrderDateTime -Text $rawPay -Ref $refNow
+    $createIso = ''
+    if ($createDt) { $createIso = $createDt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00') }
+    $payIso = ''
+    if ($payDt) { $payIso = $payDt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00') }
+
+    $biz = $BizDate
+    if (-not $biz) {
+      $cand = $null
+      if ($payDt) { $cand = $payDt.Date }
+      elseif ($createDt) { $cand = $createDt.Date }
+      if ($cand -and $cand -le $refNow.Date.AddDays(1)) {
+        $biz = $cand.ToString('yyyy-MM-dd')
+      }
+    }
+
+    $payload = @{
+      order_id        = $orderId
+      order_status    = $(if ($r.orderStatus) { [string]$r.orderStatus } elseif ($r.order_status) { [string]$r.order_status } else { '' })
+      pay_time        = $payIso
+      create_time     = $createIso
+      product_name    = $(if ($r.productName) { [string]$r.productName } elseif ($r.product_name) { [string]$r.product_name } else { '' })
+      seller_sku      = $(if ($r.sellerSku) { [string]$r.sellerSku } elseif ($r.seller_sku) { [string]$r.seller_sku } else { '' })
+      sku_id          = $(if ($r.skuId) { [string]$r.skuId } elseif ($r.sku_id) { [string]$r.sku_id } else { '' })
+      quantity        = $qty
+      pay_amount      = $pay
+      currency        = $rowCurrency
+      shipping_status = $(if ($r.shippingStatus) { [string]$r.shippingStatus } else { '' })
+      buyer_region    = $(if ($r.buyerRegion) { [string]$r.buyerRegion } else { '' })
+      source_url      = $rowSourceUrl
+    }
+    if ($r.createTimeRaw) { $payload['create_time_raw'] = [string]$r.createTimeRaw }
+    elseif ($rawCreate) { $payload['create_time_raw'] = $rawCreate }
+
+    [void]$items.Add(@{
+      platform        = 'tiktok'
+      shop_id         = $StoreId
+      shop_name       = $StoreName
+      biz_date        = $(if ($biz) { $biz } else { $null })
+      collected_at    = $CollectedAt
+      idempotency_key = ("tiktok_orders:{0}:{1}" -f $StoreId, $orderId)
+      payload         = $payload
+      evidence        = @{ source_url = $rowSourceUrl }
+    })
+  }
+  Write-Output -NoEnumerate $items
+}
+
+'''
+
+path.write_text(text[:start] + block + text[end:], encoding="utf-8")
+print("patched", start, end)
+
+ps = r"""
+$ErrorActionPreference='Stop'
+. 'E:\project\清泉跨境系统（企业级）\collectors\tiktok-ads\scripts\qingquan-client.ps1'
+$ref = Get-Date '2026-07-31 12:00:00'
+$d1 = Resolve-TikTokOrderDateTime -Text '星期六 15:29:41' -Ref $ref
+$d2 = Resolve-TikTokOrderDateTime -Text '3 分钟前' -Ref $ref
+$d3 = Resolve-TikTokOrderDateTime -Text '送达截止日期：2026/8/3 23:59:59' -Ref $ref
+Write-Output ("sat={0} min={1} rejectNull={2}" -f $d1, $d2, ($null -eq $d3))
+$rows = @([pscustomobject]@{ orderId='T1'; createTime='星期六 15:29:41'; payAmount=1.2; quantity=1; orderStatus='x'; currencyHint='GBP' })
+$items = ConvertTo-QingquanOrderIngestItems -Rows $rows -CollectedAt '2026-07-31T12:00:00+00:00' -StoreId '273' -StoreName 'Gardena' -Currency 'GBP'
+Write-Output ("biz={0} create={1}" -f $items[0].biz_date, $items[0].payload.create_time)
+"""
+r = subprocess.run(
+    ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps],
+    capture_output=True,
+    text=True,
+    encoding="utf-8",
+)
+print(r.stdout)
+print(r.stderr)
+print("code", r.returncode)

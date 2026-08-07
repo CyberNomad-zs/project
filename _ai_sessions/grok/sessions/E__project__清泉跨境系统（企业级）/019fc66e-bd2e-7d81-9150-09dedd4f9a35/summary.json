@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fc66e-bd2e-7d81-9150-09dedd4f9a35",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "同步项目ClaudeCode对话记忆",
+  "created_at": "2026-08-03T07:02:54.026695500Z",
+  "updated_at": "2026-08-03T07:50:26.312228500Z",
+  "num_messages": 251,
+  "num_chat_messages": 79,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 7,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "63430e8dca93151f6f79975299cc51ce8a293530",
+  "head_branch": "feature/tk-products-kpi",
+  "request_id": "63c743df-f847-49f8-bbba-fdfcddbc8ad3",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-08-03T07:50:26.312228500Z",
+  "generated_title": "同步项目ClaudeCode对话记忆",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

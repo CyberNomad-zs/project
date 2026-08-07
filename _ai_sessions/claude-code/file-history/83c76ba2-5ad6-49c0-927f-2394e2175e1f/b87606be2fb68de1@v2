@@ -1,0 +1,21 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据（广告只是第一域）。下一刀：**订单 P2a**。
+
+## 2026-07-30 夜
+- [x] 路线图：`collectors/tiktok-ads/docs/TK-整站运营数据采集路线图.md`
+- [x] 迁移：`backend/migrations/005_tiktok_orders.sql`（本机+生产已执行）
+- [x] Ingest：`tiktok_orders` → `fact_tiktok_order`（生产 API 幂等 smoke 通过）
+- [x] 抓取骨架：`scripts/scrape-orders-page.js`
+- [x] 客户端：多 source + 订单 items
+- [x] `run-orders.ps1` 多店订单调度
+- [x] `night-loop.ps1`（Bridge 起来自动跑）
+- [x] 推送 `feature/tk-ads-dual` → PR https://github.com/JMZLAI/qingquan-kuajing/pull/1
+- [ ] 紫鸟实页校准订单表头（需你登录后实跑）
+- [ ] 订单飞书表（可选）
+- [ ] P2b 商品 / P2c 店级 KPI
+
+## 阻塞
+- 紫鸟未登录时只能等 Bridge，不能假跑成功
+- 欧盟广告页网络仍不稳

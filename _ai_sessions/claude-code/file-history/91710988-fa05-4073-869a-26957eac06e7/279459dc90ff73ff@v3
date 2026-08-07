@@ -1,0 +1,149 @@
+/* TikTok order detail → line SKUs. Calibrated seller-uk 2026-08-06. */
+(function () {
+  function clean(t) { return String(t == null ? '' : t).replace(/\s+/g, ' ').trim(); }
+  function currencyOf(s) {
+    s = String(s || '');
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+  function numMoney(s) {
+    var m = String(s || '').match(/[¥$€£￥]\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
+    if (!m) return null;
+    var n = Number(m[1].replace(/,/g, ''));
+    return isFinite(n) ? n : null;
+  }
+  function orderIdFromUrl(u) {
+    var m = String(u || '').match(/[?&]order_no=(\d{15,22})/i) || String(u || '').match(/[?&]order_id=(\d{15,22})/i);
+    return m ? m[1] : '';
+  }
+  function sellerSkuOf(s) {
+    s = clean(s);
+    var m = s.match(/商家\s*SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-*]{0,47})/i)
+      || s.match(/卖家\s*SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-*]{0,47})/i)
+      || s.match(/Seller\s*SKU\s*[:：]\s*([A-Za-z0-9][A-Za-z0-9_\-*]{0,47})/i);
+    if (!m) return '';
+    var sku = clean(m[1]);
+    if (!sku || /展开|全部|件商品/i.test(sku) || /^\d{10,}$/.test(sku)) return '';
+    return sku;
+  }
+  function skuIdOf(s) {
+    var m = clean(s).match(/(?:平台\s*)?SKU\s*ID\s*[:：]\s*(\d{10,22})/i);
+    return m ? m[1] : '';
+  }
+  function productIdOf(s) {
+    var m = clean(s).match(/(?:商品|Product)\s*ID\s*[:：]\s*(\d{10,22})/i);
+    return m ? m[1] : '';
+  }
+  function qtyOf(s) {
+    var m = clean(s).match(/[x×]\s*(\d{1,4})\b/i);
+    return m ? Number(m[1]) : null;
+  }
+  function nameOf(s, sellerSku, skuId) {
+    var name = clean(s);
+    // cut payment / customer tail
+    name = name.replace(/(客户支付的金额|你赚取的金额|客户详情|支付方式|历史订单)[\s\S]*$/i, ' ');
+    name = name.replace(/(?:平台\s*)?SKU\s*ID\s*[:：]\s*\d{10,22}/gi, ' ');
+    name = name.replace(/(?:商品|Product)\s*ID\s*[:：]\s*\d{10,22}/gi, ' ');
+    name = name.replace(/(?:Seller\s*|商家\s*|卖家\s*)SKU\s*[:：]\s*[A-Za-z0-9_\-*]+/gi, ' ');
+    name = name.replace(/[x×]\s*\d{1,4}\b/gi, ' ');
+    name = name.replace(/[£$€]\s*[0-9.,]+/g, ' ');
+    name = name.replace(/当前订单|历史订单|已送达|物流信息|包裹\s*\d+\s*[:：]?/gi, ' ');
+    name = name.replace(/\d+\s*个包裹[^\n]*件商品/gi, ' ');
+    if (sellerSku) name = name.split(sellerSku).join(' ');
+    if (skuId) name = name.split(skuId).join(' ');
+    name = clean(name).slice(0, 160);
+    if (!name || name.length < 4) return '';
+    if (/^(Colorful|Black|White|Red|Blue|Green|Pink|Size).{0,40}$/i.test(name) && name.length < 30) {
+      // keep short variant as-is
+    }
+    return name;
+  }
+  function parseWindow(text, idx) {
+    var s = clean(text).slice(0, 700);
+    var sellerSku = sellerSkuOf(s);
+    var skuId = skuIdOf(s);
+    var productId = productIdOf(s);
+    if (productId && skuId && productId === skuId) productId = '';
+    if (!sellerSku && !skuId && !productId) return null;
+    var quantity = qtyOf(s);
+    var unitPrice = numMoney(s);
+    var productName = nameOf(s, sellerSku, skuId);
+    var lineKey = skuId ? ('sid:' + skuId) : sellerSku ? ('sku:' + sellerSku) : ('n:' + idx);
+    return {
+      lineNo: idx, lineKey: lineKey,
+      productId: productId || '', productName: productName || '',
+      sellerSku: sellerSku || '', skuId: skuId || '',
+      quantity: quantity != null ? quantity : 1,
+      unitPrice: unitPrice, payAmount: null,
+      currencyHint: currencyOf(s), rawText: s.slice(0, 220)
+    };
+  }
+  try {
+    var url = location.href || '';
+    var body = (document.body && document.body.innerText) || '';
+    var orderId = orderIdFromUrl(url);
+    if (!orderId) {
+      var om = clean(body.slice(0, 500)).match(/\b(57\d{16})\b/);
+      orderId = om ? om[1] : '';
+    }
+    if (!/\/order\/detail/i.test(url) && !/order_no=/i.test(url) && !orderId) {
+      return JSON.stringify({ ok: false, module: 'order_detail', url: url, orderId: '', lines: [], error: 'not_order_detail' });
+    }
+
+    var lines = [];
+    var seen = {};
+    // Primary: window around each SKU ID (includes following 商家 SKU / price)
+    var re = /SKU\s*ID\s*[:：]\s*\d{10,22}/gi;
+    var m;
+    var idx = 0;
+    while ((m = re.exec(body))) {
+      idx++;
+      var start = Math.max(0, m.index - 30);
+      var end = Math.min(body.length, m.index + 420);
+      var win = body.slice(start, end);
+      // stop window before payment section if present
+      var cut = win.search(/客户支付的金额|你赚取的金额|客户详情|历史订单/);
+      if (cut > 40) win = win.slice(0, cut);
+      var L = parseWindow(win, idx);
+      if (!L) continue;
+      var k = L.skuId || L.sellerSku || L.lineKey;
+      if (seen[k]) continue;
+      seen[k] = true;
+      lines.push(L);
+    }
+    // Fallback: 商家 SKU only windows
+    if (!lines.length) {
+      var re2 = /商家\s*SKU\s*[:：]\s*[A-Za-z0-9_\-*]+/gi;
+      while ((m = re2.exec(body))) {
+        idx++;
+        var start2 = Math.max(0, m.index - 200);
+        var end2 = Math.min(body.length, m.index + 120);
+        var L2 = parseWindow(body.slice(start2, end2), idx);
+        if (!L2) continue;
+        var k2 = L2.skuId || L2.sellerSku || L2.lineKey;
+        if (seen[k2]) continue;
+        seen[k2] = true;
+        lines.push(L2);
+      }
+    }
+    // Last resort: whole body once
+    if (!lines.length) {
+      var L3 = parseWindow(body.slice(0, 1500), 1);
+      if (L3) lines.push(L3);
+    }
+    for (var i = 0; i < lines.length; i++) lines[i].lineNo = i + 1;
+    var cur = currencyOf(body) || 'GBP';
+    var ok = !!(orderId && lines.length);
+    return JSON.stringify({
+      ok: ok, module: 'order_detail', source: lines.length ? 'sku-id-window' : 'none',
+      url: url, orderId: orderId, currency: cur, lines: lines, lineCount: lines.length,
+      diag: { bodyLen: body.length, windows: idx },
+      error: ok ? null : (!orderId ? 'no order id' : (body.length < 80 ? 'page_too_thin' : 'no line items'))
+    });
+  } catch (e) {
+    return JSON.stringify({ ok: false, module: 'order_detail', url: location.href || '', lines: [], error: String(e && e.message ? e.message : e) });
+  }
+})();

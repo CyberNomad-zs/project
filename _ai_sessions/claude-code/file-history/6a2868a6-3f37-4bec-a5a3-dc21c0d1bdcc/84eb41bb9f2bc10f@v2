@@ -1,0 +1,87 @@
+# -*- coding: utf-8 -*-
+"""只读：查今早留存的 5 单当前状态 + 是否偏远地区。先验证登录、打印列名，
+默认「未发货」视图查一遍；查不到再清状态筛选查全部。绝不发货。"""
+import sys, os, time
+sys.path.insert(0, r"E:\project\海外仓\automation")
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+INDEX = "http://193.112.93.60:9999/index.html#"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")
+ORDERS = ['P2AL6TCD62970','P2AK6TCD62906','P2AK6TCD62888','P2AK6TCD62896','P2AK6TCD62890']
+OUTDIR = os.path.dirname(os.path.abspath(__file__))
+lines = []
+def w(s=""): print(s); lines.append(str(s))
+
+
+def read_rows(page):
+    return page.evaluate(r"""() => {
+        const hw = document.querySelector('.el-table__header-wrapper');
+        const heads = hw ? [...hw.querySelectorAll('thead th')].map(t=>t.innerText.trim()).filter(Boolean) : [];
+        const bw = document.querySelector('.el-table__body-wrapper');
+        const seen=new Set(); const rows=[];
+        if(bw){ [...bw.querySelectorAll('tr.el-table__row')].forEach(tr=>{
+            const o={}; [...tr.querySelectorAll('td')].forEach((td,i)=>{o[heads[i]||('c'+i)]=td.innerText.replace(/\s+/g,' ').trim();});
+            const key=JSON.stringify(o); if(seen.has(key))return; seen.add(key); rows.push(o);
+        }); }
+        return {heads, rows};
+    }""")
+
+
+def query(page, od):
+    inp = page.query_selector("input[placeholder='平台订单号']")
+    if not inp:
+        w("  ⚠️ 未找到 平台订单号 输入框"); return {"heads": [], "rows": []}
+    inp.fill(""); inp.fill(od); time.sleep(0.3)
+    page.click("button:has-text('查询')"); time.sleep(2.5)
+    return read_rows(page)
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True); page = ctx.new_page()
+        for _ in range(5):
+            try: page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        try:
+            page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        except Exception as e:
+            w(f"登录填表异常: {e}")
+        time.sleep(5)
+        # 验证登录：读 Hi，XXX
+        try:
+            page.goto(INDEX, wait_until="domcontentloaded", timeout=40000); time.sleep(3)
+            body = page.inner_text("body")
+            import re
+            m = re.search(r"Hi[，,]\s*(\S+)", body)
+            w(f"[登录校验] 当前显示名 = {m.group(1) if m else '(未读到 Hi，XXX)'}  期望 display={ACC.get('display')}")
+        except Exception as e:
+            w(f"[登录校验] 异常: {e}")
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000); time.sleep(5)
+        page.screenshot(path=os.path.join(OUTDIR, "wms_check5_orderinfo.png"))
+
+        # 打印列名
+        heads = read_rows(page).get("heads", [])
+        w(f"[列名] {heads}")
+
+        for od in ORDERS:
+            w(f"\n==== {od} ====")
+            data = query(page, od)
+            rows = data["rows"]
+            if not rows:
+                w("  (默认『未发货』视图查无此单 —— 可能已发走/或不在未发货)")
+                continue
+            for r in rows:
+                w(f"  {dict((k,v) for k,v in r.items() if v)}")
+        page.screenshot(path=os.path.join(OUTDIR, "wms_check5_last.png"))
+        with open(os.path.join(OUTDIR, "wms_check5.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

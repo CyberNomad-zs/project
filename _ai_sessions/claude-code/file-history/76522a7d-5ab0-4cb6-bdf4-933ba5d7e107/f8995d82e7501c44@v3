@@ -1,0 +1,644 @@
+"""TK 域只读/作业 API：店日汇总、广告列表、广告/商品/店铺异常扫描。"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domain.tk_ads_rules import evaluate_ads_anomalies, resolve_biz_date
+from app.domain.tk_product_rules import evaluate_product_anomalies
+from app.domain.tk_shop_rules import evaluate_shop_anomalies
+from app.infra.db import get_db
+from app.infra.security import get_current_user
+
+router = APIRouter(prefix="/api/v1/tk", tags=["tk"])
+
+
+def _iso(v: Any) -> Any:
+    if v is None:
+        return None
+    if hasattr(v, "isoformat"):
+        return v.isoformat()
+    return v
+
+
+def _f(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+class AdsEvalBody(BaseModel):
+    biz_date: date | None = None
+    shop_external_id: str | None = None
+    dry_run: bool = False
+    project_center_task: bool = True
+
+
+class ProductEvalBody(BaseModel):
+    shop_external_id: str | None = None
+    dry_run: bool = False
+    project_center_task: bool = True
+    biz_date: date | None = None
+
+
+class ShopEvalBody(BaseModel):
+    biz_date: date | None = None
+    shop_external_id: str | None = None
+    dry_run: bool = False
+    project_center_task: bool = True
+
+
+@router.get("/shop-daily")
+async def list_shop_daily(
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    lookback_days: int = Query(default=14, ge=1, le=90),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """店日经营宽表：优先 fact_tiktok_shop_daily，空则广告日 rollup 回退。
+
+    与飞书 T1 同步口径一致；回退行 data_source=ads_rollup，gmv≈广告销售额。
+    """
+    day_row = (
+        await db.execute(
+            text(
+                """
+                SELECT COALESCE(
+                    (SELECT MAX(biz_date) FROM tk.fact_tiktok_shop_daily),
+                    (SELECT MAX(biz_date) FROM tk.fact_ads_campaign_daily
+                     WHERE campaign_name !~ '^【')
+                ) AS d
+                """
+            )
+        )
+    ).mappings().first()
+    latest = day_row["d"] if day_row else None
+    day = biz_date or latest
+    if day is None:
+        return {
+            "biz_date": None,
+            "lookback_days": lookback_days,
+            "total": 0,
+            "items": [],
+            "summary": {
+                "gmv": 0,
+                "orders_cnt": 0,
+                "buyers_cnt": 0,
+                "refund_amount": 0,
+                "ad_spend": 0,
+                "ad_revenue": 0,
+                "ad_orders": 0,
+                "ad_roi": None,
+                "aov": None,
+                "shop_count": 0,
+                "real_shop_rows": 0,
+                "ads_fallback_rows": 0,
+                "open_anomaly_count": 0,
+                "data_source": "empty",
+            },
+            "available_dates": [],
+            "note": "no shop_daily or ads rows",
+        }
+
+    since = day - timedelta(days=lookback_days - 1)
+    params: dict[str, Any] = {
+        "biz_date": day,
+        "since": since,
+        "shop_external_id": shop_external_id,
+        "limit": page_size,
+        "offset": (page - 1) * page_size,
+        "filter_shop": bool(shop_external_id),
+    }
+
+    real_cnt = (
+        await db.execute(
+            text(
+                """
+                SELECT COUNT(*)::int
+                FROM tk.fact_tiktok_shop_daily s
+                WHERE s.biz_date BETWEEN :since AND :biz_date
+                  AND (
+                        CAST(:filter_shop AS boolean) = false
+                        OR s.shop_external_id = :shop_external_id
+                      )
+                """
+            ),
+            params,
+        )
+    ).scalar_one()
+
+    use_fallback = int(real_cnt or 0) == 0
+    data_source = "ads_rollup" if use_fallback else "shop_daily"
+
+    if use_fallback:
+        base_from = """
+            FROM (
+                SELECT
+                    shop_external_id,
+                    MAX(shop_name) AS shop_name,
+                    biz_date,
+                    SUM(spend) AS ad_spend,
+                    SUM(revenue) AS ad_revenue,
+                    SUM(orders) AS ad_orders,
+                    MAX(currency) AS ad_currency,
+                    MAX(updated_at) AS updated_at
+                FROM tk.fact_ads_campaign_daily
+                WHERE campaign_name !~ '^【'
+                GROUP BY shop_external_id, biz_date
+            ) a
+            LEFT JOIN tk.fact_tiktok_health_daily h
+              ON h.shop_external_id = a.shop_external_id AND h.biz_date = a.biz_date
+            LEFT JOIN tk.fact_tiktok_finance_daily f
+              ON f.shop_external_id = a.shop_external_id AND f.biz_date = a.biz_date
+            WHERE a.biz_date BETWEEN :since AND :biz_date
+              AND (
+                    CAST(:filter_shop AS boolean) = false
+                    OR a.shop_external_id = :shop_external_id
+                  )
+        """
+        select_cols = """
+            md5(a.shop_external_id || ':' || a.biz_date::text)::uuid::text AS id,
+            a.shop_external_id,
+            a.shop_name,
+            a.biz_date,
+            a.ad_revenue AS gmv,
+            a.ad_orders AS orders_cnt,
+            NULL::numeric AS buyers_cnt,
+            NULL::numeric AS refund_amount,
+            a.ad_currency AS currency,
+            a.ad_spend,
+            a.ad_revenue,
+            a.ad_orders,
+            h.health_score,
+            h.status_label AS health_status,
+            f.settlement_amount,
+            f.pending_amount,
+            a.updated_at,
+            'ads_rollup'::text AS data_source
+        """
+        order_by = "a.biz_date DESC, a.ad_spend DESC NULLS LAST, a.shop_external_id"
+        count_sql = f"SELECT COUNT(*)::int {base_from}"
+        list_sql = f"SELECT {select_cols} {base_from} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
+        agg_sql = f"""
+            SELECT
+                COALESCE(SUM(a.ad_revenue), 0) AS gmv,
+                COALESCE(SUM(a.ad_orders), 0) AS orders_cnt,
+                0::numeric AS buyers_cnt,
+                0::numeric AS refund_amount,
+                COALESCE(SUM(a.ad_spend), 0) AS ad_spend,
+                COALESCE(SUM(a.ad_revenue), 0) AS ad_revenue,
+                COALESCE(SUM(a.ad_orders), 0) AS ad_orders,
+                COUNT(DISTINCT a.shop_external_id)::int AS shop_count
+            {base_from}
+        """
+    else:
+        base_from = """
+            FROM tk.fact_tiktok_shop_daily s
+            LEFT JOIN (
+                SELECT
+                    shop_external_id,
+                    biz_date,
+                    SUM(spend) AS ad_spend,
+                    SUM(revenue) AS ad_revenue,
+                    SUM(orders) AS ad_orders,
+                    MAX(currency) AS ad_currency
+                FROM tk.fact_ads_campaign_daily
+                WHERE campaign_name !~ '^【'
+                GROUP BY shop_external_id, biz_date
+            ) a
+              ON a.shop_external_id = s.shop_external_id AND a.biz_date = s.biz_date
+            LEFT JOIN tk.fact_tiktok_health_daily h
+              ON h.shop_external_id = s.shop_external_id AND h.biz_date = s.biz_date
+            LEFT JOIN tk.fact_tiktok_finance_daily f
+              ON f.shop_external_id = s.shop_external_id AND f.biz_date = s.biz_date
+            WHERE s.biz_date BETWEEN :since AND :biz_date
+              AND (
+                    CAST(:filter_shop AS boolean) = false
+                    OR s.shop_external_id = :shop_external_id
+                  )
+        """
+        select_cols = """
+            s.id::text AS id,
+            s.shop_external_id,
+            s.shop_name,
+            s.biz_date,
+            s.gmv,
+            s.orders_cnt,
+            s.buyers_cnt,
+            s.refund_amount,
+            COALESCE(s.currency, a.ad_currency) AS currency,
+            COALESCE(a.ad_spend, 0) AS ad_spend,
+            COALESCE(a.ad_revenue, 0) AS ad_revenue,
+            COALESCE(a.ad_orders, 0) AS ad_orders,
+            h.health_score,
+            h.status_label AS health_status,
+            f.settlement_amount,
+            f.pending_amount,
+            s.updated_at,
+            'shop_daily'::text AS data_source
+        """
+        order_by = "s.biz_date DESC, s.gmv DESC NULLS LAST, s.shop_external_id"
+        count_sql = f"SELECT COUNT(*)::int {base_from}"
+        list_sql = f"SELECT {select_cols} {base_from} ORDER BY {order_by} LIMIT :limit OFFSET :offset"
+        agg_sql = f"""
+            SELECT
+                COALESCE(SUM(s.gmv), 0) AS gmv,
+                COALESCE(SUM(s.orders_cnt), 0) AS orders_cnt,
+                COALESCE(SUM(s.buyers_cnt), 0) AS buyers_cnt,
+                COALESCE(SUM(s.refund_amount), 0) AS refund_amount,
+                COALESCE(SUM(a.ad_spend), 0) AS ad_spend,
+                COALESCE(SUM(a.ad_revenue), 0) AS ad_revenue,
+                COALESCE(SUM(a.ad_orders), 0) AS ad_orders,
+                COUNT(DISTINCT s.shop_external_id)::int AS shop_count
+            {base_from}
+        """
+
+    total = (await db.execute(text(count_sql), params)).scalar_one()
+    agg = (await db.execute(text(agg_sql), params)).mappings().first()
+    rows = (await db.execute(text(list_sql), params)).mappings().all()
+
+    open_anom = (
+        await db.execute(
+            text(
+                """
+                SELECT COUNT(*)::int
+                FROM tk.fact_tk_anomaly_task
+                WHERE status IN ('open', 'in_progress')
+                  AND (
+                        CAST(:filter_shop AS boolean) = false
+                        OR shop_external_id = :shop_external_id
+                      )
+                """
+            ),
+            params,
+        )
+    ).scalar_one()
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        d["biz_date"] = _iso(d.get("biz_date"))
+        d["updated_at"] = _iso(d.get("updated_at"))
+        gmv = _f(d.get("gmv")) or 0.0
+        orders = _f(d.get("orders_cnt")) or 0.0
+        ad_spend = _f(d.get("ad_spend")) or 0.0
+        ad_revenue = _f(d.get("ad_revenue")) or 0.0
+        d["gmv"] = gmv
+        d["orders_cnt"] = orders
+        d["buyers_cnt"] = _f(d.get("buyers_cnt"))
+        d["refund_amount"] = _f(d.get("refund_amount"))
+        d["ad_spend"] = ad_spend
+        d["ad_revenue"] = ad_revenue
+        d["ad_orders"] = _f(d.get("ad_orders")) or 0.0
+        d["aov"] = (gmv / orders) if orders > 0 else None
+        d["ad_roi"] = (ad_revenue / ad_spend) if ad_spend > 0 else None
+        d["health_score"] = _f(d.get("health_score"))
+        d["settlement_amount"] = _f(d.get("settlement_amount"))
+        d["pending_amount"] = _f(d.get("pending_amount"))
+        items.append(d)
+
+    gmv = float(agg["gmv"] or 0) if agg else 0.0
+    orders_cnt = float(agg["orders_cnt"] or 0) if agg else 0.0
+    ad_spend = float(agg["ad_spend"] or 0) if agg else 0.0
+    ad_revenue = float(agg["ad_revenue"] or 0) if agg else 0.0
+    buyers_cnt = float(agg["buyers_cnt"] or 0) if agg else 0.0
+    refund_amount = float(agg["refund_amount"] or 0) if agg else 0.0
+
+    # 可用业务日：两源合并
+    dates = (
+        await db.execute(
+            text(
+                """
+                SELECT d::text AS d, SUM(cnt)::int AS cnt
+                FROM (
+                    SELECT biz_date AS d, COUNT(*)::int AS cnt
+                    FROM tk.fact_tiktok_shop_daily
+                    GROUP BY biz_date
+                    UNION ALL
+                    SELECT biz_date AS d, COUNT(DISTINCT shop_external_id)::int AS cnt
+                    FROM tk.fact_ads_campaign_daily
+                    WHERE campaign_name !~ '^【'
+                    GROUP BY biz_date
+                ) u
+                GROUP BY d
+                ORDER BY d DESC
+                LIMIT 30
+                """
+            )
+        )
+    ).mappings().all()
+
+    return {
+        "biz_date": day.isoformat() if hasattr(day, "isoformat") else str(day),
+        "lookback_days": lookback_days,
+        "since": since.isoformat(),
+        "total": int(total or 0),
+        "items": items,
+        "summary": {
+            "gmv": gmv,
+            "orders_cnt": orders_cnt,
+            "buyers_cnt": buyers_cnt,
+            "refund_amount": refund_amount,
+            "ad_spend": ad_spend,
+            "ad_revenue": ad_revenue,
+            "ad_orders": float(agg["ad_orders"] or 0) if agg else 0.0,
+            "ad_roi": (ad_revenue / ad_spend) if ad_spend > 0 else None,
+            "aov": (gmv / orders_cnt) if orders_cnt > 0 else None,
+            "shop_count": int(agg["shop_count"] or 0) if agg else 0,
+            "real_shop_rows": int(real_cnt or 0),
+            "ads_fallback_rows": int(total or 0) if use_fallback else 0,
+            "open_anomaly_count": int(open_anom or 0),
+            "data_source": data_source,
+        },
+        "available_dates": [dict(x) for x in dates],
+        "note": (
+            "ads_rollup fallback: gmv≈ad_revenue"
+            if use_fallback
+            else "fact_tiktok_shop_daily"
+        ),
+    }
+
+
+@router.get("/ads/campaigns")
+async def list_ads_campaigns(
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    q: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """广告系列日明细 + 未闭环异常标记。"""
+    day = await resolve_biz_date(db, biz_date)
+    clauses = ["a.biz_date = :biz_date"]
+    params: dict[str, Any] = {
+        "biz_date": day,
+        "limit": page_size,
+        "offset": (page - 1) * page_size,
+    }
+    if shop_external_id:
+        clauses.append("a.shop_external_id = :shop_external_id")
+        params["shop_external_id"] = shop_external_id
+    if q:
+        clauses.append(
+            "(a.campaign_name ILIKE :q OR coalesce(a.shop_name,'') ILIKE :q)"
+        )
+        params["q"] = f"%{q.strip()}%"
+
+    where = " AND ".join(clauses)
+    total = (
+        await db.execute(
+            text(f"SELECT COUNT(*) FROM tk.fact_ads_campaign_daily a WHERE {where}"),
+            params,
+        )
+    ).scalar_one()
+
+    # 汇总（同筛选、不分页）
+    agg = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    COALESCE(SUM(a.spend), 0) AS spend,
+                    COALESCE(SUM(a.orders), 0) AS orders,
+                    COALESCE(SUM(a.revenue), 0) AS revenue,
+                    CASE WHEN COALESCE(SUM(a.spend), 0) > 0
+                         THEN COALESCE(SUM(a.revenue), 0) / SUM(a.spend)
+                         ELSE NULL END AS roi
+                FROM tk.fact_ads_campaign_daily a
+                WHERE {where}
+                """
+            ),
+            params,
+        )
+    ).mappings().first()
+
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    a.id::text,
+                    a.shop_id::text,
+                    a.shop_external_id,
+                    a.shop_name,
+                    a.biz_date,
+                    a.campaign_name,
+                    a.spend, a.orders, a.roi, a.revenue, a.currency,
+                    a.plan_status, a.delivery_status, a.daily_budget, a.target_roi,
+                    a.net_cost, a.avg_order_cost, a.source_url,
+                    a.updated_at,
+                    open_anom.codes AS open_anomaly_codes,
+                    open_anom.types AS open_anomaly_types,
+                    open_anom.cnt AS open_anomaly_count
+                FROM tk.fact_ads_campaign_daily a
+                LEFT JOIN LATERAL (
+                    SELECT
+                        COUNT(*)::int AS cnt,
+                        string_agg(DISTINCT t.anomaly_code, ',' ORDER BY t.anomaly_code) AS codes,
+                        string_agg(DISTINCT t.anomaly_type, ',' ORDER BY t.anomaly_type) AS types
+                    FROM tk.fact_tk_anomaly_task t
+                    WHERE t.status IN ('open', 'in_progress')
+                      AND t.object_type = 'campaign'
+                      AND t.anomaly_code IN (
+                          'ads_roi_low', 'ads_spend_no_sale',
+                          'ads_budget_burn', 'ads_cpa_high'
+                      )
+                      AND (
+                        t.object_ref = a.shop_external_id || '|' || a.campaign_name
+                        OR t.object_ref = a.campaign_name
+                        OR t.product_name = a.campaign_name
+                      )
+                      AND (
+                        t.shop_external_id IS NULL
+                        OR t.shop_external_id = a.shop_external_id
+                      )
+                ) open_anom ON TRUE
+                WHERE {where}
+                ORDER BY a.spend DESC NULLS LAST, a.campaign_name
+                LIMIT :limit OFFSET :offset
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+
+    items = []
+    for r in rows:
+        d = dict(r)
+        bd = d.get("biz_date")
+        if bd is not None:
+            d["biz_date"] = bd.isoformat() if hasattr(bd, "isoformat") else str(bd)
+        ua = d.get("updated_at")
+        if ua is not None and hasattr(ua, "isoformat"):
+            d["updated_at"] = ua.isoformat()
+        codes = d.pop("open_anomaly_codes", None) or ""
+        types = d.pop("open_anomaly_types", None) or ""
+        cnt = int(d.pop("open_anomaly_count", 0) or 0)
+        d["open_anomaly_count"] = cnt
+        d["open_anomaly_codes"] = [c for c in codes.split(",") if c]
+        d["open_anomaly_types"] = [t for t in types.split(",") if t]
+        d["has_open_anomaly"] = cnt > 0
+        items.append(d)
+
+    # 可用业务日列表（筛选下拉）
+    dates = (
+        await db.execute(
+            text(
+                """
+                SELECT biz_date::text AS d, COUNT(*)::int AS cnt
+                FROM tk.fact_ads_campaign_daily
+                GROUP BY biz_date
+                ORDER BY biz_date DESC
+                LIMIT 30
+                """
+            )
+        )
+    ).mappings().all()
+
+    return {
+        "biz_date": day.isoformat(),
+        "total": total,
+        "items": items,
+        "summary": {
+            "spend": float(agg["spend"] or 0) if agg else 0,
+            "orders": float(agg["orders"] or 0) if agg else 0,
+            "revenue": float(agg["revenue"] or 0) if agg else 0,
+            "roi": float(agg["roi"]) if agg and agg["roi"] is not None else None,
+            "open_anomaly_rows": sum(1 for i in items if i["has_open_anomaly"]),
+        },
+        "available_dates": [dict(x) for x in dates],
+    }
+
+
+@router.post("/ads/anomaly-eval")
+async def run_ads_anomaly_eval(
+    body: AdsEvalBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """扫描 fact_ads_campaign_daily，写入 ads_roi_low / ads_spend_no_sale 异常任务。"""
+    payload = body or AdsEvalBody()
+    try:
+        return await evaluate_ads_anomalies(
+            db,
+            biz_date=payload.biz_date,
+            shop_external_id=payload.shop_external_id,
+            project_center_task=payload.project_center_task,
+            dry_run=payload.dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/ads/anomaly-eval")
+async def run_ads_anomaly_eval_get(
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    dry_run: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """GET 默认 dry_run，便于浏览器快速预览命中。"""
+    try:
+        return await evaluate_ads_anomalies(
+            db,
+            biz_date=biz_date,
+            shop_external_id=shop_external_id,
+            project_center_task=False,
+            dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/products/anomaly-eval")
+async def run_product_anomaly_eval(
+    body: ProductEvalBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """扫描 fact_tiktok_product，写入 product_stockout / product_stock_low。"""
+    payload = body or ProductEvalBody()
+    try:
+        return await evaluate_product_anomalies(
+            db,
+            shop_external_id=payload.shop_external_id,
+            project_center_task=payload.project_center_task,
+            dry_run=payload.dry_run,
+            biz_date=payload.biz_date,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/products/anomaly-eval")
+async def run_product_anomaly_eval_get(
+    shop_external_id: str | None = None,
+    dry_run: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    try:
+        return await evaluate_product_anomalies(
+            db,
+            shop_external_id=shop_external_id,
+            project_center_task=False,
+            dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/shop/anomaly-eval")
+async def run_shop_anomaly_eval(
+    body: ShopEvalBody | None = None,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """扫描 fact_tiktok_shop_daily 环比，写入 shop_gmv_drop / shop_order_drop。"""
+    payload = body or ShopEvalBody()
+    try:
+        return await evaluate_shop_anomalies(
+            db,
+            biz_date=payload.biz_date,
+            shop_external_id=payload.shop_external_id,
+            project_center_task=payload.project_center_task,
+            dry_run=payload.dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/shop/anomaly-eval")
+async def run_shop_anomaly_eval_get(
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    dry_run: bool = Query(default=True),
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(get_current_user),
+) -> dict[str, Any]:
+    """GET 默认 dry_run，预览 ① 店铺分析掉量命中。"""
+    try:
+        return await evaluate_shop_anomalies(
+            db,
+            biz_date=biz_date,
+            shop_external_id=shop_external_id,
+            project_center_task=False,
+            dry_run=dry_run,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

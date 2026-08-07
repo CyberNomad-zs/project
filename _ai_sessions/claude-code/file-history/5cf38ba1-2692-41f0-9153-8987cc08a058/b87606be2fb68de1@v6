@@ -1,0 +1,34 @@
+# PROGRESS — TK 整站采集
+
+## 口径
+整站有用运营数据。广告日更由**同事本机定时**承担。
+
+## 2026-07-31 Bridge 恢复后实跑（生产）
+
+### 数据快照
+| 域 | 结果 |
+|----|------|
+| **订单** | **~582 行，null_biz≈0**（仅删掉 smoke 测试单）；future=0；时间粘连解析生效 |
+| **商品** | Gardena **~104**（2 页翻页 +48），Deal **~55**；多数有 price |
+| **shop_daily** | Gardena + Deal 均有（首页近 7 天卡片） |
+| **health_daily** | Gardena + Deal 均有（health-center） |
+| **finance_daily** | Gardena + Deal 均有 |
+
+### 本轮关键
+1. **订单翻页**：`orders-click-next.js` 与 products 同逻辑（arco/页码+1）→ Gardena **8 页 400 行**
+2. **商品翻页**：Gardena 50→**98**；Deal 50→**51**
+3. **shop-modules 全通**：homepage / health-center / finance，单条 ingest `dup/accepted` 正常
+4. **粘连时间**：`订单号+今天/分钟前` 可解析；Deal null_biz=0
+
+### 入口
+```powershell
+cd collectors/tiktok-ads
+.\scripts\run-orders.ps1
+.\scripts\run-products.ps1
+.\scripts\run-shop-modules.ps1
+```
+
+### 可选后续
+- 欧盟店 / Pop 店（验证码与 exclude 配置）
+- 商品页翻页等待再稳一点（偶发 Bridge 抖）
+- 提交 `feature/tk-products-kpi` PR

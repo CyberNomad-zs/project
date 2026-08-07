@@ -1,0 +1,15 @@
+---
+name: m4-browser-env
+description: "M4发布层浏览器环境:用.venv-m4(Py3.12)+需VC++运行库,3.14装不了"
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: b88122c6-fc18-43c5-a7b3-3099a1cd10d8
+---
+
+M4 发布层（Playwright 承载 1688 JS SDK）的浏览器环境（2026-07-07 搭好）：
+
+- **项目主环境是 Python 3.14**，但 greenlet(Playwright依赖)的 C 扩展在 3.14 装不上；换 3.12 后仍报 DLL 加载失败，**根因是系统缺 VC++ 运行库**（已 `winget install Microsoft.VCRedist.2015+.x64` 修复）。
+- **M4 专用环境**：`E:\project\1688自动化\.venv-m4`（Python 3.12.10），已装 playwright + chromium。跑 M4 脚本用 `.venv-m4\Scripts\python.exe`，其余模块(M1等)仍用 3.14。
+- **1688 登录 cookie 有效**（2026-07-07 验证）：`config/1688_cookies.json` 24条(.1688.com)，Playwright 加载后 `work.1688.com` 落在卖家工作台，登入目标店铺"常州易之来照明有限公司"。cookie 会过期需定期复验/刷新。
+- 代码：`src/publish/session.py`(load_cookies/browser_session/check_login)。相关 [[main-image-pipeline]]。下一步：navigate 到"发布商品"观察新版Schema发布流程 + 试注入 alife-open-sdk。API级细节需订购方案的"API及消息列表"文档。

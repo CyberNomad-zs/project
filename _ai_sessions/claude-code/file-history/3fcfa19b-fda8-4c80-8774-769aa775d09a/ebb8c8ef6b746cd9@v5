@@ -1,0 +1,100 @@
+# 真实配置（已在 .gitignore 中，勿提交）
+customer:
+  name: 金猫商贸
+
+sellfox:
+  base_url: https://openapi.sellfox.com
+  client_id: "368233"
+  client_secret: "8d2a49e8-82cf-40b1-a1ff-5484b57fbc9e"
+
+# 双 WMS 客户：同一 base_url，不同 key（账本隔离，2026-07-21 实测）
+# 昇新渠道 → jinmao；BLACKCAT 渠道 → blackcat
+wms:
+  base_url: http://193.112.93.60:9999
+  profiles:
+    jinmao:
+      key: 100000073
+      api_secret: "2a7dbba0807e4746ab96399369ae7466"
+    blackcat:
+      key: 100000081
+      api_secret: "78a4d04bdb0f4214928d19abc95d1e44"
+  default_profile: jinmao   # 渠道未标 wms_profile 时的兜底
+
+run:
+  poll_interval_sec: 300
+  purchase_date_days: 7
+  # 金猫商贸授权店铺（2026-07-15 从赛狐实拉；Amazon店 Caldicotsales/起的快 尚未在WMS授权，授权后再加）
+  shop_whitelist: ["396706", "398202", "398203"]   # Agnis / HomeCove / Twilight Cove
+  hold_on_channel_mismatch: true  # WMS侧渠道与赛狐不一致时：暂停闭环+告警（赛狐为基准）
+  auto_apply_track_no: false      # 灰度期：先只选渠道+指派，人工点下单
+  keep_existing_channel: true     # 第一期：包裹已带渠道则不改，只兜底无渠道/渠道停用的
+  # 无渠道策略（2026-07-21 业务确认）：人工在赛狐指派渠道；不靠 sku_weights 自动选。
+  # 无渠道时程序告警/FAILED，人工补渠道后下一轮走「保留已有渠道」。
+  ship_confirm_mode: auto         # auto=有重量称重，无重量 quick
+  weighing_fallback_quick: true
+  stale_new_days: 3               # 陈旧 NEW → STALE
+  default_weight_unit: g
+  default_country: GB             # TikTok/Temu 包裹地址脱敏取不到国家时的默认值（英国仓业务）
+
+# 渠道表（2026-07-15 从赛狐 queryShipChannel/warehouseList 实拉）
+# 仓库跟物流商走：BLACKCAT 渠道用 187323，昇新海外仓渠道用 180617
+# wms_profile：step4 查运单/出库状态用哪把 WMS key
+channels:
+  - name: BLACKCAT-RM
+    sellfox_provider_auth_detail_id: 591
+    expected_carrier: RM
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0      # 待补价卡
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-DPD
+    sellfox_provider_auth_detail_id: 590
+    expected_carrier: DPD
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: BLACKCAT-EH
+    sellfox_provider_auth_detail_id: 1303
+    expected_carrier: EH
+    warehouse_id: 187323
+    wms_profile: blackcat
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-RM
+    sellfox_provider_auth_detail_id: 480
+    expected_carrier: RM
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 2000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+  - name: 昇新海外仓-DPD
+    sellfox_provider_auth_detail_id: 481
+    expected_carrier: DPD
+    warehouse_id: 180617
+    wms_profile: jinmao
+    countries: [GB]
+    max_weight_g: 30000
+    cost_per_kg: 0
+    base_cost: 0
+    enabled: true
+
+warehouse:
+  is_oversea: "1"   # updatePackageDetail 用：1=海外仓
+
+sku_weights: {}     # 可选后补：称重发货重量兜底；无渠道已定人工指派，不依赖本表选渠道
+
+notify:
+  feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/35f1fdd3-cfc6-4f25-84c2-484d43d2ef3b"

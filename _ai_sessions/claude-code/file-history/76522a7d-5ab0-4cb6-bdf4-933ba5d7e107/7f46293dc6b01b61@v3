@@ -1,0 +1,219 @@
+# P2.1b: open video-analytics -> click left-tree labels -> scrape for content_id
+# UTF-8 BOM recommended. Chinese labels via char codes for PS 5.1 safety.
+#
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-video-detail-click-poc.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-video-detail-click-poc.ps1 -StoreId 27501502216807
+
+param(
+  [string]$StoreId = "27501502216807",
+  [string]$StartUrl = "https://seller-uk.tiktok.com/compass/video-analytics?shop_region=GB"
+)
+
+$ErrorActionPreference = "Stop"
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+$logsDir = Join-Path $root "logs"
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+
+# 视频 / 表现 / 视频详情 / 查看视频详情 / 短视频成交榜
+$LabelVideo = -join [char[]](0x89C6, 0x9891)
+$LabelPerf = -join [char[]](0x8868, 0x73B0)
+$LabelVideoDetail = $LabelVideo + (-join [char[]](0x8BE6, 0x60C5))
+$LabelViewVideoDetail = (-join [char[]](0x67E5, 0x770B)) + $LabelVideoDetail
+$LabelShortRank = (-join [char[]](0x77ED)) + $LabelVideo + (-join [char[]](0x6210, 0x4EA4, 0x699C))
+
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format "HH:mm:ss"), $msg)
+}
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw "node not found" }
+  $runJs = Join-Path $env:APPDATA "npm\node_modules\@ziniao-open\cli\scripts\run.js"
+  if (-not (Test-Path $runJs)) { throw "ziniao-cli run.js not found" }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join " "
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr) { Write-Host $stderr }
+  return $stdout
+}
+function ConvertTo-ScrapeOneLine([string]$js) {
+  return (($js -replace "(?m)^\s*//.*$", "" -replace "\r?\n", " " -replace "\s+", " ").Trim())
+}
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      return ([string]$j.data.data.result | ConvertFrom-Json)
+    }
+    if ($null -ne $j.ok) { return $j }
+  } catch { }
+  $m = [regex]::Matches($execOut, "\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}")
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+function Write-Utf8File([string]$Path, [string]$Content) {
+  $text = ""
+  if ($null -ne $Content) { $text = [string]$Content }
+  [System.IO.File]::WriteAllText($Path, $text, [System.Text.UTF8Encoding]::new($false))
+}
+function Invoke-PageExec([string]$sid, [string]$oneLiner) {
+  return Invoke-Ziniao @("page", "exec", "--store-id", $sid, "--script", $oneLiner, "--timeout", "60000")
+}
+function Invoke-ClickNav([string]$sid, [string]$label) {
+  $jsPath = Join-Path $PSScriptRoot "_click-compass-nav.js"
+  $js = Get-Content $jsPath -Raw -Encoding UTF8
+  $escaped = $label.Replace("\", "\\").Replace("'", "\'")
+  $js = [regex]::Replace($js, "var DEFAULT_LABEL = '[^']*';", ("var DEFAULT_LABEL = '{0}';" -f $escaped))
+  $one = ConvertTo-ScrapeOneLine $js
+  Write-Step ("  click label=[{0}]" -f $label)
+  $out = Invoke-PageExec $sid $one
+  $payload = Get-ScrapePayload $out
+  $safe = ($label -replace "[^\w]+", "_")
+  if ([string]::IsNullOrWhiteSpace($safe)) { $safe = "label" }
+  $path = Join-Path $logsDir ("video-click-{0}-{1}-{2}.json" -f $safe, $sid, $stamp)
+  Write-Utf8File $path (($payload | ConvertTo-Json -Depth 8))
+  $after = ""
+  $okc = $false
+  if ($payload) {
+    $okc = [bool]$payload.ok
+    if ($payload.afterUrl) { $after = [string]$payload.afterUrl }
+  }
+  Write-Step ("  click ok={0} afterUrl={1}" -f $okc, $after)
+  return $payload
+}
+function Invoke-ScrapeList([string]$sid, [string]$tag) {
+  $listJs = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot "scrape-video-list-page.js") -Raw -Encoding UTF8)
+  $ovJs = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot "scrape-content-overview-page.js") -Raw -Encoding UTF8)
+  $payload = $null
+  for ($a = 1; $a -le 3; $a++) {
+    Write-Step ("  scrape list attempt {0} ({1})" -f $a, $tag)
+    $payload = Get-ScrapePayload (Invoke-PageExec $sid $listJs)
+    if ($payload -and $payload.ok -and ([int]($payload.contentIdCount | ForEach-Object { $_ }) -gt 0)) { break }
+    if ($payload -and $payload.ok -and $payload.videos -and @($payload.videos).Count -gt 0) { break }
+    Start-Sleep -Seconds 12
+  }
+  # also overview scrape for KPI + any rows
+  $ov = Get-ScrapePayload (Invoke-PageExec $sid $ovJs)
+  $cid = 0
+  $rows = 0
+  if ($payload) {
+    if ($null -ne $payload.contentIdCount) { $cid = [int]$payload.contentIdCount }
+    elseif ($payload.videos) { $cid = @($payload.videos | Where-Object { $_.contentId -or $_.content_id }).Count }
+    if ($payload.videos) { $rows = @($payload.videos).Count }
+    elseif ($payload.raw -and $payload.raw.videoRowCount) { $rows = [int]$payload.raw.videoRowCount }
+  }
+  if ($ov -and $ov.contentIdCount -and [int]$ov.contentIdCount -gt $cid) {
+    $cid = [int]$ov.contentIdCount
+  }
+  $path = Join-Path $logsDir ("video-detail-click-debug-{0}-{1}-{2}.json" -f $tag, $sid, $stamp)
+  Write-Utf8File $path ((@{
+        tag = $tag
+        list = $payload
+        overview = $ov
+        contentIdCount = $cid
+        videoRowCount = $rows
+      } | ConvertTo-Json -Depth 14))
+  Write-Step ("  result tag={0} contentIdCount={1} rows={2} url={3}" -f $tag, $cid, $rows, $(if ($payload -and $payload.url) { $payload.url } else { "" }))
+  return [pscustomobject]@{
+    tag = $tag
+    ok = [bool]($payload -and $payload.ok)
+    contentIdCount = $cid
+    videoRowCount = $rows
+    url = $(if ($payload -and $payload.url) { [string]$payload.url } elseif ($ov -and $ov.url) { [string]$ov.url } else { $null })
+    path = $path
+    error = $(if ($payload -and $payload.error) { [string]$payload.error } else { $null })
+  }
+}
+
+$sid = $StoreId
+Write-Step "===== video-detail-click-poc START ====="
+Write-Step ("store={0} start={1}" -f $sid, $StartUrl)
+
+$ziniaoWinLib = Join-Path $PSScriptRoot 'ziniao-window.ps1'
+if (Test-Path $ziniaoWinLib) { . $ziniaoWinLib }
+if (Get-Command New-ZiniaoStoreOpenArgs -ErrorAction SilentlyContinue) {
+  Write-Host (Invoke-Ziniao (New-ZiniaoStoreOpenArgs -StoreId $sid -Url $StartUrl -WindowRatio 'full'))
+} else {
+  Write-Host (Invoke-Ziniao @("store", "open", "--id", $sid, "--url", $StartUrl, "--window-ratio", "full"))
+}
+Start-Sleep -Seconds 30
+if (Get-Command Invoke-ZiniaoStoreMaximize -ErrorAction SilentlyContinue) {
+  Invoke-ZiniaoStoreMaximize -StoreId $sid -InvokeZiniao ${function:Invoke-Ziniao} -WriteStep ${function:Write-Step} | Out-Null
+}
+# bridge often flaps after open
+Start-Sleep -Seconds 8
+$null = Invoke-Ziniao @("page", "visit", "--store-id", $sid, "--url", $StartUrl, "--wait-until", "load", "--timeout", "120000")
+Start-Sleep -Seconds 35
+
+$results = @()
+
+# baseline on performance overview
+$results += Invoke-ScrapeList $sid "baseline-overview"
+
+# expand 视频 tree then 视频详情
+$null = Invoke-ClickNav $sid $LabelVideo
+Start-Sleep -Seconds 8
+$null = Invoke-ClickNav $sid $LabelPerf
+Start-Sleep -Seconds 10
+$results += Invoke-ScrapeList $sid "after-perf"
+
+$cx = Invoke-ClickNav $sid $LabelVideoDetail
+Start-Sleep -Seconds 18
+if (-not ($cx -and $cx.ok)) {
+  Write-Step "  fallback click 查看视频详情"
+  $null = Invoke-ClickNav $sid $LabelViewVideoDetail
+  Start-Sleep -Seconds 18
+}
+$results += Invoke-ScrapeList $sid "after-video-detail"
+
+# optional: short-video deal rank is platform board — scrape only to confirm NOT own-shop ids
+Write-Step "  note: short-video rank may be platform board; capture for negative proof"
+$null = Invoke-ClickNav $sid $LabelShortRank
+Start-Sleep -Seconds 15
+$results += Invoke-ScrapeList $sid "short-rank-neg"
+
+try { $null = Invoke-Ziniao @("store", "close", "--id", $sid) } catch { }
+
+$sumPath = Join-Path $logsDir ("video-detail-click-summary-{0}.json" -f $stamp)
+Write-Utf8File $sumPath (($results | ConvertTo-Json -Depth 8))
+Write-Step "======== VIDEO DETAIL CLICK SUMMARY ========"
+$results | Format-Table tag, ok, contentIdCount, videoRowCount, url, error -AutoSize
+Write-Step ("summary: {0}" -f $sumPath)
+$best = @($results | Where-Object { $_.contentIdCount -gt 0 } | Sort-Object contentIdCount -Descending)
+if ($best.Count -gt 0) {
+  Write-Step ("BEST content_id: tag={0} n={1} url={2}" -f $best[0].tag, $best[0].contentIdCount, $best[0].url)
+} else {
+  Write-Step "BEST: none — content_id gate still blocked (no row-level ids)"
+}
+Write-Step "===== video-detail-click-poc END ====="

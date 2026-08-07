@@ -1,0 +1,75 @@
+# Temu 多店铺监测（Node + Playwright + 飞书告警）
+
+对 Temu Seller Central（`agentseller.temu.com`）账号下的**全部店铺**，每隔一段时间自动巡检：
+
+1. **在售商品数量下降**——某店铺「在售中 N」比上一次少，即告警（商品被下架/终止/删除的信号）。
+2. **商品流量异常**——出现「商品流量待关注」或「商品流量近期有下降」的商品时告警。
+
+切换店铺时弹出的各类推广/提示弹窗会被**自动关闭**。告警通过**飞书自定义机器人**推送。
+
+## 目录结构
+```
+config.json          配置（飞书 webhook / 间隔 / 店铺范围）
+src/
+  cli.js             命令入口：login | calibrate | once | start
+  browser.js         持久化登录态浏览器
+  stores.js          枚举 & 切换店铺
+  popups.js          通用弹窗关闭
+  monitor.js         抓「在售数量」+「流量异常」
+  feishu.js          飞书告警
+  state.js           快照对比（数量下降判定）
+  run.js             一轮完整监测
+  calibrate.js       选择器/接口校准
+data/                日志、快照、校准输出
+.userdata/           浏览器登录态（勿删）
+```
+
+## 使用步骤
+
+### 1. 配置
+编辑 `config.json`：
+```jsonc
+{
+  "feishuWebhook": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx", // 必填
+  "feishuSecret": "",         // 若机器人开启了签名校验则填
+  "intervalMinutes": 15,      // 轮询间隔
+  "stores": "all",            // 全部店铺
+  "storeList": [],            // 或手动指定店铺名，如 ["HomeCove","Twilight Cove"]
+  "headless": false           // 稳定后可设 true 后台运行
+}
+```
+
+### 2. 首次登录（人工一次）
+```
+npm run login
+```
+弹出浏览器，手动输入手机号 + 密码（如有短信验证码也手动输入），看到商品列表即成功。登录态保存在 `.userdata/`，后续复用。
+
+### 3. 校准选择器（强烈建议，首次）
+```
+npm run calibrate
+```
+在真实登录态下采集商品列表接口 URL、顶部 header/店铺切换器结构，写入 `data/calibrate-*`。
+据此核对/微调 `src/stores.js` 与 `src/monitor.js` 里的选择器。
+
+### 4. 单轮试跑
+```
+npm run once
+```
+跑一遍全部店铺，日志见 `data/monitor.log`。第一次运行只建立快照、不会因「下降」告警（无历史可比）。
+
+### 5. 常驻运行
+```
+npm start
+```
+按 `intervalMinutes` 循环巡检，异常时推送飞书。
+
+## 告警逻辑
+- **在售数量下降**：`当前 < 上一次` 即告警。
+- **流量异常**：异常总数比上一次**增加**时告警（避免同一批异常每轮重复刷屏）。
+- 首轮仅建立基线，不告警。
+
+## 注意
+- Temu 后台有风控，`intervalMinutes` 不建议低于 15 分钟。
+- 选择器可能随后台改版变化；若数量恒为 `null`，先跑 `calibrate` 重新核对。
+- `data/state.json` 保存快照，删除即重置基线。

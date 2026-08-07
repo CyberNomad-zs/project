@@ -1,0 +1,98 @@
+function send(type, extra) {
+  return new Promise((res) => chrome.runtime.sendMessage(Object.assign({ type }, extra), res));
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function setMsg(text, cls) {
+  const el = document.getElementById('msg');
+  el.textContent = text || '';
+  el.className = cls || '';
+}
+function fmtTs(ts) {
+  return ts ? new Date(ts).toLocaleString('zh-CN') : '—';
+}
+function num(v) { return v != null ? v : '—'; }
+
+async function refresh() {
+  const s = await send('getStatus');
+  const cfg = (s && s.config) || {};
+  const stores = (s && s.stores) || {};
+
+  document.getElementById('cfg').textContent =
+    '飞书：' + (cfg.webhook ? (cfg.enabled ? '已启用' : '已停用') : '未配置');
+
+  const lc = s && s.lastCycle;
+  const ci = document.getElementById('cycleInfo');
+  if (lc && lc.ts) {
+    const failed = /失败|没找到|打不开/.test(lc.summary || '');
+    ci.textContent = '上次轮巡：' + fmtTs(lc.ts) + (failed ? '（有异常，点轮巡重试）' : '');
+    ci.className = failed ? 'sub err' : 'sub';
+  } else {
+    ci.textContent = '';
+  }
+
+  const names = Object.keys(stores).sort();
+  const box = document.getElementById('stores');
+  if (names.length === 0) {
+    box.innerHTML = '<div class="empty">还没有数据。切到某个店的商品列表页（并点“立即检查”）即可开始监测该店。</div>';
+    return;
+  }
+  box.innerHTML = names.map((name) => {
+    const L = (stores[name] && stores[name].latest) || {};
+    return `<div class="store">
+      <div class="name"><span>🏬 ${esc(name)}</span><span class="r"><span class="t">${fmtTs(L.ts)}</span><span class="del" data-name="${esc(name)}" title="删除该店">✕</span></span></div>
+      <div class="kv">
+        <span>在售 <b>${num(L.onSale)}</b></span>
+        <span>流量待关注 <b>${num(L.trafficWatch)}</b></span>
+        <span>总数 ${num(L.total)}</span>
+        <span>未发布/已下架 ${num(L.unpublished)}/${num(L.removed)}</span>
+      </div>
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.del').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const name = el.getAttribute('data-name');
+      if (!confirm('确定删除「' + name + '」的监测数据？')) return;
+      const r = await send('deleteStore', { name });
+      setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+      refresh();
+    });
+  });
+}
+
+async function addStore() {
+  const input = document.getElementById('newStore');
+  const name = input.value.trim();
+  if (!name) { setMsg('请输入店铺名', 'err'); return; }
+  const r = await send('addStore', { name });
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  if (r && r.ok) { input.value = ''; refresh(); }
+}
+
+document.getElementById('add').addEventListener('click', addStore);
+document.getElementById('newStore').addEventListener('keydown', (e) => { if (e.key === 'Enter') addStore(); });
+
+document.getElementById('cycle').addEventListener('click', async () => {
+  setMsg('正在轮巡所有店（会切店，约 1-2 分钟，请勿操作页面）…');
+  const r = await send('cycleNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 1500);
+});
+document.getElementById('check').addEventListener('click', async () => {
+  setMsg('正在刷新后台页…');
+  const r = await send('checkNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 4000);
+});
+document.getElementById('test').addEventListener('click', async () => {
+  setMsg('正在发送测试…');
+  const r = await send('testFeishu');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+});
+document.getElementById('opt').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+refresh();

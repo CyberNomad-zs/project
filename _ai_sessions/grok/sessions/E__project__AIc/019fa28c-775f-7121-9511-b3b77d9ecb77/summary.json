@@ -1,0 +1,19 @@
+{
+  "info": {
+    "id": "019fa28c-775f-7121-9511-b3b77d9ecb77",
+    "cwd": "E:\\project\\AIc"
+  },
+  "session_summary": "",
+  "created_at": "2026-07-27T07:49:02.443821200Z",
+  "updated_at": "2026-07-27T07:51:28.919835400Z",
+  "num_messages": 1,
+  "num_chat_messages": 2,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 0,
+  "chat_format_version": 1,
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-27T07:51:28.919835400Z",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

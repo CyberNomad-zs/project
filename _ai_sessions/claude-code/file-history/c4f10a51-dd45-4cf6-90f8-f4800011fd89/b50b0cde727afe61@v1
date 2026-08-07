@@ -1,0 +1,20 @@
+# -*- coding: utf-8 -*-
+"""
+账号凭据（敏感！请勿提交到公开仓库、勿泄露）。
+建议将本文件加入 .gitignore。
+"""
+
+# ---- Sellfox ERP ----
+ERP = {
+    "url": "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html",
+    "user": "17312292726",
+    "password": "Xy147258",
+}
+
+# ---- 海外仓WMS（两个账号 = 两个店铺）----
+WMS_URL = "http://193.112.93.60:9999/index.html#"
+
+WMS_ACCOUNTS = [
+    {"shop": "金猫", "login": "JMSM",  "password": "JMSMjmsm888"},
+    {"shop": "黑猫", "login": "JMCAT", "password": "111111Aa"},
+]

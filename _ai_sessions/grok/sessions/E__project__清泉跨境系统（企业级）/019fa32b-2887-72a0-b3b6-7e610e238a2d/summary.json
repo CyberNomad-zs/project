@@ -1,0 +1,21 @@
+{
+  "info": {
+    "id": "019fa32b-2887-72a0-b3b6-7e610e238a2d",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "What Is This Project",
+  "created_at": "2026-07-27T10:42:22.480092100Z",
+  "updated_at": "2026-07-29T01:30:48.059237700Z",
+  "num_messages": 1342,
+  "num_chat_messages": 474,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 33,
+  "chat_format_version": 1,
+  "request_id": "189e477c-f621-4115-8d29-6deaf2261d4e",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T07:26:35.091016800Z",
+  "generated_title": "What Is This Project",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

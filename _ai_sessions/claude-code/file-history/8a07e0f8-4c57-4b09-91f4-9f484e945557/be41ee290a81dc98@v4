@@ -1,0 +1,178 @@
+// background.js —— 跨标签编排（service worker）。
+// 守住核心业务规则：按渠道串行闭环、先选模板→再筛渠道、渠道→店铺/快递方映射、失败留存。
+// WMS 同源单账号约束：同一浏览器 WMS 只能登一个店铺，故【只处理当前登录店铺对应的渠道】，
+// 另一店铺的渠道跳过并提示切换后再跑一次（连 ERP 下单都不做，避免下了单发不掉变残留单）。
+importScripts("rules.js");
+
+const ERP_URL = "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html";
+const ORDERINFO_WMS = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html";
+const INDEX_WMS = "http://193.112.93.60:9999/index.html";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 日志缓冲放在后台，弹窗只是"观众"。弹窗关闭/重开不影响日志——重开时从这里重放。
+// 也写一份到 storage.session（内存级，不落盘），防 service worker 被回收后丢失。
+let logBuffer = [];
+let running = false;
+const ports = new Set();
+
+function broadcast(msg) { for (const p of ports) { try { p.postMessage(msg); } catch (e) {} } }
+function log(line) {
+  logBuffer.push(line);
+  broadcast({ type: "log", line });
+  try { chrome.storage.session.set({ hwcLog: logBuffer, hwcRunning: running }); } catch (e) {}
+}
+async function loadBufferIfEmpty() {
+  if (logBuffer.length) return;
+  try {
+    const s = await chrome.storage.session.get(["hwcLog", "hwcRunning"]);
+    if (s.hwcLog) logBuffer = s.hwcLog;
+    running = !!s.hwcRunning;
+  } catch (e) {}
+}
+
+async function findTab(pattern) {
+  const tabs = await chrome.tabs.query({ url: pattern });
+  return tabs[0] || null;
+}
+
+// 等标签页加载到 complete。返回一个 { promise }，调用方必须【先取到它、再发起跳转】，
+// 这样监听在跳转前就已挂好，绝不会漏掉 complete 事件（漏掉会一直干等到超时=假死）。
+function waitCompleteHandle(tabId, timeout = 30000) {
+  let finish;
+  const promise = new Promise((res) => {
+    let done = false;
+    finish = (v) => { if (!done) { done = true; clearTimeout(to); chrome.tabs.onUpdated.removeListener(l); res(v); } };
+    const to = setTimeout(() => finish(false), timeout);
+    function l(id, info) { if (id === tabId && info.status === "complete") finish(true); }
+    chrome.tabs.onUpdated.addListener(l);
+  });
+  return { promise };
+}
+
+async function navigate(tabId, url) {
+  const h = waitCompleteHandle(tabId);   // 先挂监听
+  await chrome.tabs.update(tabId, { url }); // 再跳转
+  await h.promise;
+  await sleep(2000);
+}
+
+// 注入 lib+content 到所有 frame，再调用 dispatch，取承载订单表那个 frame 的非空返回。
+async function runOp(tabId, side, opMsg) {
+  const files = side === "erp" ? ["lib.js", "content_erp.js"] : ["lib.js", "content_wms.js"];
+  await chrome.scripting.executeScript({ target: { tabId, allFrames: true }, files });
+  const glob = side === "erp" ? "__HWC_ERP" : "__HWC_WMS";
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: async (g, m) => {
+      try { const o = window[g]; return o ? await o.dispatch(m) : null; }
+      catch (e) { return { error: String((e && e.stack) || e) }; }
+    },
+    args: [glob, opMsg],
+  });
+  const hits = results.map((r) => r && r.result).filter((x) => x !== null && x !== undefined);
+  return hits[0] || null;
+}
+
+async function run(dry) {
+  const R = self.HWC_RULES;
+  log(`▶ 开始运行（${dry ? "DRY 空跑" : "真跑"}）`);
+
+  const erpTab = await findTab("https://www.sellfox.com/*");
+  if (!erpTab) { log("✗ 没找到赛狐 ERP 标签页。请先在本浏览器打开并登录 ERP 订单页。"); return; }
+  const wmsTab = await findTab("http://193.112.93.60:9999/*");
+  if (!wmsTab) { log("✗ 没找到海外仓 WMS 标签页。请先在本浏览器打开并登录 WMS。"); return; }
+
+  // 读 WMS 当前登录店铺（顶部 Hi，XXX）
+  log("· 读取 WMS 当前登录店铺…");
+  await navigate(wmsTab.id, INDEX_WMS);
+  const acct = await runOp(wmsTab.id, "wms", { op: "currentAccount" });
+  const display = acct && acct.display;
+  const curLogin = R.shopByDisplay(display);
+  if (!curLogin) {
+    log(`✗ 读不到 WMS 当前登录店铺（顶部 Hi，${display || "?"}）。请确认 WMS 已登录后重试。`);
+    return;
+  }
+  const curShop = R.SHOPS[curLogin].shop;
+  log(`● 当前 WMS 登录店铺：${curShop}（${curLogin}）。本轮只处理该店铺对应的渠道。`);
+
+  const failures = [];
+  const needSwitch = [];
+
+  for (const channel of R.CHANNEL_ORDER) {
+    const login = R.channelAccountLogin(channel);
+    if (login !== curLogin) { needSwitch.push(channel); continue; }
+
+    log("————————————————————————");
+    log(`[渠道] ${channel}  ->  ${curShop}`);
+
+    // ① 重置 ERP 过滤：整页导航到订单页（等价 Python open_order_ship）
+    log("  · 打开 ERP 订单页并重置筛选…");
+    await navigate(erpTab.id, ERP_URL);
+    const er = await runOp(erpTab.id, "erp", { op: "placeOrder", channel, dry });
+    if (!er) { log(`[渠道] ${channel} ERP 无响应（frame 未命中/未登录），跳过`); continue; }
+    (er.logs || []).forEach(log);
+    if (er.error) { log(`[渠道] ${channel} ERP 出错：${er.error}`); continue; }
+    if (er.channelFilterFailed) { log(`[渠道] ${channel} 渠道筛选失败，跳过（防全量误下单）`); continue; }
+    if (!er.count) { log(`[渠道] ${channel} 无待处理订单，跳过`); continue; }
+    if (er.fail_orders && er.fail_orders.length)
+      failures.push({ stage: "ERP物流下单", channel, orders: er.fail_orders });
+
+    let placed = er.success;
+    if (placed == null) placed = dry ? er.count : 0;   // DRY 没真下单，用 count 代表“会下单数”
+    if (!placed) { log(`[渠道] ${channel} 无成功下单，跳过 WMS 发货`); continue; }
+
+    // ② WMS 该店铺发货（本渠道末段对应的单一快递方；失败即留存不换）
+    const courier = R.channelCourier(channel);
+    log(`  · 打开 WMS 平台订单页（快递方 ${courier}）…`);
+    await navigate(wmsTab.id, ORDERINFO_WMS);
+    const wr = await runOp(wmsTab.id, "wms", { op: "processShop", courier, dry });
+    if (!wr) { log(`[渠道] ${channel} WMS 无响应，跳过`); continue; }
+    (wr.logs || []).forEach(log);
+    if (wr.left_orders && wr.left_orders.length && !dry)
+      failures.push({ stage: "WMS发货", channel, orders: wr.left_orders });
+    log(`[渠道] ${channel} 闭环完成`);
+  }
+
+  log("==============================");
+  if (needSwitch.length) {
+    const other = curLogin === "JMCAT" ? "金猫（JMSM）" : "黑猫（JMCAT）";
+    log(`⏭ 另有 ${needSwitch.length} 个渠道属于【${other}】，本轮已跳过：`);
+    needSwitch.forEach((c) => log("   · " + c));
+    log(`👉 请把 WMS 切换登录到【${other}】后，再点一次「开始发货」。`);
+  }
+  if (failures.length) {
+    log("⚠️ 失败/留存订单（需人工跟进）：");
+    failures.forEach((f) => log(`   [${f.stage}] ${f.channel}: ${JSON.stringify(f.orders)}`));
+  } else {
+    log("✅ 本轮无失败/留存订单。");
+  }
+  log(dry ? "◼ DRY 空跑结束（未真实下单/发货）。" : "◼ 真跑结束。");
+}
+
+// 与 popup 的长连接：弹窗一打开就连上，后台立刻把完整日志缓冲重放给它（故关了再开日志还在）。
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "hwc") return;
+  ports.add(port);
+  port.onDisconnect.addListener(() => ports.delete(port));
+  loadBufferIfEmpty().then(() => {
+    try { port.postMessage({ type: "buffer", lines: logBuffer, running }); } catch (e) {}
+  });
+  port.onMessage.addListener(async (msg) => {
+    if (!msg) return;
+    if (msg.cmd === "run") {
+      if (running) { log("（已有任务在运行中，忽略重复开始）"); return; }
+      running = true;
+      logBuffer = [];
+      broadcast({ type: "status", running: true });
+      try { await run(!!msg.dry); }
+      catch (e) { log("✗ 运行异常：" + String((e && e.stack) || e)); }
+      finally {
+        running = false;
+        try { chrome.storage.session.set({ hwcLog: logBuffer, hwcRunning: false }); } catch (e) {}
+        broadcast({ type: "status", running: false });
+        broadcast({ type: "done" });
+      }
+    }
+  });
+});

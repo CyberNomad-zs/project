@@ -1,0 +1,37 @@
+# Temu 监测常驻守护脚本
+# 由计划任务「TemuMonitor」在 Administrator 登录时以隐藏窗口启动。
+# 职责：跑 `node src/cli.js start`（内部 15 分钟轮询）；进程若崩溃则 30 秒后自动重启。
+# 日志：logs\daemon-YYYYMMDD.log（守护标记+退出码）、monitor-*.out/err.log（node 的输出/报错）。
+$ErrorActionPreference = 'Continue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+
+$root = 'E:\project\temu\temu-monitor'
+$node = 'C:\Program Files\nodejs\node.exe'
+Set-Location $root
+$logDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force $logDir | Out-Null
+
+while ($true) {
+  $day = Get-Date -Format 'yyyyMMdd'
+  $log = Join-Path $logDir "daemon-$day.log"
+  $out = Join-Path $logDir "monitor-$day.out.log"
+  $err = Join-Path $logDir "monitor-$day.err.log"
+
+  ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] === 启动 node src/cli.js start ===') |
+    Out-File -Append -Encoding utf8 $log
+
+  # 清理上次异常退出可能残留的 Chrome 单例锁（否则复用 .userdata 会启动失败）
+  Remove-Item (Join-Path $root '.userdata\SingletonLock'),
+              (Join-Path $root '.userdata\SingletonCookie'),
+              (Join-Path $root '.userdata\lockfile') -Force -ErrorAction SilentlyContinue
+
+  # 用 Start-Process 干净分离 stdout/stderr 到独立文件（避免 PS *>> 的写入竞争吞掉输出）
+  $proc = Start-Process -FilePath $node -ArgumentList 'src\cli.js', 'start' `
+            -WorkingDirectory $root -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+  $code = if ($proc) { $proc.ExitCode } else { 'null' }
+
+  ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "] === node 退出 exitcode=$code，30 秒后重启 ===") |
+    Out-File -Append -Encoding utf8 $log
+  Start-Sleep -Seconds 30
+}

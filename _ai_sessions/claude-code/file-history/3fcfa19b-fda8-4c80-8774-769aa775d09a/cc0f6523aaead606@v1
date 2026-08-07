@@ -1,0 +1,25 @@
+"""告警：飞书群机器人 webhook；未配置时仅写日志。"""
+import logging
+
+import requests
+
+log = logging.getLogger(__name__)
+
+
+class Notifier:
+    def __init__(self, feishu_webhook="", customer_name=""):
+        self.webhook = feishu_webhook
+        self.prefix = f"[sellfox-bridge/{customer_name}] " if customer_name else ""
+
+    def warn(self, text):
+        log.warning("ALERT: %s", text)
+        if not self.webhook:
+            return
+        try:
+            requests.post(
+                self.webhook,
+                json={"msg_type": "text", "content": {"text": self.prefix + text}},
+                timeout=10,
+            )
+        except Exception as e:
+            log.error("飞书告警发送失败: %s", e)

@@ -1,0 +1,81 @@
+# 日批定时任务 & 飞书机器人
+
+## 1. Windows 每天 10:00
+
+```powershell
+cd "E:\project\亚马逊平台驾驶舱-店铺数据"
+# 建议管理员 PowerShell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\register_daily_task.ps1
+```
+
+任务名：`ASIN健康度-每日同步`  
+实际命令：`scripts\run_daily.ps1` → `python -m app.main once`  
+日志：`data\logs\daily_*.log`
+
+手动试跑：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily.ps1
+```
+
+只 dry-run 通知：
+
+```powershell
+$env:ASIN_DAILY_DRY_RUN = "1"
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_daily.ps1
+```
+
+卸载任务：
+
+```powershell
+Unregister-ScheduledTask -TaskName "ASIN健康度-每日同步" -Confirm:$false
+```
+
+---
+
+## 2. 飞书群机器人（摘要推送）
+
+1. 打开目标群 → 设置 → 群机器人 → 添加 **自定义机器人**
+2. 安全设置建议：自定义关键词 `ASIN健康度` 或 IP 限制
+3. 复制 Webhook 地址到 `.env`：
+
+```env
+FEISHU_BOT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx
+```
+
+4. 测试：
+
+```powershell
+python -m app.main notify --date 2026-07-21
+```
+
+未配置 Webhook 时，摘要只写本地 `notify_log`，不报错中断日批。
+
+---
+
+## 3. once 流水线
+
+```text
+productAnalyze V2
+  → FBA 库存合并
+  → 规则 → 异常任务
+  → 推飞书「异常任务」
+  → 预建「运营动作记录」空壳（负责人补全，系统不覆盖）
+  → 按负责人推送待办 + 全量摘要
+```
+
+对应命令：
+
+```powershell
+python -m app.main once --date 2026-07-21
+python -m app.main once --dry-run-notify   # 不发机器人
+python -m app.main once --no-fba           # 跳过 FBA
+python -m app.main once --no-push-feishu   # 不推任务表/动作空壳
+python -m app.main once --no-owner-notify  # 不按负责人拆分推送
+
+# 仅后半段（任务已生成）
+python -m app.main dispatch --date 2026-07-21 --dry-run-notify
+python -m app.main push-action-shells --date 2026-07-21
+```
+
+负责人 @：在 `config/config.yaml` → `notify.owner_open_ids` 配置姓名→open_id。

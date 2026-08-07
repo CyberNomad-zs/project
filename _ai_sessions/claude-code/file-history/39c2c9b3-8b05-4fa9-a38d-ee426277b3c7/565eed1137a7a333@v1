@@ -1,0 +1,144 @@
+import { log } from './logger.js';
+import { closePopups } from './popups.js';
+
+/**
+ * 抓取单个店铺的监测指标：
+ *   - onSaleCount        「在售中」商品数量（来自顶部状态标签）
+ *   - trafficWatchCount  「商品流量待关注」数量（来自快速筛选芯片）
+ *   - trafficDeclineCount「商品流量近期有下降」数量（来自接口 JSON / 行内徽标）
+ *   - anomalyItems       尽力枚举的异常商品（标题 / SKC）
+ *
+ * 采用「接口拦截 + DOM 兜底」双通道，尽量稳。
+ */
+
+const MARK_WATCH = '商品流量待关注';
+const MARK_DECLINE = '商品流量近期有下降';
+const MARK_DECLINE_ALT = ['流量近期有下降', '流量下降', '商品流量待处理'];
+
+export async function scanStore(page, storeName, cfg) {
+  const captured = [];
+  const onResp = async (resp) => {
+    try {
+      const url = resp.url();
+      if (!/goods|product|list|query|mms|search|page/i.test(url)) return;
+      const ct = (resp.headers()['content-type'] || '');
+      if (!ct.includes('json')) return;
+      const text = await resp.text();
+      if (!text) return;
+      if (text.includes('流量') || /skc|goodsList|productList|onSale|itemList/i.test(text)) {
+        captured.push({ url, text });
+      }
+    } catch { /* ignore */ }
+  };
+  page.on('response', onResp);
+
+  try {
+    // 确保在商品列表页
+    if (!/goods\/list/.test(page.url())) {
+      await page.goto(cfg.goodsListUrl, { waitUntil: 'domcontentloaded' });
+      await page.waitForTimeout(2500);
+    }
+    await closePopups(page);
+
+    // 切到「在售中」标签，触发对应列表接口
+    await clickOnSaleTab(page);
+    await page.waitForTimeout(2500);
+
+    const onSaleCount = await readOnSaleCount(page);
+    const trafficWatchCount = await readWatchChip(page);
+    const { declineCount, items } = await readAnomalies(page, captured);
+
+    return {
+      store: storeName,
+      onSaleCount,
+      trafficWatchCount,
+      trafficDeclineCount: declineCount,
+      trafficAnomalyTotal:
+        (trafficWatchCount ?? 0) + (declineCount ?? 0),
+      anomalyItems: items,
+      capturedApiCount: captured.length,
+    };
+  } finally {
+    page.off('response', onResp);
+  }
+}
+
+/** 点击「在售中」状态标签 */
+async function clickOnSaleTab(page) {
+  const tab = page.getByText(/^在售中\s*\d*/).first();
+  if (await tab.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await tab.click({ timeout: 3000 }).catch(() => {});
+  }
+}
+
+/** 读取「在售中 N」数量 */
+async function readOnSaleCount(page) {
+  const loc = page.getByText(/在售中\s*\d+/).first();
+  const txt = await loc.innerText({ timeout: 3000 }).catch(() => '');
+  const m = txt.match(/在售中\s*(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/** 读取快速筛选芯片「商品流量待关注 N」 */
+async function readWatchChip(page) {
+  const loc = page.getByText(/商品流量待关注\s*\d+/).first();
+  const txt = await loc.innerText({ timeout: 2000 }).catch(() => '');
+  const m = txt.match(/商品流量待关注\s*(\d+)/);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * 统计「流量异常」商品：优先用接口 JSON 文本计数，DOM 行内徽标兜底并提取商品标识。
+ */
+async function readAnomalies(page, captured) {
+  // 1) 接口 JSON 文本计数（不依赖字段名，直接数标记串出现次数）
+  let declineFromApi = 0;
+  for (const { text } of captured) {
+    declineFromApi += countOccurrences(text, MARK_DECLINE);
+    for (const alt of MARK_DECLINE_ALT) declineFromApi += countOccurrences(text, alt);
+  }
+
+  // 2) DOM 行内徽标：提取可见的异常商品标识
+  const items = await extractAnomalyItemsFromDom(page);
+  const declineFromDom = items.filter((i) => /下降/.test(i.mark)).length;
+
+  const declineCount = Math.max(declineFromApi, declineFromDom);
+  return { declineCount, items };
+}
+
+/** 从当前渲染的行里提取带流量徽标的商品（尽力而为） */
+async function extractAnomalyItemsFromDom(page) {
+  const markers = [MARK_WATCH, MARK_DECLINE, ...MARK_DECLINE_ALT];
+  const out = [];
+  for (const mark of markers) {
+    const badges = page.getByText(mark, { exact: false });
+    const n = Math.min(await badges.count().catch(() => 0), 50);
+    for (let i = 0; i < n; i++) {
+      const badge = badges.nth(i);
+      // 向上找行容器，读 SKC / 标题
+      const rowText = await badge
+        .locator('xpath=ancestor::tr[1] | xpath=ancestor::*[contains(@class,"row") or contains(@class,"Row")][1]')
+        .first()
+        .innerText()
+        .catch(() => '');
+      const skc = (rowText.match(/SKC\s*(?:ID)?[:：]?\s*(\d{6,})/) || [])[1] || '';
+      const title = (rowText.split('\n').find((l) => l.trim().length > 6) || '').trim().slice(0, 40);
+      out.push({ mark: mark.replace('商品流量', ''), skc, title });
+    }
+  }
+  // 去重（按 skc+mark）
+  const seen = new Set();
+  return out.filter((i) => {
+    const k = i.skc + '|' + i.mark;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+function countOccurrences(hay, needle) {
+  if (!hay || !needle) return 0;
+  let count = 0, idx = 0;
+  while ((idx = hay.indexOf(needle, idx)) !== -1) { count++; idx += needle.length; }
+  return count;
+}

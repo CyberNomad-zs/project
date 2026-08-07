@@ -1,0 +1,9 @@
+$path = 'E:\project\清泉跨境系统（企业级）\collectors\tiktok-ads\scripts\run-shop-modules.ps1'
+$errs = $null
+$tok = $null
+[void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tok, [ref]$errs)
+if ($errs -and $errs.Count) {
+  $errs | ForEach-Object { $_.ToString() }
+  exit 1
+}
+'parse ok'

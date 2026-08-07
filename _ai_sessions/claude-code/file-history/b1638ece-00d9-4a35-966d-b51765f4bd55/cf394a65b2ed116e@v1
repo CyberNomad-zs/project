@@ -1,0 +1,21 @@
+@echo off
+chcp 65001 >nul
+rem Graphical launcher for TK ad daily report (opens gui.py in a window).
+cd /d "%~dp0"
+
+where pythonw >nul 2>nul && (
+  start "TK广告日报" pythonw "%~dp0gui.py"
+  goto :eof
+)
+where python >nul 2>nul && (
+  start "TK广告日报" python "%~dp0gui.py"
+  goto :eof
+)
+where py >nul 2>nul && (
+  start "TK广告日报" py -3 "%~dp0gui.py"
+  goto :eof
+)
+
+echo [错误] 未找到 Python。请先安装 Python 3 并勾选 "Add to PATH"。
+echo.
+pause

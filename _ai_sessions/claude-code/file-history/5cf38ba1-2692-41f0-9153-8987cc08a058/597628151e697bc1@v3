@@ -1,0 +1,122 @@
+# TK 整站运营数据采集路线图
+
+> 职责口径（已确认）：**抓取 TikTok Shop 后台对运营有用的整站数据**（不限广告），经紫鸟 → 清泉 PG（+ 按需飞书）。  
+> 广告是第一域，不是终点。
+
+更新：2026-07-31
+
+---
+
+## 1. 原则
+
+| 原则 | 说明 |
+|------|------|
+| 一域一页一脚本 | 后台多菜单，禁止指望广告页抓全站 |
+| 一域一事实表 | 订单不进 `fact_ads_campaign_daily` |
+| 一域一 Ingest source | 如 `tiktok_ads` / `tiktok_orders` / `tiktok_products` |
+| 只走紫鸟 | 禁止本机浏览器直连卖家后台 |
+| 分期上线 | 每域：调研字段 → 脚本 → 迁移/Ingest → dual/飞书 → 稳定采集 |
+| **广告日更归属** | **同事本机** Windows 计划任务已跑；**中心不重复建定时/日更工程**，只收 ingest |
+
+---
+
+## 2. 批次与状态
+
+| 批次 | 域 | 菜单/入口（典型） | 事实表 / source | 状态 |
+|------|-----|-------------------|-----------------|------|
+| **P0** | 广告计划日指标 | 营销 → 店铺广告 / ads-creation/dashboard | `tk.fact_ads_campaign_daily` / `tiktok_ads` | **已通**；日更由**同事本机定时**承担（中心不待办） |
+| **P1** | 广告同页扩列 | 同上 | 同上 + P1 列 | **已通** |
+| **P2a** | **订单** | 订单 → 全部订单 / order list | `tk.fact_tiktok_order` / `tiktok_orders` | **已通**；2026-07-31 修未来 biz_date + 店名主数据覆盖（重跑后生效） |
+| **P2b** | 商品/库存 | 商品 → 商品列表 `/product/manage` | `tk.fact_tiktok_product` / `tiktok_products` | **runner 已修**（曾误用 orderId 去重）；待 Bridge 实跑非 smoke |
+| **P2c** | 店级数据总览 | 数据分析 / 首页 KPI | `tk.fact_tiktok_shop_daily` / `tiktok_shop_daily` | **scrape+run-shop-modules 已落**；待实页 URL/标签校准 |
+| **P3a** | 账号健康 | 账号健康 | `tk.fact_tiktok_health_daily` | **scrape+runner 已落**；待实页校准 |
+| **P3b** | 财务摘要 | 财务 → 结算/账单 | `tk.fact_tiktok_finance_daily` | **scrape+runner 已落**；待实页校准 |
+| **P4** | 联盟/达人、直播、促销… | 按运营实际打开频率 | 另表 | 按需 |
+
+---
+
+## 3. 流水线形态
+
+### 3.1 广告日更（已有 · 同事本机）
+
+```text
+同事 Windows 计划任务（见 docs/每日定时任务.md）
+  → run-daily-report.ps1 / run-multi-store.ps1
+  → 飞书（按需）+ 清泉 ingest tiktok_ads
+```
+
+中心侧：**不**再规划「英区 dual 日更跑稳」类任务。
+
+### 3.2 整站多域（目标 / 开发中）
+
+```text
+run-multi-store.ps1 | run-orders.ps1 | run-products.ps1 | …
+  for each store:
+    open → visit moduleUrl → scrape-*.js →
+      Feishu(可选) + Qingquan ingest(source=tiktok_*)
+```
+
+配置示例见 `config/stores.config.example.json` 的 `modules` / `urls`。
+
+---
+
+## 4. P2a 订单 — 最小字段
+
+运营日更常用（具体表头以紫鸟实页为准，脚本用别名匹配）：
+
+| 逻辑字段 | 说明 |
+|----------|------|
+| order_id | 订单号（幂等键核心） |
+| order_status | 状态（待发货/已发货/已完成/取消…） |
+| pay_time / create_time | 下单或支付时间 |
+| sku_name / product_name | 商品名 |
+| sku_id / seller_sku | SKU |
+| quantity | 件数 |
+| pay_amount | 实付/订单金额 |
+| currency | 币种 |
+| buyer_region | 可选 |
+| shipping_status | 可选物流状态文案 |
+
+粒度：MVP **订单头一行**，`idempotency_key = tiktok_orders:{shop}:{order_id}`。
+
+---
+
+## 5. 验收
+
+### 广告（P0/P1）
+
+- [x] 脚本 + dual ingest 通路  
+- [x] **日更调度**：同事本机定时（中心不验收、不重建）  
+- [ ] 欧盟店：代理可用后再纳入（可选，非中心日更待办）
+
+### 订单（P2a）
+
+- [x] 紫鸟实页字段校准（UK 表头）  
+- [x] `scrape-orders-page.js` 多页解析  
+- [x] `POST /api/v1/ingest/tiktok_orders` 幂等写入（生产数百单）  
+- [x] `run-orders.ps1` 多店  
+- [x] 采集端不误吃物流「送达截止」为下单时间  
+- [x] 中心解析相对/星期时间 + 丢弃未来 biz_date  
+- [x] `shop_name` 优先 `public.shop.name`  
+- [ ] 历史脏数据重跑回填（运维）  
+
+### 商品（P2b）
+
+- [x] 表 + ingest + scraper 初版  
+- [x] runner 按 productId 去重（修复 orders 拷贝残留）  
+- [ ] 实跑稳定、非仅 smoke  
+
+### KPI / 健康 / 财务（P2c / P3）
+
+- [x] 表 + ingest source  
+- [x] scrape 脚本 + `run-shop-modules.ps1`  
+- [ ] 实页 URL/文案校准并 DryRun 通过  
+
+---
+
+## 6. 夜间/无人值守说明
+
+- **广告日更**：以同事本机计划任务为准（需桌面会话 + 紫鸟在线）  
+- 开发机无紫鸟 Bridge 时：只改代码/迁移/文档，不假装抓取成功  
+- 有 Bridge 时：优先校准 **products**，再按需 probe KPI/健康/财务页  
+- 进度见仓库根 `PROGRESS-tk-full-scrape.md`

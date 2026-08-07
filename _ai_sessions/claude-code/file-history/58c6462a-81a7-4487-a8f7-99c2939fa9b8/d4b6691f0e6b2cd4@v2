@@ -1,0 +1,20 @@
+---
+name: temu-monitor-project
+description: Temu 多店铺自动化监测项目的背景与关键约束
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 1b77f1dc-3064-4ec9-a485-16b918ac2c52
+---
+
+在 `E:\project\temu` 构建 Temu Seller Central 多店铺监测工具（`temu-monitor/`，Node + Playwright + 飞书告警）。
+
+监测两件事：① 各店铺「在售中 N」数量下降；② 出现「商品流量待关注」/「商品流量近期有下降」的流量异常商品（这两个橙色标签在商品列表「申报价格(USD)」列下方，二者都算流量异常）。切换店铺后自动关闭推广弹窗。决策：账号下全部店铺、15 分钟轮询、飞书 webhook 告警。
+
+需求文档 `需求.docx`（正文仅 3 句 + 4 张截图，2026-07-10 更新）：弹窗要求是「登录成功后 / 切换店铺时一律关闭，**可能还有其他类型的弹窗，都关闭**」。截图确认除营销弹窗外还需关：`您有以下待办任务需要尽快处理` 待办模态框、点「消息」弹出的`全部消息`通知面板 / `商品不合规` 违规通知——均只有右上角 X、无「关闭」文本按钮，且带「去处理」等跳转按钮，关闭时**只能点 X，不能误点跳转按钮**。已在 `src/popups.js` 用 KNOWN_DIALOG_KEYWORDS 按标题定位容器后点其内关闭图标处理。
+
+关键非显然点：
+- 真实后台是 `https://agentseller.temu.com/goods/list`，`账号.txt` 里给的 `agentseller-eu.../mmsos/orders.html` 会跳转过去。
+- 店铺切换器 DOM、商品列表接口字段、部分选择器**需真实登录态下 `npm run calibrate` 校准**后才确定；当前代码用文本/结构容错选择器占位。
+- 首次登录可能需手机短信验证码 → 无法完全自主跑通，需用户手动 `npm run login` 一次。
+- 详细录屏分析见 `E:\project\temu\录屏分析.md`。

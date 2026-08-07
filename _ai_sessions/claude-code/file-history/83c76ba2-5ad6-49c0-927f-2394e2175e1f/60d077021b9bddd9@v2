@@ -1,0 +1,203 @@
+/* TikTok Shop product manage list scraper (P2b skeleton). ES5-safe for ziniao one-line minify. */
+(function () {
+  function cleanText(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+
+  function detectCurrency(text) {
+    var s = String(text == null ? '' : text);
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '');
+    s = s.replace(/USD|GBP|EUR|CNY|RMB/gi, '').replace(/%/g, '');
+    var n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+
+  var HEADER_ALIASES = {
+    productId: ['商品id', '产品id', 'product id', 'id', '商品 ID'],
+    productName: ['商品名称', '产品名称', '商品', '品名', 'product name', 'title', '名称'],
+    sellerSku: ['商家编码', 'seller sku', 'sku', '货号', '商家sku'],
+    status: ['状态', '商品状态', 'status', '销售状态'],
+    stockQty: ['库存', '可售库存', 'stock', 'quantity', 'qty'],
+    price: ['价格', '售价', 'price', '零售价'],
+    salesQty: ['销量', '累计销量', 'sales', 'sold']
+  };
+
+  function matchField(header) {
+    var h = cleanText(header).toLowerCase();
+    if (!h) return null;
+    var best = null;
+    var bestLen = 0;
+    var keys = Object.keys(HEADER_ALIASES);
+    for (var i = 0; i < keys.length; i++) {
+      var field = keys[i];
+      var aliases = HEADER_ALIASES[field];
+      for (var j = 0; j < aliases.length; j++) {
+        var al = aliases[j].toLowerCase();
+        if (h === al || h.indexOf(al) >= 0 || al.indexOf(h) >= 0) {
+          if (al.length >= bestLen) {
+            best = field;
+            bestLen = al.length;
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  function scoreTable(table) {
+    var trs = Array.prototype.slice.call(table.querySelectorAll('tr'));
+    if (trs.length < 2) return 0;
+    var head = Array.prototype.slice.call(trs[0].querySelectorAll('th,td')).map(function (c) {
+      return cleanText(c.textContent);
+    });
+    var hits = 0;
+    var fields = {};
+    for (var i = 0; i < head.length; i++) {
+      var f = matchField(head[i]);
+      if (f) {
+        hits++;
+        fields[f] = true;
+      }
+    }
+    if (!fields.productName && !fields.sellerSku && !fields.productId) return 0;
+    return hits * 10 + Math.min(trs.length, 80);
+  }
+
+  function pickBestTable() {
+    var tables = Array.prototype.slice.call(document.querySelectorAll('table'));
+    var best = null;
+    var bestScore = 0;
+    for (var i = 0; i < tables.length; i++) {
+      var s = scoreTable(tables[i]);
+      if (s > bestScore) {
+        bestScore = s;
+        best = tables[i];
+      }
+    }
+    return bestScore >= 10 ? best : null;
+  }
+
+  function parseHtmlTable(table) {
+    var trs = Array.prototype.slice.call(table.querySelectorAll('tr'));
+    if (trs.length < 2) return { rows: [], headers: [], colMap: {} };
+    var headIdx = 0;
+    var i;
+    for (i = 0; i < Math.min(3, trs.length); i++) {
+      var cells = Array.prototype.slice.call(trs[i].querySelectorAll('th,td')).map(function (c) {
+        return cleanText(c.textContent);
+      });
+      var hits = 0;
+      for (var h = 0; h < cells.length; h++) if (matchField(cells[h])) hits++;
+      if (hits >= 2) {
+        headIdx = i;
+        break;
+      }
+    }
+    var headCells = Array.prototype.slice.call(trs[headIdx].querySelectorAll('th,td')).map(function (c) {
+      return cleanText(c.textContent);
+    });
+    var colMap = {};
+    headCells.forEach(function (h, idx) {
+      var f = matchField(h);
+      if (f && colMap[f] == null) colMap[f] = idx;
+    });
+    var rows = [];
+    var seen = {};
+    for (var r = headIdx + 1; r < trs.length; r++) {
+      var tds = Array.prototype.slice.call(trs[r].querySelectorAll('td,th'));
+      if (!tds.length) continue;
+      var vals = tds.map(function (c) {
+        return cleanText(c.textContent);
+      });
+      function get(f) {
+        return colMap[f] != null ? vals[colMap[f]] || '' : '';
+      }
+      var productName = get('productName');
+      var sellerSku = get('sellerSku');
+      var productId = get('productId');
+      if (!productId) {
+        // try long numeric id in row
+        var m = vals.join(' ').match(/\b(\d{8,20})\b/);
+        if (m) productId = m[1];
+      }
+      if (!productId && sellerSku) productId = 'sku:' + sellerSku;
+      if (!productId && productName) productId = 'name:' + productName.slice(0, 80);
+      if (!productId) continue;
+      if (seen[productId]) continue;
+      seen[productId] = true;
+      var blob = vals.join(' ');
+      rows.push({
+        productId: productId,
+        productName: productName,
+        sellerSku: sellerSku,
+        status: get('status'),
+        stockQty: parseNumber(get('stockQty')),
+        price: parseNumber(get('price')),
+        salesQty: parseNumber(get('salesQty')),
+        currencyHint: detectCurrency(blob),
+        rawCells: vals.slice(0, 12)
+      });
+    }
+    return { rows: rows, headers: headCells, colMap: colMap };
+  }
+
+  try {
+    var url = location.href || '';
+    var title = document.title || '';
+    var table = pickBestTable();
+    var parsed = table ? parseHtmlTable(table) : { rows: [], headers: [], colMap: {} };
+    var source = table ? 'html-table' : 'none';
+    var rows = parsed.rows || [];
+    var currencyHits = { USD: 0, GBP: 0, EUR: 0, CNY: 0 };
+    for (var i = 0; i < rows.length; i++) {
+      var c = rows[i].currencyHint;
+      if (c && currencyHits[c] != null) currencyHits[c]++;
+    }
+    var currency = 'GBP';
+    var max = -1;
+    var ks = Object.keys(currencyHits);
+    for (var k = 0; k < ks.length; k++) {
+      if (currencyHits[ks[k]] > max) {
+        max = currencyHits[ks[k]];
+        currency = ks[k];
+      }
+    }
+    if (max <= 0) currency = 'GBP';
+    var ok = rows.length > 0;
+    return JSON.stringify({
+      ok: ok,
+      source: source,
+      module: 'products',
+      url: url,
+      title: title,
+      currency: currency,
+      currencyHits: currencyHits,
+      headers: parsed.headers || [],
+      colMap: parsed.colMap || {},
+      rows: rows,
+      rowCount: rows.length,
+      error: ok ? null : 'no product table. open 商品管理 list. url=' + url
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false,
+      source: 'none',
+      module: 'products',
+      url: location.href || '',
+      rows: [],
+      error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

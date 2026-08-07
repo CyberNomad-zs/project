@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb1d2-5f2d-7ca0-a31f-69506ab030a4",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "Project Current Status Overview Inquiry",
+  "created_at": "2026-07-30T06:59:42.004402100Z",
+  "updated_at": "2026-07-30T07:46:37.513928900Z",
+  "num_messages": 578,
+  "num_chat_messages": 194,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 10,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "9deb61482c948ca82b4a4a3f1e09d6bdaba387b9",
+  "head_branch": "main",
+  "request_id": "2c2ce4d6-3653-4fd4-8d43-e3e9c0b73962",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T07:46:37.513928900Z",
+  "generated_title": "Project Current Status Overview Inquiry",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

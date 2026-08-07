@@ -1,0 +1,62 @@
+# -*- coding: utf-8 -*-
+"""在 ERP 三方仓视图里找「手动更新」按钮：dump 顶部子标签 + 全页搜手动更新，写 UTF-8 文件。"""
+import sys, os, time, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+OUT = os.path.join(config.DUMP_DIR, "erp_find_update.json")
+
+
+def snapshot(page, tag):
+    return page.evaluate(r"""(tag) => {
+        const norm=s=>(s||'').replace(/\s+/g,'');
+        const topTabs=[], updateBtns=[];
+        document.querySelectorAll('*').forEach(e=>{
+            if(e.children.length>0) return;
+            const t=norm(e.innerText);
+            if(!t) return;
+            const r=e.getBoundingClientRect();
+            if(r.top>0 && r.top<160 && t.length<=14 && r.width>0)   // 顶部子标签区
+                topTabs.push({t, x:Math.round(r.x), y:Math.round(r.top)});
+            if(t.includes('手动更新')){
+                const rr=e.getBoundingClientRect();
+                updateBtns.push({t, inRow:!!e.closest('.vxe-body--row'),
+                                 x:Math.round(rr.x+rr.width/2), y:Math.round(rr.y+rr.height/2)});
+            }
+        });
+        // 去重 topTabs
+        const seen=new Set(), tabs=[];
+        topTabs.forEach(o=>{const k=o.t+o.x; if(!seen.has(k)){seen.add(k);tabs.push(o);}});
+        return {tag, topTabs:tabs, updateBtns};
+    }""", tag)
+
+
+def main():
+    result = {"steps": []}
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            result["error"]="ERP未登录"; json.dump(result, open(OUT,"w",encoding="utf-8"), ensure_ascii=False); ctx.close(); return
+        erp.open_order_ship(page)
+        page.click("text=三方仓", timeout=6000); time.sleep(3)
+        result["steps"].append(snapshot(page, "三方仓默认"))
+
+        # 依次点顶部子标签（成功/失败/获取中/待更新/待新增），每点一次快照
+        for tabname in ["待更新", "获取中", "待新增", "成功", "失败"]:
+            try:
+                page.click(f"text={tabname}", timeout=3000); time.sleep(2.5)
+                snap = snapshot(page, f"子标签[{tabname}]")
+                result["steps"].append(snap)
+            except Exception as e:
+                result["steps"].append({"tag": f"子标签[{tabname}]", "error": str(e)[:80]})
+
+        json.dump(result, open(OUT, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_find_update.png"), full_page=True)
+        print("written", OUT)
+        time.sleep(3); ctx.close()
+
+
+if __name__ == "__main__":
+    main()

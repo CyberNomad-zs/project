@@ -1,0 +1,25 @@
+{
+  "feishuWebhooks": ["https://open.feishu.cn/open-apis/bot/v2/hook/eafe2bd9-973f-4381-9031-455228d3977a"],
+  "feishuSecret": "",
+  "intervalMinutes": 15,
+  "stores": "all",
+  "storeList": ["Agnis", "HomeCove", "Twilight Cove"],
+  "fullRun": false,
+  "alerts": {
+    "onSaleDrop": true,
+    "trafficAnomaly": true,
+    "delist": true,
+    "onshelf": true,
+    "loginExpiry": true
+  },
+  "loginAlertAfterRounds": 2,
+  "loginRealertRounds": 16,
+  "headless": true,
+  "proxy": "",
+  "loginUrl": "https://agentseller.temu.com/goods/list",
+  "goodsListUrl": "https://agentseller.temu.com/goods/list",
+  "userDataDir": "./.userdata",
+  "channel": "chrome",
+  "perStoreTimeoutMs": 60000,
+  "navTimeoutMs": 60000
+}

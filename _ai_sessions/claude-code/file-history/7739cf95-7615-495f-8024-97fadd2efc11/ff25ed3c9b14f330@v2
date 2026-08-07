@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+"""探测飞书 bitable 文件夹 / block / 移动 / 视图筛选相关 API。"""
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+env: dict[str, str] = {}
+for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    env[k.strip()] = v.strip().strip('"').strip("'")
+
+APP_ID = env["FEISHU_APP_ID"]
+APP_SECRET = env["FEISHU_APP_SECRET"]
+APP_TOKEN = env.get("FEISHU_BITABLE_APP_TOKEN_TK") or env["FEISHU_BITABLE_APP_TOKEN"]
+T1 = env.get("FEISHU_BITABLE_TABLE_TK_SHOP_DAILY") or "tblwh7EVeAFPfvuy"
+
+
+def req(method: str, url: str, body=None, token: str | None = None) -> dict:
+    data = None
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    r = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"code": e.code, "msg": raw}
+
+
+def main() -> None:
+    tok = req(
+        "POST",
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": APP_ID, "app_secret": APP_SECRET},
+    )
+    token = tok["tenant_access_token"]
+    print("token ok")
+
+    probes = [
+        ("GET", f"/bitable/v1/apps/{APP_TOKEN}/dashboards"),
+        ("GET", f"/board/v1/apps/{APP_TOKEN}/blocks"),
+        ("GET", f"/bitable/v1/apps/{APP_TOKEN}/blocks"),
+        ("GET", f"/bitable/v1/apps/{APP_TOKEN}/workspaces"),
+        ("GET", f"/bitable/v1/apps/{APP_TOKEN}/workspace"),
+        ("GET", f"/base/v2/apps/{APP_TOKEN}"),
+        ("GET", f"/base/v2/apps/{APP_TOKEN}/blocks"),
+        ("GET", f"/base/v2/apps/{APP_TOKEN}/content"),
+        # view get detail
+        ("GET", f"/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views"),
+    ]
+    for method, path in probes:
+        r = req(method, f"https://open.feishu.cn/open-apis{path}", token=token)
+        print(f"\n{method} {path}")
+        print(json.dumps(r, ensure_ascii=False)[:800])
+
+    # get first view full
+    views = req(
+        "GET",
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views",
+        token=token,
+    )
+    vitems = (views.get("data") or {}).get("items") or []
+    if vitems:
+        vid = vitems[0]["view_id"]
+        r = req(
+            "GET",
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views/{vid}",
+            token=token,
+        )
+        print(f"\nGET view detail {vid}")
+        print(json.dumps(r, ensure_ascii=False)[:1500])
+
+    # try patch view with filter (dry experiment on a new view)
+    # First create a temp view
+    cr = req(
+        "POST",
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views",
+        {"view_name": "_tmp_store_filter_probe", "view_type": "grid"},
+        token,
+    )
+    print("\ncreate temp view", json.dumps(cr, ensure_ascii=False)[:500])
+    vid = None
+    if cr.get("code") == 0:
+        vid = (cr.get("data") or {}).get("view", {}).get("view_id") or (cr.get("data") or {}).get("view_id")
+    if vid:
+        # try various patch bodies for filter
+        bodies = [
+            {
+                "view": {
+                    "view_name": "_tmp_store_filter_probe",
+                    "property": {
+                        "filter_info": {
+                            "conjunction": "and",
+                            "conditions": [
+                                {
+                                    "field_id": "fld9R1LGOG",
+                                    "operator": "is",
+                                    "value": ["Deal to deal"],
+                                }
+                            ],
+                        }
+                    },
+                }
+            },
+            {
+                "property": {
+                    "filter_info": {
+                        "conjunction": "and",
+                        "conditions": [
+                            {
+                                "field_id": "fld9R1LGOG",
+                                "operator": "is",
+                                "value": ["Deal to deal"],
+                            }
+                        ],
+                    }
+                }
+            },
+            {
+                "view": {
+                    "property": {
+                        "filter_info": {
+                            "conjunction": "and",
+                            "conditions": [
+                                {
+                                    "field_name": "店铺",
+                                    "operator": "is",
+                                    "value": ["Deal to deal"],
+                                }
+                            ],
+                        }
+                    }
+                }
+            },
+        ]
+        for i, body in enumerate(bodies):
+            r = req(
+                "PATCH",
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views/{vid}",
+                body,
+                token,
+            )
+            print(f"\nPATCH attempt {i+1}:", json.dumps(r, ensure_ascii=False)[:800])
+            if r.get("code") == 0:
+                # read back
+                g = req(
+                    "GET",
+                    f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views/{vid}",
+                    token=token,
+                )
+                print("GET after patch:", json.dumps(g, ensure_ascii=False)[:1200])
+                break
+
+        # cleanup
+        d = req(
+            "DELETE",
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{T1}/views/{vid}",
+            token=token,
+        )
+        print("\ndelete temp view", d.get("code"), d.get("msg"))
+
+
+if __name__ == "__main__":
+    main()

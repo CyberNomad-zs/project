@@ -1,0 +1,309 @@
+// content_erp.js —— ERP（赛狐 Sellfox）页面内操作，照搬 automation/erp.py。
+// 由 background 注入到 sellfox.com 的所有 frame；只有承载订单表(vxe)的那个 frame 会真正干活，
+// 其余 frame 的 dispatch 返回 null，被 background 过滤掉。
+// 每个 op 把过程日志 push 进 L，随结果一起返回，由 background 转发到 popup 实时显示。
+window.__HWC_ERP = window.__HWC_ERP || (function () {
+  const H = window.__HWC;
+  const FILTER_TEMPLATE = "未取消等待发货";
+
+  // 该 frame 是否承载订单业务视图？（有 vxe 表格 或 待处理/物流下单 相关 DOM）
+  function isErpFrame() {
+    return !!(document.querySelector(".vxe-table, .vxe-header--column") ||
+              H.findByExactText("物流下单") ||
+              H.qsa("*").some((e) => e.children.length === 0 && H.norm(e.innerText) === "待处理"));
+  }
+
+  function dismissNotifications() {
+    try { H.qsa(".el-notification").forEach((e) => e.remove()); } catch (e) {}
+  }
+
+  // 等模板 popover 与 loading 遮罩都消失再操作。实测坑(2026-07-15)：选中筛选模板后，模板 popover
+  // 残留 + 列表刷新 loading 遮罩，会让紧接着的渠道 input 点击弹不开渠道下拉（单例 popover 被占/
+  // 遮罩拦点）——现象=模板成功那次渠道三次全未弹开、模板失败那次渠道反而能开（强相关）。
+  const BLOCKER_SEL = ".el-popover, .select-menu, .search_more_temp_new, .el-loading-mask, .loading-indicator-overlay, .vxe-loading--wrapper";
+  async function waitPageSettle(timeout = 6000) {
+    await H.waitFor(() => !H.qsa(BLOCKER_SEL).some((p) => H.isVisible(p)), { timeout, interval: 300 });
+  }
+  function visibleBlockers() {
+    return [...new Set(H.qsa(BLOCKER_SEL).filter((e) => H.isVisible(e))
+      .map((e) => (typeof e.className === "string" ? e.className : "").split(" ")[0]).filter(Boolean))];
+  }
+
+  async function dismissAlertModal(L) {
+    for (let i = 0; i < 3; i++) {
+      let closed = false;
+      for (const t of ["稍后处理", "关闭", "我知道了", "取消"]) {
+        const b = H.qsa(".el-dialog button, .el-message-box button")
+          .find((x) => H.isVisible(x) && H.norm(x.innerText) === H.norm(t));
+        if (b) { H.realClick(b); closed = true; await H.sleep(800); break; }
+      }
+      if (!closed) break;
+    }
+  }
+
+  async function gotoView(name, L) {
+    const el = H.findByExactText(name);
+    if (!el) { L.push(`[ERP] 未找到视图入口：${name}`); return false; }
+    H.realClick(el);
+    await H.sleep(3000);
+    L.push(`[ERP] 切换到视图：${name}`);
+    return true;
+  }
+
+  // 需求1：选筛选模板（排除取消/退款/换货/禁处理单）。⚠️实测选模板会重置渠道筛选，
+  // 故调用方必须【先选模板，再筛渠道】，让渠道筛选最后生效（安全底线）。
+  async function selectFilterTemplate(name, L) {
+    if (!name) return true;
+    dismissNotifications();
+    // 触发器直接用 class 定位（探测实证 reference class=search_more_temp_reference）——比 findByExactText
+    // 文本匹配可靠：页面别处也有「筛选模板」文字（如"更多筛选"区），findByExactText 取 y 最靠上易选错、
+    // 点了不弹 popover（实测 run 里三次重试都没弹开=定位错了触发器）。兜底再退回叶子文本匹配。
+    const trigger = document.querySelector(".search_more_temp_reference")
+      || H.qsa("span, div, a, button").find((e) => H.isVisible(e) && e.children.length === 0 && H.norm(e.innerText) === "筛选模板")
+      || H.findByExactText("筛选模板");
+    if (!trigger) { L.push("[ERP] 未找到『筛选模板』触发控件"); return false; }
+    // 模板选项异步渲染 + 合成点击偶发不生效（实测探测两次一次弹开一次没弹）。轮询等选项出现、
+    // 最多重试 3 轮点击，别固定 sleep 后就读。只匹配叶子(children.length===0)——探测确认
+    // 「未取消等待发货」是 cls="" 独立叶子 span，不限叶子会误命中包含它的容器。
+    const findOpt = () => H.qsa("span, div, li, a")
+      .find((e) => H.isVisible(e) && e.children.length === 0 && H.norm(e.innerText) === H.norm(name));
+    let opt = null;
+    for (let attempt = 0; attempt < 3 && !opt; attempt++) {
+      H.realClick(trigger);
+      opt = await H.waitFor(() => findOpt(), { timeout: 4000, interval: 300 });
+      if (!opt) { L.push(`[ERP] 筛选模板选项未出现(第${attempt + 1}次)，重试…`); await H.sleep(600); }
+    }
+    if (!opt) {
+      L.push(`[ERP] 未找到筛选模板选项：${name}`);
+      // 关键：找不到也要按 Esc 关掉筛选模板弹层，否则它是 single_el_popover 单例弹层，
+      // 残留开着会导致下一步点渠道 input 只关旧弹层、不弹渠道下拉（实测渠道选项为空）。
+      try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+      await H.sleep(400);
+      return false;
+    }
+    H.realClick(opt);
+    await H.sleep(1500);
+    // 主动关闭模板 popover（Element el-popover 选项点选后不一定自动关；残留会占用单例弹层机制、
+    // 导致下一步渠道 input 点击只被消费为"关模板"而不弹渠道下拉=实测渠道三次未弹开）。
+    try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+    try { document.body.click(); } catch (e) {}
+    await waitPageSettle();
+    L.push(`[ERP] 已选择筛选模板：${name}`);
+    return true;
+  }
+
+  // 渠道筛选。触发 input[placeholder*='渠道'] -> 弹层 span.main_label 精确匹配 -> 确定。
+  // 返回 {ok, available}。available = 找不到时下拉里实际可选渠道（便于判断是漏筛还是本就没单）。
+  async function filterByChannel(channel, L) {
+    if (!channel) return { ok: true };
+    dismissNotifications();
+    // 先按 Esc 清掉可能残留的弹层（如上一步筛选模板未关的 popover）。渠道弹层是 single_el_popover
+    // 单例机制：若有旧弹层开着，点渠道 input 只会关旧弹层、不弹渠道下拉 → 选项为空（实测）。
+    try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+    await H.sleep(400);
+    // 点渠道 input 前先等页面稳定（模板 popover/loading 遮罩残留会让下拉弹不开）。
+    await waitPageSettle();
+    if (!document.querySelector("input[placeholder*='渠道']")) { L.push("[ERP] 未找到渠道筛选输入框"); return { ok: false, available: [] }; }
+    // 渠道选项异步加载(虚拟滚动 vue-recycle-scroller) + 合成点击偶发不生效；且实测「模板一应用→渠道
+    // 三次全不弹开且 blockers=[]」→ 疑模板刷新使工具栏重渲染、旧 input 引用失效。故【每轮重新抓 input】
+    // + focus+click(探测证实 focus+click 也能弹开)，未弹开时打细诊断(connected/disabled/下拉容器数)。
+    // 【自适应点法】独立探测总在"模板应用后"这步超时(页面卡顿)，故把"试多种点法"直接内建到生产流程：
+    // 依次尝试 5 种点法，哪种让 span.main_label 冒出来就用哪种、并记录点法名（下次日志即知哪种有效）。
+    // 病根候选：模板应用后渠道 el-popover 触发被抑制；不同点法(双击/focus/点外层 popover_trigger)或能破。
+    const readLabels = () => H.qsa("span.main_label").filter((e) => H.isVisible(e));
+    const chan = () => document.querySelector("input[placeholder*='渠道']");
+    const openers = [
+      { name: "realClick", fn: () => H.realClick(chan()) },
+      { name: "双击", fn: async () => { H.realClick(chan()); await H.sleep(300); H.realClick(chan()); } },
+      { name: "focus+click", fn: () => { const i = chan(); try { i.focus(); } catch (e) {} H.realClick(i); } },
+      { name: "popover_trigger", fn: () => { const t = chan() && chan().closest(".popover_trigger"); if (t) H.realClick(t); } },
+      { name: "select-container", fn: () => { const t = chan() && chan().closest(".select-container"); if (t) H.realClick(t); } },
+    ];
+    let labels = [];
+    let usedOpener = "";
+    for (const op of openers) {
+      if (!chan()) break;
+      try { await op.fn(); } catch (e) {}
+      const got = await H.waitFor(() => { const l = readLabels(); return l.length ? l : null; }, { timeout: 3000, interval: 300 });
+      if (got && got.length) { labels = got; usedOpener = op.name; break; }
+      L.push(`[ERP] 渠道点法「${op.name}」未弹开，换下一种…`);
+      try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+      await H.sleep(400);
+    }
+    if (!labels.length) {
+      L.push(`[ERP] 渠道下拉 5 种点法均未弹开，跳过本渠道（可见弹层/遮罩=${JSON.stringify(visibleBlockers())}）`);
+      return { ok: false, available: [] };
+    }
+    L.push(`[ERP] 渠道下拉已弹开（点法=${usedOpener}，${labels.length}项）`);
+    // span.main_label 精确匹配（别用包含——订单行物流信息列也含渠道文字会误点）
+    const picked = labels.find((el) => (el.innerText || "").trim() === channel);
+    if (!picked) {
+      const available = [...new Set(labels.map((e) => (e.innerText || "").trim()).filter(Boolean))].sort();
+      L.push(`[ERP] 未找到渠道选项：${channel}；当前下拉可选渠道=${JSON.stringify(available)}`);
+      try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+      return { ok: false, available };
+    }
+    H.realClick(picked);
+    L.push(`[ERP] 渠道选中：${channel}`);
+    await H.sleep(500);
+    // 确定：只在可见弹层容器内找按钮，避免误点页面别处常驻的“确定/确认”（旧 `, button` 是全页面匹配）。
+    let okBtn = null;
+    for (const p of H.qsa(".el-popper, .el-select-dropdown, .el-popover").filter((c) => H.isVisible(c))) {
+      okBtn = H.qsa("button", p).find((b) => H.isVisible(b) && ["确定", "确认"].includes(H.norm(b.innerText)));
+      if (okBtn) break;
+    }
+    if (okBtn) H.realClick(okBtn);
+    else L.push("[ERP] ⚠️ 未在弹层内找到渠道『确定』按钮（可能选中即生效，继续）");
+    await H.sleep(2500);
+    return { ok: true };
+  }
+
+  // 订单总数：.total_style 取最大（异步加载，轮询到 >0 或超时）。兜底 .parentRowGroup 计数。
+  async function countOrders(L) {
+    const read = () => {
+      const a = H.qsa(".total_style")
+        .map((e) => parseInt((e.innerText || "0").replace(/\D/g, ""), 10)).filter((x) => !isNaN(x));
+      return a.length ? Math.max(...a) : 0;
+    };
+    for (let i = 0; i < 5; i++) {
+      const n = read();
+      if (n > 0) return n;
+      await H.sleep(1000);
+    }
+    return H.qsa(".parentRowGroup").length;
+  }
+
+  // vxe 表头全选 + 校验确有行被勾选。
+  async function selectAll(L) {
+    const th = document.querySelector(".vxe-header--column.col--checkbox .vxe-cell--checkbox");
+    if (!th) { L.push("[ERP] 未找到 vxe 表头全选框"); return false; }
+    if ((th.getAttribute("class") || "").includes("is--disabled")) {
+      L.push("[ERP] 表头全选框禁用（可能无数据）"); return false;
+    }
+    H.realClick(th);
+    await H.sleep(1500);
+    const checked = H.qsa(".vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked").length;
+    if (!checked) { L.push("[ERP] 全选后未检测到勾选行"); return false; }
+    L.push(`[ERP] 已全选，勾选标记数≈${checked}`);
+    return true;
+  }
+
+  // 工具栏「物流下单」按钮（排除行内同名按钮，取 y 最靠上的可见按钮）。
+  function findToolbarButton(text) {
+    return H.findByExactText(text, {
+      selectors: "button, .el-button, .base_button_comp, .myj-btn, [class*=btn]",
+      excludeRowSel: ".vxe-body--row",
+    });
+  }
+
+  function parseResultText(txt) {
+    if (!txt) return { success: null, fail: null, fail_orders: [], text: "" };
+    const ms = txt.match(/成功[:：]?\s*(\d+)/);
+    const mf = txt.match(/失败[:：]?\s*(\d+)/);
+    const orders = [...new Set((txt.match(/\bP[0-9A-Z]{9,15}\b/g) || []))];
+    return { success: ms ? +ms[1] : null, fail: mf ? +mf[1] : null, fail_orders: orders, text: txt };
+  }
+
+  async function readResultDialog(L) {
+    let txt = null;
+    await H.waitFor(() => {
+      const dlg = H.qsa(".el-dialog__wrapper .el-dialog, .el-message-box")
+        .find((d) => H.isVisible(d));
+      if (dlg) { txt = (dlg.innerText || "").trim(); return true; }
+      return false;
+    }, { timeout: 30000, interval: 1000 });
+    if (txt) L.push("[ERP] 物流下单结果:\n" + txt.slice(0, 800));
+    // 关闭：只点可见弹窗内的关闭/确定按钮
+    const btn = H.qsa(".el-dialog__wrapper button, .el-message-box__wrapper button").find((b) =>
+      H.isVisible(b) && ["关闭", "确定", "知道了", "ok", "OK"].includes(H.norm(b.innerText)));
+    if (btn) H.realClick(btn);
+    else try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+    await H.sleep(1000);
+    return parseResultText(txt);
+  }
+
+  // ===== 主 op：物流下单 =====
+  async function placeOrder({ channel, dry }) {
+    const L = [];
+    await dismissAlertModal(L);
+    dismissNotifications();
+    if (!(await gotoView("待处理", L))) return { logs: L, error: "无法进入待处理视图" };
+
+    // 先选模板 -> 再筛渠道（顺序不可反：模板会重置渠道筛选，让渠道最后生效=安全底线）
+    if (!(await selectFilterTemplate(FILTER_TEMPLATE, L)))
+      L.push("[ERP] ⚠️ 筛选模板未选中，继续（渠道筛选仍保证范围，仅少了取消/退款单排除）");
+
+    if (channel) {
+      const f = await filterByChannel(channel, L);
+      if (!f.ok) {
+        L.push(`[ERP] 渠道筛选未成功(${channel})，为避免全量误下单，跳过本渠道`);
+        return { logs: L, count: 0, channelFilterFailed: true, available: f.available || [] };
+      }
+    }
+
+    const n = await countOrders(L);
+    L.push(`[ERP] 待处理订单 共 ${n} 条${channel ? `（渠道：${channel}）` : ""}`);
+    if (n === 0) return { logs: L, count: 0, success: 0, fail: 0, fail_orders: [] };
+
+    if (!(await selectAll(L))) return { logs: L, count: n, error: "全选失败" };
+
+    if (dry) {
+      L.push(`[ERP][DRY] 将点击【物流下单】处理 ${n} 条（已跳过实际点击）`);
+      return { logs: L, count: n, dry: true };
+    }
+
+    const btn = findToolbarButton("物流下单");
+    if (!btn) return { logs: L, count: n, error: "未定位到工具栏物流下单按钮" };
+    H.realClick(btn);
+    L.push(`[ERP] 已点击工具栏【物流下单】，处理 ${n} 条`);
+    await H.sleep(3000);
+    const r = await readResultDialog(L);
+    if (r.fail) L.push(`[ERP] ⚠️ 物流下单失败 ${r.fail} 单：${JSON.stringify(r.fail_orders)}`);
+    return { logs: L, count: n, success: r.success, fail: r.fail, fail_orders: r.fail_orders, result_text: r.text };
+  }
+
+  // ===== op：获取跟踪号（三方仓 > 待更新 > 手动更新）=====
+  async function updateStatus() {
+    const L = [];
+    if (!(await gotoView("三方仓", L))) return { logs: L, error: "进三方仓失败" };
+    if (!(await gotoView("待更新", L))) return { logs: L, error: "待更新子标签失败" };
+    const n = await countOrders(L);
+    if (!n) { L.push("[ERP] 待更新 0 条"); return { logs: L, total: 0, got: 0, fail: 0 }; }
+    if (!(await selectAll(L))) return { logs: L, error: "待更新全选失败" };
+    const btn = H.findByExactText("手动更新", {
+      selectors: "button, .el-button, .base_button_comp, [class*=btn]", excludeRowSel: ".vxe-body--row" });
+    if (!btn) return { logs: L, total: n, error: "无手动更新按钮" };
+    H.realClick(btn);
+    L.push(`[ERP] 已全选 ${n} 条并点【手动更新】，拉取跟踪号中…`);
+    let final = null;
+    await H.waitFor(() => {
+      const d = H.qsa(".el-dialog, .el-message-box").find((e) => H.isVisible(e));
+      if (d) { final = (d.innerText || "").trim(); if (final.includes("获取完成") || final.includes("100%")) return true; }
+      return false;
+    }, { timeout: 60000, interval: 1000 });
+    const res = { logs: L, total: null, got: null, fail: null, text: final };
+    if (final) {
+      const mt = final.match(/共\s*(\d+)\s*个?包裹/), mg = final.match(/已获取\s*(\d+)/), mf = final.match(/(\d+)\s*个?获取失败/);
+      res.total = mt ? +mt[1] : null; res.got = mg ? +mg[1] : null; res.fail = mf ? +mf[1] : null;
+      L.push(`[ERP] 状态更新结果: 共${res.total} 已获取${res.got} 失败${res.fail}`);
+    }
+    const cb = H.qsa(".el-dialog button, .el-message-box button").find((b) =>
+      H.isVisible(b) && ["关闭", "确定", "ok", "OK"].includes(H.norm(b.innerText)));
+    if (cb) H.realClick(cb);
+    return res;
+  }
+
+  async function dispatch(msg) {
+    if (!isErpFrame()) return null;   // 非订单表 frame，交给其它 frame
+    try {
+      if (msg.op === "ping") return { ok: true };
+      if (msg.op === "placeOrder") return await placeOrder(msg);
+      if (msg.op === "updateStatus") return await updateStatus();
+      return { error: "未知 op: " + msg.op };
+    } catch (e) {
+      return { error: String((e && e.stack) || e) };
+    }
+  }
+
+  return { dispatch };
+})();

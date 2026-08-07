@@ -1,0 +1,59 @@
+(function(){
+  function t(el){
+    return (el && el.textContent ? el.textContent : "").replace(/\s+/g, " ").trim().slice(0, 100);
+  }
+  var out = {
+    url: location.href,
+    title: document.title || "",
+    tables: document.querySelectorAll("table").length,
+    roleRows: document.querySelectorAll("[role=row]").length,
+    roleGrids: document.querySelectorAll("[role=grid],[role=table]").length,
+    ths: [],
+    bodyPreview: "",
+    candidates: [],
+    sampleRows: []
+  };
+  if (document.body && document.body.innerText) {
+    out.bodyPreview = document.body.innerText.slice(0, 1800);
+  }
+  var ths = document.querySelectorAll("th");
+  for (var i = 0; i < ths.length && i < 20; i++) {
+    out.ths.push(t(ths[i]));
+  }
+  var all = document.querySelectorAll("div,span,th,td,a,button");
+  for (var j = 0; j < all.length && out.candidates.length < 40; j++) {
+    var s = t(all[j]);
+    if (!s || s.length > 40) continue;
+    if (/商品|产品|SKU|库存|价格|状态|销量|Product|Stock|Price|Status|在售|已下架/i.test(s)) {
+      out.candidates.push({
+        tag: all[j].tagName,
+        text: s,
+        cls: (all[j].className || "").toString().slice(0, 70)
+      });
+    }
+  }
+  var tables = document.querySelectorAll("table");
+  if (tables.length) {
+    var trs = tables[0].querySelectorAll("tr");
+    for (var r = 0; r < trs.length && r < 4; r++) {
+      var cells = [];
+      var tds = trs[r].querySelectorAll("th,td");
+      for (var d = 0; d < tds.length && d < 12; d++) {
+        cells.push(t(tds[d]));
+      }
+      out.sampleRows.push(cells);
+    }
+  }
+  // nav links that look like product
+  var links = [];
+  var as = document.querySelectorAll("a");
+  for (var a = 0; a < as.length && links.length < 15; a++) {
+    var href = as[a].href || "";
+    var tx = t(as[a]);
+    if (/product|商品|manage|listing/i.test(href + " " + tx)) {
+      links.push({ href: href.slice(0, 120), text: tx.slice(0, 40) });
+    }
+  }
+  out.productLinks = links;
+  return JSON.stringify(out);
+})();

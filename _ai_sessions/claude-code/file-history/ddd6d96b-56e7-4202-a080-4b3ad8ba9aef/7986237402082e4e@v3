@@ -1,0 +1,118 @@
+// 用系统 Chrome + 持久化 profile 打开 Sellfox 订单页，等登录后自动探测「渠道」下拉真实结构。
+// 只点击、不下单。结果写到 result.json 并打印。
+const { chromium } = require("playwright");
+const fs = require("fs");
+const path = require("path");
+
+const USER_DIR = path.join(__dirname, "profile");         // 持久化，登录记住
+const ORDER_URL = "https://www.sellfox.com/";
+const RESULT = path.join(__dirname, "result.json");
+const LOG = path.join(__dirname, "run.log");
+const logln = (s) => { const line = `[${new Date().toISOString()}] ${s}\n`; fs.appendFileSync(LOG, line); process.stdout.write(line); };
+
+// 注入到页面上下文执行的探测函数（字符串化后 evaluate）。
+const PROBE = /* js */ `
+async () => {
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const vis=el=>{ if(!el) return false; const s=getComputedStyle(el); if(s.display==='none'||s.visibility==='hidden'||s.opacity==='0') return false; return el.offsetParent!==null||s.position==='fixed'; };
+  const realClick=el=>{ try{el.scrollIntoView({block:'center'})}catch(e){} const r=el.getBoundingClientRect(); const b={bubbles:true,cancelable:true,view:window,clientX:r.left+r.width/2,clientY:r.top+r.height/2,button:0,buttons:1}; for(const t of['pointerover','pointerenter','pointerdown','mousedown','pointerup','mouseup','click']){ let ev; try{ev=t.startsWith('pointer')?new PointerEvent(t,{...b,pointerId:1,isPrimary:true}):new MouseEvent(t,b)}catch(e){ev=new MouseEvent(t.replace('pointer','mouse'),b)} el.dispatchEvent(ev);} };
+  const info=el=>el?('<'+el.tagName.toLowerCase()+' class="'+((el.getAttribute('class')||'').slice(0,90))+'">'):'null';
+  const out={ steps:[] };
+
+  const input=document.querySelector("input[placeholder*='渠道']");
+  if(!input){ out.error='未找到渠道输入框'; return out; }
+  out.输入框=info(input);
+  out.输入框祖先链=[]; { let p=input; for(let i=0;i<6&&p;i++){ out.输入框祖先链.push(info(p)); p=p.parentElement; } }
+
+  // 记录点击前"可见弹层类元素"基线
+  const popSel='[class*=popover],[class*=dropdown],[class*=select-menu],[class*=el-popper],.el-select-dropdown';
+  const before=new Set([...document.querySelectorAll(popSel)].filter(vis));
+
+  // 点 popover_trigger 层（探测已证实这层能开），退回 select-container / input
+  const trig=input.closest('.popover_trigger')||input.closest('.select-container')||input;
+  out.点击层=info(trig);
+  realClick(trig);
+  await sleep(2000);
+
+  // 点击后新出现的可见弹层
+  const afterPops=[...document.querySelectorAll(popSel)].filter(vis);
+  const freshPops=afterPops.filter(e=>!before.has(e));
+  out.点击后新增弹层=freshPops.map(info).slice(0,10);
+  out.点击后所有可见弹层=afterPops.map(info).slice(0,10);
+
+  // 选项：含"昇新海外仓"或"海外仓"的可见叶子，排除 vxe 订单表
+  let cand=[...document.querySelectorAll('*')].filter(e=>vis(e)&&e.children.length===0&&/海外仓/.test(e.innerText||'')&&!e.closest('.vxe-table')&&!e.closest('.vxe-body--row'));
+  out.选项候选数=cand.length;
+  if(cand.length){
+    const opt=cand[0];
+    out.选项元素=info(opt);
+    out.选项祖先链=[]; { let p=opt; for(let i=0;i<8&&p;i++){ out.选项祖先链.push(info(p)+' "'+((p.innerText||'').trim().slice(0,24))+'"'); p=p.parentElement; } }
+    out.选项文本样本=[...new Set(cand.slice(0,10).map(e=>(e.innerText||'').trim()))];
+    // 下拉容器：从选项往上找同时包含"全选"或"确定"文字的最近祖先
+    let box=opt;
+    for(let i=0;i<10&&box.parentElement;i++){ box=box.parentElement; const t=box.innerText||''; if(/全选/.test(t)&&/确定|确认/.test(t)) break; }
+    out.疑似下拉容器=info(box);
+    out.容器内class分布=(()=>{const m={};[...box.querySelectorAll('*')].forEach(e=>{const k=(typeof e.className==='string'?e.className:'').trim().split(/\\s+/)[0]; if(k)m[k]=(m[k]||0)+1;}); return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,25).map(([k,n])=>k+':'+n);})();
+  }
+  // 确定/取消 按钮
+  const btns=[...document.querySelectorAll('button, [class*=btn], .el-button')].filter(e=>vis(e)&&['确定','确认','取消'].includes((e.innerText||'').replace(/\\s/g,'')));
+  out.按钮=btns.map(b=>info(b)+' "'+(b.innerText||'').trim()+'"').slice(0,8);
+  // 搜索框
+  const sbox=[...document.querySelectorAll("input[placeholder*='搜索'], input[type=text]")].filter(vis).map(info).slice(0,6);
+  out.弹层内输入框=sbox;
+
+  // 旧选择器现状（确认失配）
+  out.旧选择器 = {
+    'el-popover/select-menu 可见': [...document.querySelectorAll('.el-popover, .select-menu')].filter(vis).length,
+    'span.main_label 可见': [...document.querySelectorAll('span.main_label')].filter(vis).length,
+  };
+  return out;
+}`;
+
+(async () => {
+  try { fs.unlinkSync(RESULT); } catch (e) {}
+  logln("启动 Chrome（持久化 profile: " + USER_DIR + "）…");
+  const ctx = await chromium.launchPersistentContext(USER_DIR, {
+    channel: "chrome", headless: false, viewport: null,
+    args: ["--start-maximized"],
+  });
+  const page = ctx.pages()[0] || (await ctx.newPage());
+  logln("打开订单页：" + ORDER_URL);
+  await page.goto(ORDER_URL, { waitUntil: "domcontentloaded" }).catch((e) => logln("goto 警告:" + e.message));
+
+  // 轮询任意 frame 是否出现渠道输入框（= 已登录且在订单待处理页）
+  logln("★ 请在弹出的 Chrome 窗口里：① 登录 Sellfox（已记住可跳过）② 进入【订单→待处理】视图 ③（可选）选好筛选模板。脚本扫描所有标签页/frame，每 3 秒一次，最长 6 分钟…");
+  const START = Date.now();
+  const DEADLINE = START + 360000;
+  let targetFrame = null, ticks = 0;
+  while (Date.now() < DEADLINE) {
+    for (const pg of ctx.pages()) {
+      for (const f of pg.frames()) {
+        try {
+          const has = await f.evaluate(() => !!document.querySelector("input[placeholder*='渠道']"));
+          if (has) { targetFrame = f; break; }
+        } catch (e) {}
+      }
+      if (targetFrame) break;
+    }
+    if (targetFrame) break;
+    if (ticks++ % 4 === 0) {
+      const urls = ctx.pages().map((p) => p.url()).join(" | ");
+      logln("…等待（已等 " + Math.round((Date.now() - START) / 1000) + "s）当前标签页: " + urls);
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
+  if (!targetFrame) {
+    logln("✗ 超时：一直没检测到渠道输入框。浏览器保持打开，你登录/进页后可重跑本脚本（登录已记住）。");
+    fs.writeFileSync(RESULT, JSON.stringify({ error: "timeout_no_channel_input" }, null, 2));
+    return; // 不关浏览器
+  }
+  logln("✓ 检测到渠道输入框，frame url=" + targetFrame.url());
+  logln("开始探测渠道下拉…");
+  let res;
+  try { res = await targetFrame.evaluate(eval("(" + PROBE + ")")); }
+  catch (e) { res = { error: "probe_failed: " + e.message }; }
+  fs.writeFileSync(RESULT, JSON.stringify(res, null, 2));
+  logln("✓ 探测完成，结果已写入 result.json：\n" + JSON.stringify(res, null, 2));
+  logln("浏览器保持打开，可继续手动查看。");
+})();

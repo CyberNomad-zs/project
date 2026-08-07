@@ -1,0 +1,49 @@
+# 本地默认配置（可按环境修改；密钥放 .env）
+
+sellfox:
+  min_interval_seconds: 1.1
+  page_size: 100
+  field_modules:
+    - PRODUCT_INFO
+    - SALE_INFO
+    - SESSION_PERFORMANCE_INFO
+    - PERFORMANCE_INFO
+    - AD_INFO
+    - FBA_INVENTORY_INFO
+    - REVIEW_PERFORMANCE_INFO
+  # 驾驶舱默认全店；若只同步部分店铺可填 shopId
+  shop_id_list: []
+  is_new_or_moving_or_in_stock: "0"
+  dim_type: "1"
+  compare_type_list:
+    - "1"
+
+sync:
+  save_raw_snapshot: false
+  sink: both
+
+owners:
+  # 按赛狐真实店铺名（可用前缀匹配，如「特米」匹配「特米-UK」）
+  特米: 潘启豪
+  特米-UK: 潘启豪
+  Ledvia: 潘启豪
+  Ledvia-UK: 潘启豪
+  LEDVIE: 潘启豪
+  昇新: 马文静
+  昇新-UK: 马文静
+  SHENGXIN: 马文静
+  起的快: 马文静
+  起的快-UK: 马文静
+  Nottac: 梦晴
+  Nottac-UK: 梦晴
+  NOTTAC: 梦晴
+  字同: 梦晴
+  字同道合: 梦晴
+
+reviewers:
+  default: 唐丹
+
+notify:
+  # 飞书多维表格（异常任务视图可自行加筛选后替换）
+  view_base_url: "https://dcnkj1up67d5.feishu.cn/base/FrXvbTodVad1Kqs0hCkckrI8noc"
+  it_receivers: []

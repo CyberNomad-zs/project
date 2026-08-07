@@ -1,0 +1,223 @@
+# -*- coding: utf-8 -*-
+"""
+主流程编排：按【渠道】逐个闭环。
+  遍历 rules.CHANNEL_ORDER（= 优先级顺序）：
+    ① ERP：待处理视图 -> 按「全部渠道」筛选=该渠道 -> 全选 -> 物流下单 -> 记录失败单
+    ② 该渠道有单才继续 -> WMS：登录该渠道对应账号(BLACKCAT->JMCAT / 昇新->JMSM)
+       -> 平台订单未发货 -> 按账号快递方优先级(RM->DPD->EH)逐轮：改快递方+批量发货，失败的换下个快递方再试
+    ③ 该渠道闭环完成，再做下一个渠道
+  失败订单（下单失败/试完所有快递方仍未发货）不自动挪渠道，统一留存 + 提醒。
+
+安全：config.DRY_RUN=True 时不真正点击 物流下单/批量发货，只走筛选与统计。
+用法：
+    1) 先手动登录一次 ERP： python capture/erp_manual_login.py
+    2) 空跑核对：          python run_shipping.py         （config.DRY_RUN=True）
+    3) 核对无误后改 config.DRY_RUN=False 再跑真实发货。
+"""
+import os, time
+import config, core, secrets, erp, wms, rules, notify
+from core import log
+from playwright.sync_api import sync_playwright
+
+# ---- 环节开关 ----
+DO_ERP_REPORT = True          # 只读：ERP 各阶段数量
+DO_PER_CHANNEL = True         # 按渠道逐个闭环 ERP下单 -> WMS发货
+# 下面两个已并入其它实现，默认保持 False，勿开：
+#  · 「确认发货」= 「物流下单」同一步（业务确认 2026-07-08），已在按渠道闭环里执行，
+#    再单独跑会重复扣库存/提交平台 → DO_ERP_CONFIRM_SHIP 永久废弃。
+#  · 「获取跟踪单号」实际路径 = 三方仓>待更新>手动更新（erp.update_order_status），
+#    建议全部发完后用独立常驻脚本 status_update_loop.py 定时拉取，而非跟在发货后跑。
+DO_ERP_TRACKING = False
+DO_ERP_CONFIRM_SHIP = False   # 废弃：与物流下单同一步，勿开（会重复下单）
+# 新功能.docx 收尾流程（发货生命周期最后一步，接在按渠道发货全部完成之后）：
+#   三方仓>待更新(筛选模板+等120s+手动更新拉跟踪号)>关闭 -> 成功标签>全选>确认发货>确定。
+#   确认发货会【扣库存+提交平台】、不可逆，受 config.DRY_RUN 保护（空跑不真点）。
+#   开启后 DO_ERP_TRACKING 无需再开（拉跟踪号已并入本收尾），避免重复拉取。
+DO_ERP_FINALIZE = True
+
+
+def account_by_login(login):
+    for a in secrets.WMS_ACCOUNTS:
+        if a["login"] == login:
+            return a
+    return None
+
+
+def write_failures(failures):
+    """把失败订单留存到 logs/failures_YYYYMMDD.txt，便于人工跟进。"""
+    path = os.path.join(config.LOG_DIR, f"failures_{time.strftime('%Y%m%d', time.localtime(time.time()))}.txt")
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))} =====\n")
+            for x in failures:
+                f.write(f"[{x['stage']}] 渠道={x.get('channel')} 账号={x.get('account','')} 原因={x['reason']}\n")
+                for o in x["orders"]:
+                    f.write(f"    {o}\n")
+        log(f"[留存] 失败订单已写入 {path}")
+    except Exception as e:
+        log(f"[留存] 写失败订单文件出错: {e}")
+
+
+def run_pipeline(page, wms_browser, report=True):
+    """按渠道逐个闭环跑一遍（ERP物流下单->WMS发货）。返回失败订单留存 list。
+    供 run_shipping.main() 与 shipping_loop.py 复用。假定 page 已登录 ERP。
+    wms_browser: 独立于 ERP 持久 context 的 browser，WMS 每店铺用它开干净 context 发货。"""
+    failures = []
+    if report:
+        erp.open_order_ship(page)
+        erp.report_counts(page)
+
+    for channel in rules.CHANNEL_ORDER:
+        login = rules.channel_account_login(channel)
+        account = account_by_login(login)
+        if not account:
+            log(f"[渠道] {channel} 找不到对应账号 {login}，跳过"); continue
+        log("-" * 50)
+        log(f"[渠道] 处理: {channel}  ->  {account['shop']}({login})")
+
+        # ① ERP 该渠道物流下单
+        r = erp.place_logistics_orders(page, channel_keyword=channel) or {}
+        if r.get("fail_orders"):
+            failures.append({"stage": "ERP物流下单", "channel": channel,
+                             "account": account["shop"], "orders": r["fail_orders"],
+                             "reason": "物流下单失败(多为所选仓库无库存)"})
+        placed = r.get("success")
+        if placed is None:
+            placed = r.get("count", 0) if not r.get("error") else 0
+        if not placed:
+            if r.get("error"):
+                # ERP 侧主动跳过本渠道（渠道筛选失败/全选失败/未找到按钮/点击失败等）：本渠道 N 单既未下单
+                # 也未发货，须人工跟进。与 WMS 侧 error 对称地纳入 failures，别让飞书汇总误报「无失败」。
+                # orders 用已读到的本渠道单号兜底（可能为空，如渠道筛选就失败时）。
+                failures.append({"stage": "ERP物流下单", "channel": channel, "account": account["shop"],
+                                 "orders": r.get("channel_orders") or [],
+                                 "reason": f"ERP物流下单未执行：{r['error']}（本渠道未下单，需人工核查）"})
+                log(f"[渠道] {channel} ⚠️ ERP 物流下单未执行：{r['error']}，已留存交人工")
+            else:
+                log(f"[渠道] {channel} 无成功下单订单，跳过 WMS 发货")
+            continue
+
+        # ② WMS 该渠道对应账号发货（用该渠道末段对应的单一快递方，失败即留存、不换）
+        # 关键（漏洞修复 2026-07-17）：把本渠道订单号传给 WMS，只发本渠道的单、不碰其它渠道遗留单。
+        # 同店多渠道共用一个 WMS 账号，未发货是共享池；不传订单号会退化成全选、把上一渠道失败留下的
+        # 单也改成本渠道快递方并误发（如 DPD 遗留单在 EH 阶段被改成 EH）。
+        courier = rules.channel_courier(channel)
+        channel_orders = r.get("channel_orders") or []
+        if not channel_orders:
+            # ERP 报『下单成功』却没读到本渠道订单号（分页/读取异常）——无法安全精确勾选。宁可跳过留存，
+            # 也不让 WMS 退回全选去误改其它渠道单。
+            log(f"[渠道] {channel} ⚠️ 未取到本渠道订单号，跳过 WMS 发货（避免全选误改其它渠道单），留存交人工")
+            failures.append({"stage": "WMS发货", "channel": channel, "account": account["shop"],
+                             "orders": [], "reason": "未取到本渠道订单号，为防误改跨渠道单而跳过（需人工核查）"})
+            continue
+        res = wms.ship_shop(wms_browser, account, courier, target_orders=channel_orders) or {}
+        # WMS 整店没发成（登录失败 / 无快递方 / 查询失败读数不可信等）——整店未发货、须人工核查，
+        # 别让它静默「闭环完成」漏在汇总外（订单号可能没读到，orders 用已知 left_orders 兜底或留空）。
+        if res.get("error"):
+            # 整店未发货时 process_shop 的 left_orders 可能为空；用手上的 channel_orders 兜底，让留存/飞书
+            # 能显示具体单号（这些 error 分支都没发出任何单，channel_orders 全部确为未发，展示准确）。
+            failures.append({"stage": "WMS发货", "channel": channel,
+                             "account": account["shop"], "orders": res.get("left_orders") or channel_orders,
+                             "reason": f"整店未发货：{res['error']}（快递方 {courier}，需人工核查是否漏发）"})
+            log(f"[渠道] {channel} ⚠️ WMS 整店未发货：{res['error']}，已留存交人工核查")
+            continue
+        # 偏远单是【设计排除】(需求2：只发非偏远)——已妥善处理、无需跟进，不进失败留存，仅记日志。
+        if res.get("remote_orders"):
+            log(f"[渠道] {channel} 偏远单已排除留存(设计行为、无需跟进)：{res['remote_orders']}")
+        # 只有【真发货失败】(非偏远却没发出去)才进"需人工跟进"的失败留存。
+        # 兼容旧结果：无 fail_orders 字段时回退用 left_orders（老版本 process_shop）。
+        fail_orders = res.get("fail_orders") if "fail_orders" in res else res.get("left_orders")
+        if fail_orders:
+            failures.append({"stage": "WMS发货", "channel": channel,
+                             "account": account["shop"], "orders": fail_orders,
+                             "reason": f"用快递方 {courier} 发货失败（真失败，留存，不换快递方）"})
+        log(f"[渠道] {channel} 闭环完成")
+
+    # ---- 失败订单汇总留存 + 提醒 ----
+    log("=" * 60)
+    if failures:
+        log("[!] 本次失败订单留存（不自动处理，需人工跟进）：")
+        for x in failures:
+            log(f"   [{x['stage']}] 渠道={x.get('channel')} 账号={x.get('account','')} "
+                f"原因={x['reason']}  订单={x['orders']}")
+        write_failures(failures)
+    else:
+        log("[OK] 本次无失败订单。")
+    return failures
+
+
+def run_full_once(page, wms_browser, report=True):
+    """跑一遍【完整流程】（假定 page 已登录 ERP、wms_browser 已就绪）：
+      ① 按渠道 ERP 物流下单 -> ② WMS 对应账号改快递方+批量发货   （= run_pipeline）
+      ③ 收尾：三方仓待更新拉跟踪号 -> ④ 成功标签确认发货          （= finalize_shipments，DRY 保护）
+    返回失败订单留存 list。供 run_shipping.main() 单次跑与 full_loop.py 循环跑复用，
+    保证两者流程一致、不走偏。"""
+    failures = run_pipeline(page, wms_browser, report=report) or []
+
+    if DO_ERP_CONFIRM_SHIP:
+        log("[!] DO_ERP_CONFIRM_SHIP 已废弃（确认发货=物流下单，闭环里已做），忽略，避免重复下单。")
+    if DO_ERP_TRACKING and not DO_ERP_FINALIZE:
+        log("[跟踪号] 建议改用独立脚本 status_update_loop.py；此处按需一次性拉取。")
+        erp.update_order_status(page)
+
+    # 收尾：拉跟踪号 + 成功标签确认发货（含 DRY 保护）。失败单并入留存。
+    if DO_ERP_FINALIZE:
+        fin = erp.finalize_shipments(page) or {}
+        conf = fin.get("confirm") or {}
+        shelved = conf.get("shelved") or []
+        if shelved:
+            # 已取消订单已在确认发货弹窗里【搁置】(移出本批、不再提醒)——已妥善处理，
+            # 不进「需人工跟进」的失败留存，仅记录审计。
+            log(f"[收尾] 已取消订单已搁置(移出本批、不再提醒、无需跟进)：{shelved}")
+        if conf.get("fail_orders"):
+            fo = {"stage": "确认发货收尾", "channel": "(全部)",
+                  "account": "", "orders": conf["fail_orders"],
+                  "reason": "成功标签确认发货失败（留存）"}
+            failures.append(fo)
+            write_failures([fo])
+    return failures
+
+
+def main():
+    start = core.log.begin_run("发货主流程", max_per_run=config.MAX_ORDERS_PER_RUN,
+                               channels=len(rules.CHANNEL_ORDER))
+    log(f"开始运行  RUN_ID={core.RUN_ID}  DRY_RUN={config.DRY_RUN}  MAX/次={config.MAX_ORDERS_PER_RUN}")
+    failures = []
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+
+        if not core.ensure_erp(page):
+            log("[ERP] 会话失效，无法按渠道下单。请先： python capture/erp_manual_login.py")
+            core.log.end_run("发货主流程", start, result="ERP会话失效中止")
+            notify.notify_shipping(
+                run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                failures=[{"stage": "启动检查", "channel": "-", "account": "", "orders": [],
+                           "reason": "ERP 会话失效，本次未执行。请重新登录后再跑。"}],
+                elapsed_sec=round(time.time() - start, 1), channels=len(rules.CHANNEL_ORDER))
+            ctx.close(); return
+
+        # WMS 用独立 browser（每个店铺一个干净 context），与 ERP 的持久 context 分开，
+        # 杜绝黑猫/金猫账号在同一 context 里串会话导致的漏发（2026-07-10 根因修复）。
+        wms_browser = p.chromium.launch(headless=config.HEADLESS, args=["--no-sandbox"])
+        try:
+            failures = run_full_once(page, wms_browser, report=DO_ERP_REPORT) or []
+            log("运行结束。")
+        finally:
+            try:
+                wms_browser.close()
+            except Exception:
+                pass
+        time.sleep(2)
+        ctx.close()
+    core.log.end_run("发货主流程", start, dry_run=config.DRY_RUN,
+                     fail_groups=len(failures),
+                     fail_orders=[o for x in failures for o in x.get("orders", [])])
+    # 运行汇总推送飞书（容错，失败不影响主流程）
+    notify.notify_shipping(run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                           failures=failures, elapsed_sec=round(time.time() - start, 1),
+                           channels=len(rules.CHANNEL_ORDER))
+
+
+if __name__ == "__main__":
+    main()

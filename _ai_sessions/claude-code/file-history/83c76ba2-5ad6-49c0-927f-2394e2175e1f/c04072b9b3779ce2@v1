@@ -1,0 +1,27 @@
+# 清泉生产环境
+
+| 项 | 值 |
+|----|-----|
+| 域名 | `qingquan.jmzlai.com` → `43.156.50.38` |
+| HTTPS | https://qingquan.jmzlai.com |
+| 健康检查 | https://qingquan.jmzlai.com/health |
+| API 文档 | https://qingquan.jmzlai.com/docs |
+| 管理端 | https://qingquan.jmzlai.com/ |
+| 上线记录 | 2026-07-30（会话确认已上线） |
+
+## 采集 dual 上报
+
+TK 副本配置（本机、勿提交密钥）：
+
+- 文件：`collectors/tiktok-ads/config/stores.config.json`
+- `qingquan.baseUrl` = `https://qingquan.jmzlai.com`
+- `qingquan.source` = `tiktok_ads`
+- `feishu.writeMode` = `dual`（飞书 + 清泉）
+- `qingquan.apiKey` 须与服务器 `INGEST_DEFAULT_API_KEY`（或生产 ingest 密钥）一致
+
+本地开发仍可用 `http://127.0.0.1:8000` + `scripts/start-api.ps1`。
+
+## 安全
+
+- 管理端账号密码、飞书密钥、ingest key **只放本机配置 / 服务器环境变量**，不进 Git。
+- 聊天中出现过的口令建议在服务器上**轮换**。

@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb1cc-33e0-7b92-bc48-4464e38d4b9a",
+    "cwd": "E:\\project\\海外TK店铺广告投流数据自动化监测"
+  },
+  "session_summary": "WeChat Temp PNG Image Analysis Request",
+  "created_at": "2026-07-30T06:52:57.713589400Z",
+  "updated_at": "2026-07-30T06:53:15.373235200Z",
+  "num_messages": 8,
+  "num_chat_messages": 12,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外TK店铺广告投流数据自动化监测/",
+  "git_remotes": [
+    "https://github.com/JMCATTT/tk-shop-ad-monitor.git"
+  ],
+  "head_commit": "de71178a2990f69cad3cdf83c2b6324e9184e5d9",
+  "head_branch": "main",
+  "request_id": "94ce607a-22c7-402c-a7bd-2496903e3a00",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T06:53:15.373235200Z",
+  "generated_title": "WeChat Temp PNG Image Analysis Request",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

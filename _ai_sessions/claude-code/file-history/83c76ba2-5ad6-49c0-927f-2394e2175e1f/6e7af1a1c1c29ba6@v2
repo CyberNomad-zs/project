@@ -1,0 +1,65 @@
+# TK / Temu Schema 分区说明
+
+> PostgreSQL 里 **schema = 库内命名空间（文件夹）**，不是再开一个 database。
+
+## 当前约定（清泉 `qingquan` 库）
+
+| Schema | 谁用 | 放什么 |
+|--------|------|--------|
+| **`public`** | 中心 / 三平台共用 | `shop`、`ingest_raw`、`org_user`、`task`、`anomaly_event`、AMZ 事实表… |
+| **`tk`** | TikTok 采集与事实 | `fact_ads_campaign_daily`、`fact_tiktok_order`、`fact_tiktok_product`、店级 KPI/健康/财务 |
+| **`temu`** | Temu 监测（同事） | `dim_store`、`fact_product_obs`、`fact_alert_event`…（见 `pgsql_temu_monitor.sql`） |
+
+```text
+database: qingquan
+├── public.shop / public.ingest_raw / …
+├── tk.fact_ads_campaign_daily
+├── tk.fact_tiktok_order
+├── tk.fact_tiktok_product
+├── tk.fact_tiktok_shop_daily
+├── tk.fact_tiktok_health_daily
+├── tk.fact_tiktok_finance_daily
+└── temu.*   （同事监测表，可选同库）
+```
+
+## 迁移
+
+```bash
+# 已有 public 上的 TK 表时：挪到 tk，并建 public 兼容视图
+psql -U qingquan -d qingquan -f backend/migrations/008_tk_schema.sql
+```
+
+- `ALTER TABLE … SET SCHEMA tk`：数据和索引一起搬家  
+- `public.fact_*` 变为 **VIEW → tk.fact_***，旧查询尽量不碎  
+- 新代码请写 **`tk.表名`** 或依赖连接 `search_path=public, tk, temu`
+
+## 应用连接
+
+API（`backend/app/infra/db.py`）默认：
+
+```sql
+SET search_path TO public, tk, temu
+```
+
+这样：
+
+- `shop` / `ingest_raw` → `public`
+- 未写 schema 的 `fact_tiktok_*` → 若 public 有兼容视图则走视图，否则 `tk`
+
+Ingest 写入 TK 事实时显式使用 **`tk.fact_…`**。
+
+## 和 Temu 同事对齐
+
+1. 同一 database `qingquan` 可同时有 `tk` + `temu`  
+2. 店铺主数据长期以 **`public.shop`** 为准；`temu.dim_store` 用 `shop_id`/`mall_id` 映射  
+3. 不要把 Temu 表建进 `public` 与中心混名  
+
+## 查询示例
+
+```sql
+SET search_path TO tk, public;
+SELECT * FROM fact_tiktok_order LIMIT 5;
+
+SELECT platform, external_shop_id, name FROM public.shop WHERE platform = 'tiktok';
+SELECT count(*) FROM tk.fact_ads_campaign_daily;
+```

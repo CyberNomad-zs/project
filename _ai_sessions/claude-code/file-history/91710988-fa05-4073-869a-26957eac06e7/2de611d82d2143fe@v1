@@ -1,0 +1,419 @@
+﻿# Backfill TikTok order SKUs from PG order_id list → detail page → tiktok_order_lines
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\fill-order-skus.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\fill-order-skus.ps1 -MaxPerStore 20
+#   powershell -ExecutionPolicy Bypass -File .\scripts\fill-order-skus.ps1 -CsvPath .\logs\missing-order-sku.csv -DryRun true
+
+param(
+  [string]$ConfigPath = "",
+  [string]$CsvPath = "",
+  [int]$MaxPerStore = 0,
+  [int]$DetailWaitMs = 3200,
+  [int]$StartOffset = 0,
+  [string]$OnlyStoreId = "",
+  [string]$DryRun = ""
+)
+
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+if (-not $ConfigPath) { $ConfigPath = Join-Path $root 'config\stores.config.json' }
+$detailJsPath = Join-Path $root 'scripts\scrape-order-detail-page.js'
+if (-not (Test-Path $ConfigPath)) { throw "Missing config: $ConfigPath" }
+if (-not (Test-Path $detailJsPath)) { throw "Missing $detailJsPath" }
+if (-not $CsvPath) { $CsvPath = Join-Path $root 'logs\missing-order-sku.csv' }
+if (-not (Test-Path $CsvPath)) { throw "Missing order CSV: $CsvPath (export from PG first)" }
+
+$cfg = Get-Content $ConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$detailJs = Get-Content $detailJsPath -Raw -Encoding UTF8
+$qingquanLib = Join-Path $PSScriptRoot 'qingquan-client.ps1'
+if (Test-Path $qingquanLib) { . $qingquanLib }
+$ziniaoWinLib = Join-Path $PSScriptRoot 'ziniao-window.ps1'
+if (-not (Test-Path $ziniaoWinLib)) { throw "Missing $ziniaoWinLib" }
+. $ziniaoWinLib
+
+$script:logsDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $script:logsDir | Out-Null
+$script:runStamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$script:runLogFile = Join-Path $script:logsDir ("fill-order-sku-{0}.log" -f $script:runStamp)
+
+function Write-RunLog([string]$msg) {
+  $line = "[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $msg
+  try { Add-Content -LiteralPath $script:runLogFile -Value $line -Encoding UTF8 } catch { }
+}
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+  Write-RunLog $msg
+}
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw 'node not found' }
+  $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+  if (-not (Test-Path $runJs)) {
+    $cmd = Get-Command ziniao -ErrorAction SilentlyContinue
+    if ($cmd) { $runJs = $cmd.Source }
+  }
+  if (-not (Test-Path $runJs)) { throw 'ziniao-cli run.js not found' }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr -and $stderr.Trim()) { Write-RunLog ("ziniao stderr: {0}" -f $stderr.Trim()) }
+  return $stdout
+}
+function ConvertTo-ScrapeOneLine([string]$js) {
+  $one = ($js -replace '(?m)^\s*//.*$', '' -replace '\r?\n', ' ' -replace '\s+', ' ').Trim()
+  return $one
+}
+function Get-OrdersUrl($store, $cfg) {
+  $plat = ''
+  if ($store.platformName) { $plat = [string]$store.platformName }
+  elseif ($store.platform) { $plat = [string]$store.platform }
+  if ($cfg.orderUrl -and $cfg.orderUrl.byPlatform -and $plat) {
+    foreach ($p in $cfg.orderUrl.byPlatform.PSObject.Properties) {
+      if ($plat -eq [string]$p.Name -or $plat -like ("*{0}*" -f $p.Name) -or ([string]$p.Name -like ("*{0}*" -f $plat))) {
+        return [string]$p.Value
+      }
+    }
+  }
+  if ($cfg.orderUrl -and $cfg.orderUrl.default) { return [string]$cfg.orderUrl.default }
+  return 'https://seller-uk.tiktok.com/order?selected_sort=6&tab=all'
+}
+function Get-OrderDetailBaseUrl([string]$orderListUrl) {
+  try {
+    $u = [uri]$orderListUrl
+    $origin = "{0}://{1}" -f $u.Scheme, $u.Host
+    return ($origin.TrimEnd('/') + '/order/detail')
+  } catch {
+    return 'https://seller-uk.tiktok.com/order/detail'
+  }
+}
+function Get-OrderRegionQuery([string]$orderListUrl) {
+  if ($orderListUrl -match 'shop_region=([A-Za-z]{2})') { return $Matches[1] }
+  if ($orderListUrl -match 'seller-uk') { return 'GB' }
+  return 'GB'
+}
+function Get-DisplayName($store, $map) {
+  $n = [string]$store.storeName
+  if ($map -and $map.PSObject.Properties.Name -contains $n) { return [string]$map.$n }
+  return $n
+}
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      $inner = [string]$j.data.data.result
+      return ($inner | ConvertFrom-Json)
+    }
+    if ($null -ne $j.ok) { return $j }
+  } catch { }
+  $m = [regex]::Matches($execOut, '\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}')
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+function Convert-DryRunFlag([string]$raw) {
+  if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+  switch -Regex ($raw.Trim()) {
+    '^(?i:true|1|yes|y|\$true)$'  { return $true }
+    '^(?i:false|0|no|n|\$false)$' { return $false }
+    default { throw "Invalid -DryRun '$raw'" }
+  }
+}
+
+Write-Step '===== fill order SKU START ====='
+Write-Step ("csv={0}" -f $CsvPath)
+$rows = @(Import-Csv -LiteralPath $CsvPath -Encoding UTF8)
+if ($rows.Count -eq 0) { throw 'CSV empty' }
+# normalize columns
+$normRows = New-Object System.Collections.ArrayList
+foreach ($r in $rows) {
+  $sid = ''
+  if ($r.shop_external_id) { $sid = [string]$r.shop_external_id }
+  elseif ($r.storeId) { $sid = [string]$r.storeId }
+  elseif ($r.shop_id) { $sid = [string]$r.shop_id }
+  $oid = ''
+  if ($r.order_id) { $oid = [string]$r.order_id }
+  elseif ($r.orderId) { $oid = [string]$r.orderId }
+  $sname = ''
+  if ($r.shop_name) { $sname = [string]$r.shop_name }
+  elseif ($r.shopName) { $sname = [string]$r.shopName }
+  if (-not $sid -or -not $oid) { continue }
+  if ($OnlyStoreId -and $sid -ne $OnlyStoreId) { continue }
+  [void]$normRows.Add([pscustomobject]@{ storeId = $sid; orderId = $oid; shopName = $sname })
+}
+Write-Step ("targets total={0}" -f $normRows.Count)
+if ($normRows.Count -eq 0) { throw 'No target rows after filter' }
+
+Initialize-ZiniaoCli
+$listOut = Invoke-Ziniao @('store', 'list')
+$storesObj = $listOut | ConvertFrom-Json
+$all = @()
+if ($storesObj.data.items) { $all = @($storesObj.data.items) }
+$storeById = @{}
+foreach ($s in $all) {
+  $id = ''
+  if ($s.storeId) { $id = [string]$s.storeId } elseif ($s.id) { $id = [string]$s.id }
+  if ($id) { $storeById[$id] = $s }
+}
+
+$dryParsed = Convert-DryRunFlag $DryRun
+$useDryRun = if ($null -ne $dryParsed) { [bool]$dryParsed } else { $false }
+if ($cfg.options -and $null -ne $cfg.options.orderDetailWaitMs) {
+  $DetailWaitMs = [Math]::Max(1500, [int]$cfg.options.orderDetailWaitMs)
+}
+$detailOneLine = ConvertTo-ScrapeOneLine $detailJs
+$waitOpen = 25000
+if ($cfg.options.waitAfterOpenMs) { $waitOpen = [Math]::Max(15000, [int]$cfg.options.waitAfterOpenMs) }
+
+$byStore = $normRows | Group-Object storeId
+$summary = @()
+foreach ($g in $byStore) {
+  $sid = [string]$g.Name
+  $storeRaw = $storeById[$sid]
+  if (-not $storeRaw) {
+    Write-Step ("SKIP store not in ziniao list: {0}" -f $sid)
+    continue
+  }
+  $store = [pscustomobject]@{
+    storeId = $sid
+    storeName = $(if ($storeRaw.storeName) { [string]$storeRaw.storeName } else { [string]$g.Group[0].shopName })
+    platformName = $(if ($storeRaw.platformName) { [string]$storeRaw.platformName } else { '' })
+    platform = $(if ($storeRaw.platformName) { [string]$storeRaw.platformName } else { '' })
+    ip = $(if ($storeRaw.ip) { [string]$storeRaw.ip } else { '' })
+  }
+  $display = Get-DisplayName $store $cfg.storeNameMap
+  $orderUrl = Get-OrdersUrl $store $cfg
+  $detailBase = Get-OrderDetailBaseUrl $orderUrl
+  $region = Get-OrderRegionQuery $orderUrl
+  $targets = @($g.Group | Select-Object -Skip $StartOffset)
+  if ($MaxPerStore -gt 0 -and $targets.Count -gt $MaxPerStore) {
+    $targets = @($targets | Select-Object -First $MaxPerStore)
+  }
+  $item = [ordered]@{
+    storeId = $sid; displayName = $display; planned = $targets.Count
+    detailOk = 0; detailFail = 0; lineItems = 0; lineAccepted = 0; lineDup = 0; lineFailed = 0; error = $null
+  }
+  Write-Step ("==== FILL {0} ({1}) n={2} base={3} ====" -f $display, $sid, $targets.Count, $detailBase)
+
+  try {
+    Write-Step '  open store...'
+    $openArgs = @('store', 'open', '--id', $sid)
+    if ($cfg.options -and $cfg.options.windowRatio -and [string]$cfg.options.windowRatio -ne 'none') {
+      $openArgs += @('--window-ratio', [string]$cfg.options.windowRatio)
+    }
+    $null = Invoke-Ziniao $openArgs
+    Start-Sleep -Milliseconds $waitOpen
+    try {
+      if (Get-Command Maximize-ZiniaoStoreWindow -ErrorAction SilentlyContinue) {
+        if ($cfg.options -and $cfg.options.maximizeWindow) { Maximize-ZiniaoStoreWindow -StoreId $sid }
+      }
+    } catch { }
+
+    # warm order list once
+    $null = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $orderUrl, '--wait-until', 'domcontentloaded', '--timeout', '60000')
+    Start-Sleep -Milliseconds 4000
+
+    $allLineItems = New-Object System.Collections.ArrayList
+    $samples = New-Object System.Collections.ArrayList
+    $di = 0
+    foreach ($t in $targets) {
+      $di++
+      $oid = [string]$t.orderId
+      $detailUrl = "{0}?order_no={1}" -f $detailBase, $oid
+      if ($region) { $detailUrl = "{0}&shop_region={1}" -f $detailUrl, $region }
+      if (($di % 10) -eq 1 -or $di -eq $targets.Count) {
+        Write-Step ("  detail [{0}/{1}] {2}" -f $di, $targets.Count, $oid)
+      }
+      try {
+        $dp = $null
+        $lastErr = ''
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+          $null = Invoke-Ziniao @('page', 'visit', '--store-id', $sid, '--url', $detailUrl, '--wait-until', 'domcontentloaded', '--timeout', '60000')
+          $waitThis = $DetailWaitMs
+          if ($attempt -gt 1) { $waitThis = [Math]::Max($DetailWaitMs, 5000) + (($attempt - 1) * 2000) }
+          Start-Sleep -Milliseconds $waitThis
+          $dout = Invoke-Ziniao @('page', 'exec', '--store-id', $sid, '--script', $detailOneLine, '--timeout', '45000')
+          $dp = Get-ScrapePayload $dout
+          if ($dp -and $dp.ok -and $dp.lines -and @($dp.lines).Count -gt 0) { break }
+          $lastErr = if ($dp -and $dp.error) { [string]$dp.error } else { 'detail scrape empty' }
+          # cancelled unpaid orders often have no SKU block — don't burn retries
+          $srcHint = ''
+          if ($dp -and $dp.diag) { $srcHint = [string]$dp.diag }
+          if ($lastErr -match 'no line items' -and $attempt -ge 1) {
+            # one quick body status probe via error context; second attempt only if thin
+            if ($lastErr -match 'page_too_thin') {
+              Write-RunLog ("detail retry {0} attempt={1} err={2}" -f $oid, $attempt, $lastErr)
+              Start-Sleep -Milliseconds 1500
+              continue
+            }
+            # likely cancelled / no product section — stop after 2 attempts max
+            if ($attempt -ge 2) { break }
+            Write-RunLog ("detail retry {0} attempt={1} err={2}" -f $oid, $attempt, $lastErr)
+            Start-Sleep -Milliseconds 1200
+            continue
+          }
+          # thin page / not ready → retry
+          if ($lastErr -match 'page_too_thin|not_order_detail' -or -not $dp) {
+            Write-RunLog ("detail retry {0} attempt={1} err={2}" -f $oid, $attempt, $lastErr)
+            Start-Sleep -Milliseconds 1500
+            continue
+          }
+          break
+        }
+        if ($dp -and $dp.ok -and $dp.lines -and @($dp.lines).Count -gt 0) {
+          $item.detailOk++
+          $lines = @($dp.lines)
+          $item.lineItems += $lines.Count
+          if ($samples.Count -lt 5) {
+            [void]$samples.Add(@{ orderId = $oid; lineCount = $lines.Count; sample = $lines[0] })
+          }
+          foreach ($ln in $lines) {
+            [void]$allLineItems.Add([pscustomobject]@{
+              orderId = $oid
+              line = $ln
+              detailUrl = $(if ($dp.url) { [string]$dp.url } else { $detailUrl })
+              currency = $(if ($dp.currency) { [string]$dp.currency } else { 'GBP' })
+            })
+          }
+        } else {
+          $item.detailFail++
+          $err = if ($lastErr) { $lastErr } elseif ($dp -and $dp.error) { [string]$dp.error } else { 'detail scrape empty' }
+          Write-RunLog ("detail fail {0}: {1}" -f $oid, $err)
+          if ($item.detailFail -le 8) { Write-Step ("    fail {0}: {1}" -f $oid, $err) }
+        }
+      } catch {
+        $item.detailFail++
+        Write-RunLog ("detail exception {0}: {1}" -f $oid, $_)
+        if ($item.detailFail -le 8) { Write-Step ("    exception {0}: {1}" -f $oid, $_) }
+      }
+
+      # batch ingest every >=40 successful packs; only clear buffer on success
+      if (-not $useDryRun -and $allLineItems.Count -ge 40) {
+        if ((Get-Command ConvertTo-QingquanOrderLineIngestItems -ErrorAction SilentlyContinue) -and `
+            (Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue) -and `
+            $cfg.qingquan -and $cfg.qingquan.enabled) {
+          $collectedAt2 = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+          $lineEnvelope = New-Object System.Collections.ArrayList
+          $byOrder = @{}
+          foreach ($wrap in $allLineItems) {
+            $k = [string]$wrap.orderId
+            if (-not $byOrder.ContainsKey($k)) {
+              $byOrder[$k] = @{ lines = New-Object System.Collections.ArrayList; url = [string]$wrap.detailUrl; currency = [string]$wrap.currency }
+            }
+            [void]$byOrder[$k].lines.Add($wrap.line)
+          }
+          foreach ($okey in $byOrder.Keys) {
+            $pack = $byOrder[$okey]
+            $part = ConvertTo-QingquanOrderLineIngestItems -Lines @($pack.lines) -CollectedAt $collectedAt2 `
+              -StoreId $sid -OrderId $okey -StoreName $display -Currency $pack.currency -SourceUrl $pack.url -BizDate ''
+            foreach ($it in @($part)) { [void]$lineEnvelope.Add($it) }
+          }
+          Write-Step ("  flush lines={0}..." -f $lineEnvelope.Count)
+          $qqL = $null
+          for ($flushTry = 1; $flushTry -le 3; $flushTry++) {
+            $qqL = Send-QingquanIngest -Config $cfg -Items @($lineEnvelope.ToArray()) -Source 'tiktok_order_lines'
+            $got = ([int]$qqL.accepted) + ([int]$qqL.duplicated)
+            if ($qqL.ok -or $got -gt 0) { break }
+            Write-Step ("  flush retry {0}/3 err={1}" -f $flushTry, $qqL.error)
+            Start-Sleep -Seconds (3 * $flushTry)
+          }
+          $got = ([int]$qqL.accepted) + ([int]$qqL.duplicated)
+          $item.lineAccepted += [int]$qqL.accepted
+          $item.lineDup += [int]$qqL.duplicated
+          $item.lineFailed += [int]$qqL.failed
+          if ($qqL.error -and -not $item.error) { $item.error = [string]$qqL.error }
+          Write-Step ("  flush result accepted={0} dup={1} failed={2}" -f $qqL.accepted, $qqL.duplicated, $qqL.failed)
+          if ($got -gt 0 -or ($qqL.ok -and [int]$qqL.failed -eq 0)) {
+            $allLineItems.Clear()
+          } else {
+            Write-Step '  flush FAILED — keep buffer for later retry'
+          }
+        }
+      }
+    }
+
+    if ($useDryRun) {
+      Write-Step ("  dryRun lines collected={0}" -f $allLineItems.Count)
+    } elseif ($allLineItems.Count -gt 0 -and (Get-Command ConvertTo-QingquanOrderLineIngestItems -ErrorAction SilentlyContinue)) {
+      $collectedAt2 = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
+      $lineEnvelope = New-Object System.Collections.ArrayList
+      $byOrder = @{}
+      foreach ($wrap in $allLineItems) {
+        $k = [string]$wrap.orderId
+        if (-not $byOrder.ContainsKey($k)) {
+          $byOrder[$k] = @{ lines = New-Object System.Collections.ArrayList; url = [string]$wrap.detailUrl; currency = [string]$wrap.currency }
+        }
+        [void]$byOrder[$k].lines.Add($wrap.line)
+      }
+      foreach ($okey in $byOrder.Keys) {
+        $pack = $byOrder[$okey]
+        $part = ConvertTo-QingquanOrderLineIngestItems -Lines @($pack.lines) -CollectedAt $collectedAt2 `
+          -StoreId $sid -OrderId $okey -StoreName $display -Currency $pack.currency -SourceUrl $pack.url -BizDate ''
+        foreach ($it in @($part)) { [void]$lineEnvelope.Add($it) }
+      }
+      Write-Step ("  final report lines={0}..." -f $lineEnvelope.Count)
+      $qqL = $null
+      for ($flushTry = 1; $flushTry -le 4; $flushTry++) {
+        $qqL = Send-QingquanIngest -Config $cfg -Items @($lineEnvelope.ToArray()) -Source 'tiktok_order_lines'
+        $got = ([int]$qqL.accepted) + ([int]$qqL.duplicated)
+        if ($qqL.ok -or $got -gt 0) { break }
+        Write-Step ("  final retry {0}/4 err={1}" -f $flushTry, $qqL.error)
+        Start-Sleep -Seconds (4 * $flushTry)
+      }
+      $item.lineAccepted += [int]$qqL.accepted
+      $item.lineDup += [int]$qqL.duplicated
+      $item.lineFailed += [int]$qqL.failed
+      if ($qqL.error -and -not $item.error) { $item.error = [string]$qqL.error }
+      Write-Step ("  order_lines accepted={0} dup={1} failed={2}" -f $qqL.accepted, $qqL.duplicated, $qqL.failed)
+    }
+
+    $dbg = Join-Path $script:logsDir ("fill-order-sku-debug-{0}-{1}.json" -f $sid, $script:runStamp)
+    (@{
+      storeId = $sid; displayName = $display
+      detailOk = $item.detailOk; detailFail = $item.detailFail
+      lineItems = $item.lineItems; lineAccepted = $item.lineAccepted
+      samples = @($samples)
+    } | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $dbg -Encoding UTF8
+  } catch {
+    $item.error = [string]$_
+    Write-Step ("  FAIL: {0}" -f $item.error)
+  } finally {
+    try { $null = Invoke-Ziniao @('store', 'close', '--id', $sid) } catch { }
+  }
+  $summary += [pscustomobject]$item
+}
+
+Write-Step '======== FILL SUMMARY ========'
+$summary | Format-Table displayName, planned, detailOk, detailFail, lineItems, lineAccepted, lineDup, lineFailed, error -AutoSize
+$sumPath = Join-Path $script:logsDir ("fill-order-sku-summary-{0}.json" -f $script:runStamp)
+($summary | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $sumPath -Encoding UTF8
+Write-Step ("summary: {0}" -f $sumPath)
+Write-Step '===== fill order SKU END ====='

@@ -1,0 +1,333 @@
+# 每日 17:20 广告日报自动拉取
+
+> **运维归属（2026-07-31 确认）**  
+> 本定时任务已在**同事本机**落地跑。  
+> **清泉中心 / 本仓库开发侧不再把它列为待办**（不重复装任务、不验收「日更跑稳」）。  
+> 中心只保证 Ingest API + `tk.fact_ads_campaign_daily` 可写。  
+> 排障、改点、重装计划任务：找**跑任务的那台同事机** + 本文档脚本。
+
+## 做什么
+
+每天 **本地时间 17:20**，Windows 计划任务启动：
+
+1. 动态从紫鸟拉店铺列表  
+2. 按 `config/stores.config.json` 筛选（TikTok + 已绑 IP 等）  
+3. **串行**打开每家店 → 广告数据面板 → 抓取 → 写入飞书  
+4. 关闭店铺窗口  
+5. 日志写入 `logs/daily-report-*.log`
+
+## 一键安装计划任务
+
+在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1
+```
+
+指定时间（默认 17:20）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1 -Time "17:20"
+```
+
+卸载：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-daily-task.ps1 -Uninstall
+```
+
+## 运行前必须满足
+
+| 条件 | 说明 |
+|------|------|
+| 用户已登录 Windows | 紫鸟需要桌面会话，锁屏一般可以，**注销/关机不行** |
+| 紫鸟客户端已打开并登录 | `ziniao-cli doctor` 通过 |
+| `config\stores.config.json` | 飞书凭证正确；`dryRun: false`（安装脚本配套配置已默认 false） |
+| 店铺已绑设备 | `requireIp: true` 会跳过未绑 IP 的店 |
+
+## 配置要点（日报）
+
+`config/stores.config.json`：
+
+```json
+"options": {
+  "dryRun": false,
+  "dateMode": "yesterday"
+}
+```
+
+- **当前约定：17:20 跑「昨天」数据** → `dateMode: "yesterday"`（飞书「日期」= 昨日）  
+- 若要写当天 → 改为 `"today"`
+
+## 手动试跑
+
+```powershell
+# 立即执行计划任务
+schtasks /Run /TN TK-Ad-Daily-Report
+
+# 或直接跑包装脚本
+powershell -ExecutionPolicy Bypass -File .\scripts\run-daily-report.ps1
+
+# 只看会抓哪些店
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -ListOnly
+```
+
+## 查日志 / 查任务
+
+```powershell
+# 最近日志
+Get-ChildItem .\logs\daily-report-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 80
+
+# 任务详情
+schtasks /Query /TN TK-Ad-Daily-Report /V /FO LIST
+```
+
+## 常见问题
+
+1. **17:20 没跑**  
+   - 电脑休眠/关机/未登录  
+   - 任务被禁用：任务计划程序里查看「TK-Ad-Daily-Report」
+
+2. **跑了但 0 店**  
+   - 紫鸟未登录 / Bridge 挂了  
+   - 筛选过严（可 `-ListOnly` 检查）
+
+3. **某店失败**  
+   - 广告页 URL 不对、未登录卖家中心、页面改版  
+   - 看 `logs/daily-report-*.log` 与 `logs/multi-store-*.json`
+
+4. **飞书写入失败**  
+   - 凭证过期、应用未加入多维表  
+   - 插件/脚本字段名与表不一致
+
+## 相关脚本
+
+| 文件 | 作用 |
+|------|------|
+| `scripts/install-daily-task.ps1` | 安装/卸载**广告**计划任务 |
+| `scripts/run-daily-report.ps1` | 广告计划任务入口（写日志 + 强制写飞书） |
+| `scripts/run-multi-store.ps1` | 广告多店串行逻辑 |
+
+---
+
+## 二、店 KPI / 健康 / 财务日更（主配置全店）
+
+> **任务名**：`TK-Shop-Modules-Daily`  
+> **默认时间**：**17:45**（错开广告 17:20，避免同时抢紫鸟）  
+> **配置**：始终 `config\stores.config.json`（**不要**用 shopmod-one / shopmod-deal 单店试跑文件）  
+> **写入**：仅清泉 Ingest（`tiktok_shop_daily` / `tiktok_health_daily` / `tiktok_finance_daily`），不写飞书  
+> **选店**：与广告相同 filter — `platformContains: TikTok` + `requireIp` + `excludeStoreIds`；**`includeStoreIds` 必须为空**才是全店
+
+### 做什么
+
+1. 紫鸟 `store list` 动态拉店  
+2. 按主配置 filter 筛选（全店，非单店 include）  
+3. 每店串行：首页 KPI → 账号健康 → 财务账单 → Ingest  
+4. 日志：`logs/shop-modules-daily-*.log`
+
+### 一键安装
+
+在 **紫鸟采集机**（与广告日更同机或另一台 Windows）项目根执行：
+
+```powershell
+cd collectors\tiktok-ads
+powershell -ExecutionPolicy Bypass -File .\scripts\install-shop-modules-daily-task.ps1
+```
+
+指定时间：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-shop-modules-daily-task.ps1 -Time "17:45"
+```
+
+卸载：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-shop-modules-daily-task.ps1 -Uninstall
+```
+
+### 主配置要点（全店）
+
+```json
+"filter": {
+  "platformContains": ["TikTok"],
+  "requireIp": true,
+  "includeStoreIds": [],
+  "excludeStoreIds": ["27841084722470"]
+},
+"shopDailyUrl": { "default": "https://seller-uk.tiktok.com/homepage" },
+"healthUrl":    { "default": "https://seller-uk.tiktok.com/health-center" },
+"financeUrl":   { "default": "https://seller-uk.tiktok.com/finance/bills" },
+"options": {
+  "dateMode": "yesterday",
+  "dryRun": false
+},
+"qingquan": { "enabled": true, "baseUrl": "https://qingquan.jmzlai.com", "apiKey": "…生产 key…" }
+```
+
+- `biz_date`：`dateMode=yesterday` → 业务日=昨天；`today` → 当天  
+- **Pop/欧盟（exclude 策略）**：`modules.opsExcludeStoreIds` / `opsExcludePlatformContains`（兼容 `ordersExclude*`）对 **orders / products / shop-modules** 生效，默认排除 Pop `27758103898326` 与平台名含「欧盟」。**广告 dual 不读此列表**，仍可采 Pop。不要把 Pop 放进 `filter.excludeStoreIds`，否则广告也会被排除。
+
+### 手动试跑
+
+```powershell
+cd collectors\tiktok-ads
+
+# 只看会跑哪些店（全店名单）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules.ps1 -ListOnly
+
+# 前台实跑（写清泉）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-shop-modules-daily.ps1
+
+# 或立刻触发计划任务
+schtasks /Run /TN TK-Shop-Modules-Daily
+```
+
+### 查日志 / 任务
+
+```powershell
+Get-ChildItem .\logs\shop-modules-daily-*.log | Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 80
+schtasks /Query /TN TK-Shop-Modules-Daily /V /FO LIST
+```
+
+### 相关脚本（店模块）
+
+| 文件 | 作用 |
+|------|------|
+| `scripts/install-shop-modules-daily-task.ps1` | 安装/卸载本任务 |
+| `scripts/run-shop-modules-daily.ps1` | 计划任务入口（日志 + 强制 DryRun false） |
+| `scripts/run-shop-modules.ps1` | 实际多店 KPI/健康/财务逻辑 |
+
+---
+
+## 三、内容分析 / 商品卡（经营计划 P2）— **未入日更**
+
+> **2026-08-05：🟢 采集双侧通过 + P2.1b 生产真采闭环**（详见仓库根 `docs/TK-P2-内容分析POC结论.md`）  
+> - 商品卡 `product-card-analytics`：✅ P2.1a 生产事实 + `GET /tk/product-traffic`  
+> - 视频详情 `video-analytics/video-details`：✅ Deal+Gardena 各 10 行 **content_id** → `tiktok_content` → `fact_tiktok_content_daily` + `GET /tk/content`  
+> - **禁止**把 `run-content-poc.ps1` / `video_list` 装进**计划任务**，直至**连续**窗口真数 + 业务批准入日更  
+> - 试跑 / 补采：
+
+```powershell
+cd collectors\tiktok-ads
+# 商品卡上报中心
+powershell -ExecutionPolicy Bypass -File .\scripts\run-content-poc.ps1 `
+  -ConfigPath .\config\stores.config.deal-only.json `
+  -Modules product_traffic -SkipIngest:$false -DryRun false
+
+# 视频行级上报中心（需 api 已含 tiktok_content + 已 apply 013）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-content-poc.ps1 `
+  -ConfigPath .\config\stores.config.deal-only.json `
+  -Modules video_list -SkipIngest:$false -DryRun false
+```
+
+只读 API：`GET /api/v1/tk/product-traffic`、`GET /api/v1/tk/content`（需登录）。  
+注意：PowerShell 传 `-Modules` 时请加引号，如 `-Modules "video_list,product_traffic"`。
+---
+
+## 三、订单 / 商品日更（主配置全店）
+
+> 与广告、店模块一样：只装在**紫鸟 Windows 采集机**。  
+> 推荐错开时间，避免多任务同时抢窗口。
+
+| 任务名 | 默认时间 | 脚本 | 说明 |
+|--------|----------|------|------|
+| `TK-Ad-Daily-Report` | 17:20 | `install-daily-task.ps1` | 广告（已有；同事机） |
+| `TK-Shop-Modules-Daily` | 17:45 | `install-shop-modules-daily-task.ps1` | KPI/健康/财务 |
+| `TK-Orders-Daily` | **18:00** | `install-orders-daily-task.ps1` | 订单 |
+| `TK-Products-Daily` | **18:20** | `install-products-daily-task.ps1` | 商品 |
+| `TK-Full-Site-Daily` | 17:50 | `install-full-site-daily-task.ps1` | **一条链** shop→orders→products（**勿与上面三个拆分任务同时开**） |
+| `TK-P0-Post-Collect-Daily` | **19:00** | 仓库根 `scripts/install-tk-p0-post-collect-daily-task.ps1` | 规则扫单 + 飞书 T1/T2/异常同步（**不抢紫鸟**） |
+
+### 安装（拆分）
+
+```powershell
+cd collectors\tiktok-ads
+powershell -ExecutionPolicy Bypass -File .\scripts\install-orders-daily-task.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install-products-daily-task.ps1
+```
+
+### 或安装（合并一条）
+
+```powershell
+# 若已装 Shop/Orders/Products 三个拆分任务，先卸载它们再装合并任务
+powershell -ExecutionPolicy Bypass -File .\scripts\install-full-site-daily-task.ps1 -Time "17:50"
+```
+
+### 试跑
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run-orders-daily.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-products-daily.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run-full-site-daily.ps1
+# 或
+schtasks /Run /TN TK-Orders-Daily
+schtasks /Run /TN TK-Products-Daily
+```
+
+订单仍尊重 `modules.ordersExcludeStoreIds` / `ordersExcludePlatformContains`（如欧盟 Pop）。
+
+---
+
+## 四、P0 采集后尾巴（规则 + 飞书同步）
+
+> **任务名**：`TK-P0-Post-Collect-Daily`  
+> **默认时间**：**19:00**（晚于 shop 17:45 / orders 18:00 / products 18:20）  
+> **机器**：能连 **PostgreSQL + 飞书** 的中心机即可（**不需要**紫鸟 Bridge）  
+> **脚本**：仓库根 `scripts/tk-p0-post-collect.ps1`
+
+### 做什么
+
+1. `python -m app.jobs.tk_ads_anomaly_eval`（ROI/空耗 → 异常任务）  
+2. `python -m app.jobs.tk_product_anomaly_eval`（断货/低库存 → 异常任务）  
+3. `scripts/feishu_tk_daily_sync.py --lookback-days 14`（T1 店日 + T2 广告 + 异常任务）
+
+### 一键安装（仓库根）
+
+```powershell
+cd E:\project\清泉跨境系统（企业级）
+powershell -ExecutionPolicy Bypass -File .\scripts\install-tk-p0-post-collect-daily-task.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\install-tk-p0-post-collect-daily-task.ps1 -Time "19:00" -LookbackDays 14
+```
+
+卸载：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\install-tk-p0-post-collect-daily-task.ps1 -Uninstall
+```
+
+### 手动试跑
+
+```powershell
+# dry-run（不写库/不写飞书变更意图以脚本参数为准）
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -DryRun -LookbackDays 7
+
+# 正式
+powershell -ExecutionPolicy Bypass -File .\scripts\tk-p0-post-collect.ps1 -LookbackDays 14
+schtasks /Run /TN TK-P0-Post-Collect-Daily
+```
+
+日志：`logs/tk-p0-post-collect-*.log`
+
+### 与 full-site / night-loop
+
+- `run-full-site-daily.ps1 -RunPostCollect`：采集链成功后同进程调尾巴  
+- `night-loop.ps1 -RunPostCollect`：每轮采集后调尾巴（默认 lookback 7）  
+- 已装 **19:00 计划任务** 时，full-site 可不加 `-RunPostCollect`，避免晚间双跑（双跑一般幂等，但费飞书配额）
+
+### 前置
+
+| 条件 | 说明 |
+|------|------|
+| `backend/.env` 或仓库根 `.env` | `DATABASE_URL`、`FEISHU_APP_*`、`FEISHU_BITABLE_TABLE_TK_*` |
+| 当日事实已入库 | 广告/商品/店日越新，规则与 T1/T2 越准 |
+| 紫鸟 | **不需要** |
+
+---
+
+## 经营计划 P2.0 内容分析（未入日更）
+
+- 脚本：`scripts/run-content-poc.ps1`（视频概览 + 商品卡 POC）
+- **不要**挂计划任务，直至 [`docs/TK-P2-内容分析POC结论.md`](../../../docs/TK-P2-内容分析POC结论.md) Verdict=通过并产品化
+- 与采集路线图已完成的 P2a/b/c（订单/商品/店日）不是同一回事
+

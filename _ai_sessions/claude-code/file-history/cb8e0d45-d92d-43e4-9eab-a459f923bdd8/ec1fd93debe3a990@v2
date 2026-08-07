@@ -1,0 +1,47 @@
+# -*- coding: utf-8 -*-
+"""把 ERP 三方仓视图工具栏/按钮真实文本写入 UTF-8 文件，绕开 gbk 乱码。"""
+import sys, os, time, json
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, erp
+from playwright.sync_api import sync_playwright
+
+OUT = os.path.join(config.DUMP_DIR, "erp_sanfang_toolbar.json")
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            open(OUT, "w", encoding="utf-8").write('{"error":"ERP未登录"}'); ctx.close(); return
+        erp.open_order_ship(page)
+        page.click("text=三方仓", timeout=6000); time.sleep(3)
+
+        data = page.evaluate(r"""() => {
+            const norm = s => (s||'').replace(/\s+/g,'');
+            const btns=[];
+            document.querySelectorAll('button, .el-button, .base_button_comp, [class*=btn]').forEach(e=>{
+                if(e.offsetParent===null) return;
+                const t=norm(e.innerText);
+                if(!t || t.length>10) return;
+                const r=e.getBoundingClientRect();
+                btns.push({text:t, tag:e.tagName, inRow: !!e.closest('.vxe-body--row'),
+                           x:Math.round(r.x+r.width/2), y:Math.round(r.y+r.height/2),
+                           desc:e.querySelectorAll('*').length});
+            });
+            // 顶部子标签(成功/失败/获取中/待更新...)
+            const tabs=[];
+            document.querySelectorAll('.el-tabs__item, [class*=tab]').forEach(e=>{
+                if(e.offsetParent!==null){ const t=norm(e.innerText); if(t&&t.length<12) tabs.push(t); }
+            });
+            return {buttons:btns, tabs:[...new Set(tabs)]};
+        }""")
+        with open(OUT, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_sanfang.png"), full_page=True)
+        print("written", OUT, "buttons=", len(data["buttons"]))
+        time.sleep(3); ctx.close()
+
+
+if __name__ == "__main__":
+    main()

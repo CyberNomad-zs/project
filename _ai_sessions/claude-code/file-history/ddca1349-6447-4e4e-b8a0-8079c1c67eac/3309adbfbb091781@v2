@@ -1,0 +1,265 @@
+# TK 驾驶舱 · 赛狐 vs 现有采集 数据源对照
+
+> 日期：2026-08-05  
+> 背景：评估 `openapi.sellfox.com` 能否承接 / 补充清泉 TK 驾驶舱（飞书 T1/T2/T3…）  
+> 密钥与文档入口见仓库根目录 `api_keys.md`（**勿提交真实 secret**）  
+> 探测脚本：`E:\project\海外仓\sellfox-bridge\probe_tiktok.py`  
+> 赛狐文档：https://sellfoxapi.apifox.cn/ （密码见 api_keys）
+
+---
+
+## 0. 结论先看
+
+| 问题 | 答案 |
+|------|------|
+| 赛狐 API 有没有 TikTok？ | **有**。多平台商品 6 个 + 财务利润报表 6 个（文档已核实） |
+| WMS API 有没有 TikTok 前台数据？ | **没有**。只有仓内履约（出库/运单/库存） |
+| 能否替代现有紫鸟/TK 采集？ | **不能整体替代**。广告、内容、健康分、店首页 KPI 细项仍必须 TK 侧采集 |
+| 现在 bridge 能否直接用？ | **客户端已补 TK 只读方法**；本机若 `40005` 需 IP 加白后再跑探测 |
+| 和 Temu 白名单关系？ | **无关**。Temu 三店 shopId 不能当 TK 店用；要单独映射赛狐 TK `shopId` ↔ 紫鸟 `storeId` |
+
+**推荐分工（稳态）：**
+
+```text
+TK 广告 / 内容 / 店 KPI / 健康  →  现有 collectors/tiktok-ads + ingest → tk.fact_*
+TK 商品主数据 / 利润毛利 / 结算账单  →  可评估赛狐 OpenAPI 补数或对账
+TK 已进赛狐的包裹发货闭环      →  sellfox packageShip + WMS（与现 bridge 同构，另开白名单）
+```
+
+---
+
+## 1. 赛狐已核实的 TK 接口
+
+### 1.1 商品（多平台 / 销售）
+
+| 说明 | Method | Path |
+|------|--------|------|
+| 全托父体 | POST | `/api/multiplatform/tiktok/fullyManaged/product/getParentPageList.json` |
+| 全托子体 | POST | `/api/multiplatform/tiktok/fullyManaged/product/getChildInfo.json` |
+| 自营全球父体 | POST | `/api/multiplatform/tiktok/global/product/getParentPageList.json` |
+| 自营全球子体 | POST | `/api/multiplatform/tiktok/global/product/getChildInfo.json` |
+| 自营店铺父体 | POST | `/api/multiplatform/tiktok/shop/product/getParentPageList.json` |
+| 自营店铺子体 | POST | `/api/multiplatform/tiktok/shop/product/getChildInfo.json` |
+
+**自营店铺父体入参要点：** `pageNo/pageSize/shopIdList` + **必填** `dateType`(`createDate|updateDate`) + `startDate/endDate`（间隔 ≤30 天）。  
+**全托父体文档示例**可无日期，仅分页 + `shopIdList`。
+
+**自营店铺父体文档字段（节选）：**  
+`parentId, shopId, shopName, productId, productName, tkStatus, mainImage, matchStatus, publishSiteList, platformCreateTime, platformUpdateTime, productSyncTime`
+
+**全托父体文档字段（节选）：**  
+`parentId, platformProductId, shopId, shopName, shopType, shopSite`  
+（文档示例偏瘦，实调以 probe 字段并集为准。）
+
+### 1.2 财务 · TikTok 利润报表
+
+| 说明 | Path |
+|------|------|
+| 按店铺 | `/api/financial/tkReport/queryPageShop.json` |
+| 按 SKU | `/api/financial/tkReport/queryPageSku.json` |
+| 按 MSKU | `/api/financial/tkReport/queryPageMsku.json` |
+| 按业务员 | `/api/financial/tkReport/querySalesMan.json` |
+| 按开发员 | `/api/financial/tkReport/queryPageDeveloper.json` |
+| 账单明细 | `/api/financial/tkReport/queryStatementDetail.json` |
+
+**按店铺入参要点：** `startDate, endDate` 必填；`shopIds` 为 **整数数组**；`currency` 空=原币；`marketplaceCodes`；`pageNum/pageSize`。
+
+**按店铺返回金额类（文档示例，实调为准）：**  
+`salesQuantity, returnQuantity, grossSalesAmount, grossSalesRefundAmount, settlementAmount, grossProfit, grossRate, adsCost,`  
+各类运费/佣金/联盟/COD/平台费…（字段很多，适合进 `raw_extra` 或财务宽表）
+
+**账单明细：** 含 `orderId, statementId, statementTime, statementStatus, paymentStatus, settlementAmount, grossSalesAmount…` —— 偏 **结算流水**，不是店后台「今日 GMV」实时 KPI。
+
+### 1.3 订单 / 发货（非 TK 专用名）
+
+| 能力 | 说明 |
+|------|------|
+| 多平台订单列表 | 文档有「多平台订单列表」；不带 TikTok 专名，依赖店已绑赛狐 |
+| 包裹发货 | 现有 `/api/packageShip/v1/getPackagePage.json` 等；按 `shopId` 过滤 |
+
+### 1.4 明确没有的（文档检索）
+
+- TikTok Ads 广告系列/花费/ROI 明细（驾驶舱 T2）  
+- 短视频 / 直播内容分析（T6）  
+- 账号健康分 / 延迟发货率 / 负面反馈率（health_daily）  
+- 店首页实时 GMV 曲线与紫鸟 storeId 体系  
+
+---
+
+## 2. 清泉 TK 驾驶舱字段对照
+
+图例：
+
+- ✅ 赛狐可作主源或强补充（绑定 TK 店且权限开通后）  
+- 🟡 部分字段 / 口径不同 / 仅对账  
+- ❌ 赛狐无 → 保持现有 TK 采集  
+- 📦 仅履约后 WMS  
+
+### 2.1 T1 店铺日经营 ← `tk.fact_tiktok_shop_daily` + ads rollup + health/finance
+
+| 飞书/逻辑字段 | PG 来源 | 赛狐 | 说明 |
+|---------------|---------|------|------|
+| 日期 | biz_date | 🟡 | 利润报表是 **查询区间汇总**，不是自然日行；要日粒度需按日切窗多次拉或只用账单日 |
+| 店铺 / 店铺ID | shop_name / shop_external_id | 🟡 | 赛狐 `shopId` ≠ 紫鸟 `storeId`，必须在 `public.shop.meta` 做双 ID 映射 |
+| 币种 | currency | ✅ | 报表 `currency` / 原币 |
+| 销售额 GMV | gmv | 🟡 | 可用 `grossSalesAmount`；口径=财务毛销售，未必=TK 后台 GMV |
+| 订单量 | orders_cnt | 🟡 | `salesQuantity` 更像件数/销量，是否=订单数要实调标定 |
+| 买家数 | buyers_cnt | ❌ | 未见 |
+| 退款金额 | refund_amount | ✅ | `grossSalesRefundAmount` 等 |
+| 客单价 | 预计算 | 🟡 | 有额有量可算，分母含义要先定 |
+| 广告花费/销售/订单/ROI | ads rollup | 🟡/`adsCost` | 报表有 `adsCost`；**无**活动级 ROI/订单，T2 仍要广告采集 |
+| 自然订单/销售(估) | 店−广告 | 🟡 | 依赖上面两套口径一致才能估 |
+| 健康分/状态/迟发/差评 | health_daily | ❌ | 必须 TK 健康采集 |
+| 结算 / 待结算 / 财务退款 | finance_daily | ✅/🟡 | `settlementAmount`；待结算、状态看账单明细 `statementStatus/paymentStatus` |
+| 数据状态/抓取时间 | 同步元数据 | — | 自建 |
+
+**T1 建议：**  
+- **主路径不变**：店 KPI + 广告 rollup + 健康仍走 TK 采集。  
+- **赛狐**：作 **财务校准层**（结算、毛利、费用拆分、退款），可加飞书列或独立「财务日」表，避免和 GMV 混加。
+
+### 2.2 T2 广告活动日 ← `tk.fact_ads_campaign_daily`
+
+| 字段 | 赛狐 | 说明 |
+|------|------|------|
+| 活动名/花费/ROI/销售额/预算/状态… | ❌ | 仅店/SKU 级 `adsCost`，无 campaign 维 |
+| **结论** | 保持 `collectors/tiktok-ads` | |
+
+### 2.3 T3 商品 ← `tk.fact_tiktok_product`
+
+| PG 字段 | 赛狐字段（自营店文档） | 匹配 |
+|---------|----------------------|------|
+| product_id | productId / platformProductId | ✅ |
+| product_name | productName | ✅ |
+| status | tkStatus | ✅（枚举需映射） |
+| seller_sku | 子体接口再探 | 🟡 |
+| stock_qty / price / sales_qty | 文档父体示例未列 | 🟡 实调子体/字段并集 |
+| mainImage 等 | mainImage → raw_extra | ✅ |
+| shop_external_id | 须映射到紫鸟 ID 或并存赛狐 shopId | 必做映射 |
+
+**T3 建议：**  
+- 赛狐适合 **ERP 侧在线商品快照 / 下架 diff / 图与状态**。  
+- 与 TK 后台商品列表可双写对账；**库存售价以谁为准**要业务拍板（通常前台 TK、ERP 赛狐）。
+
+### 2.4 订单 ← `tk.fact_tiktok_order`
+
+| PG 字段 | 赛狐 | 匹配 |
+|---------|------|------|
+| order_id | 多平台订单 / 账单 `orderId` | 🟡 |
+| pay_amount / status / sku… | 多平台订单详情（待实调） | 🟡 |
+| 完整 TK 前台状态机 | 不一定 1:1 | 🟡 |
+| **结论** | 运营订单仍以 TK 采集为主；赛狐订单用于 ERP/发货对齐 | |
+
+### 2.5 内容 T6 / 异常任务 / 流量
+
+| 域 | 赛狐 |
+|----|------|
+| 视频/直播内容日 | ❌ |
+| 商品流量 metrics | ❌ |
+| 异常任务规则 | ❌（规则在清泉） |
+
+### 2.6 履约 / WMS
+
+| 需求 | 来源 |
+|------|------|
+| 是否出库、运单号 | WMS `queryOrderStatus` / `queryTrackingNumber` |
+| 推仓 | 赛狐 `applyTrackNo`（非 WMS 写接口） |
+| 与 TK 关系 | 仅当 TK 订单已进赛狐并生成 `packageSn` |
+
+---
+
+## 3. ID 与主数据映射（必须先做）
+
+| 体系 | ID | 现状示例 |
+|------|-----|----------|
+| 清泉 / 紫鸟 TK | `storeId` → `public.shop.external_shop_id` | `27501502216807` Deal to deal |
+| 赛狐 | `shopId`（int/string） | Temu：`396706`…；**TK 的赛狐 shopId 待探测** |
+| WMS | `platformOrderNo` = 赛狐 `packageSn` | 与 TK order_id 不同 |
+
+建议在 `public.shop.meta`：
+
+```json
+{
+  "sellfox_shop_id": "待填",
+  "ziniao_store_id": "27501502216807",
+  "tiktok_shop_type": "shop|global|fullyManaged",
+  "marketplace": "UK"
+}
+```
+
+没有这张映射表，赛狐利润/商品 **不能** 直接打进现有 T1/T3 行。
+
+---
+
+## 4. 探测与落地步骤
+
+### 4.1 本机探测
+
+```powershell
+cd E:\project\海外仓\sellfox-bridge
+
+# 使用 bridge 配置里的密钥（或 api_keys 对应项写入本地 yaml）
+python probe_tiktok.py --config config\config.g2-3shops.yaml -o logs\tk_probe.json
+
+# 已知道赛狐 TK shopId 时：
+python probe_tiktok.py --config config\config.g2-3shops.yaml --shop <SF_TK_SHOP_ID> --only all
+
+# 只看财务
+python probe_tiktok.py --config config\config.g2-3shops.yaml --only report --start-date 2026-07-01 --end-date 2026-07-30
+```
+
+**若 `code=40005`：** 当前出口 IP 未加白（此前本环境 token 已复现）。到 `部署_固定IP清单.md` 对应机器跑，或把 IP 提交赛狐。
+
+### 4.2 通过标准
+
+| 检查项 | 通过条件 |
+|--------|----------|
+| token | code=0 |
+| 任一商品接口 | `rows.length > 0` 且含 productId/parentId |
+| 利润店铺 | 有 grossSalesAmount / settlementAmount 等 |
+| shop 映射 | 每条 TK 清泉店能对应唯一赛狐 shopId |
+| 权限 | 无「未开通模块」类错误 |
+
+### 4.3 若探测通过，工程增量（未做，仅规划）
+
+1. `SellfoxClient` TK 方法 → 已在 bridge 客户端（本轮）  
+2. 清泉 backend 只读同步 Job（或 ingest adapter）写：  
+   - `tk.fact_tiktok_product`（标记 `source=sellfox`）  
+   - `tk.fact_tiktok_finance_daily` / 新财务费用表  
+3. **不** 用赛狐覆盖 `fact_ads_campaign_daily` / content / health  
+4. 飞书：T1 增加「赛狐结算/毛利」列或独立财务表，避免和 GMV 币种混加  
+5. 店铺白名单与 Temu 发货 bridge **隔离**
+
+---
+
+## 5. 和 api_keys.md 的关系
+
+| 键 | 用途 |
+|----|------|
+| Sellfox client_id/secret | 本探测 + 未来 TK 只读同步 |
+| WMS key/secret | 仅履约；**不要**指望拉 TK 商品/广告 |
+| 文档密码 | 查接口变更 |
+
+安全：`api_keys.md` 含明文 secret，应改本地忽略或迁入密码管理；旋转后同步 bridge 配置。
+
+---
+
+## 6. 一页决策表（给业务）
+
+| 驾驶舱模块 | 主数据源 | 赛狐角色 |
+|------------|----------|----------|
+| D1 多店 GMV/订单/买家 | TK 店 KPI 采集 | 财务口径校准（可选） |
+| D1 广告花费/ROI 汇总 | TK 广告 rollup | 仅总 `adsCost` 对账 |
+| D2 广告活动明细 | TK 广告采集 | 无 |
+| D3 商品 | TK 商品 或 赛狐商品 | 可双源；ERP 状态看赛狐 |
+| D4 内容 | TK 内容采集 | 无 |
+| 健康预警 | TK 健康采集 | 无 |
+| 结算/毛利/费用 | 赛狐 tkReport **优先候选** | 主源候选 |
+| 发货运单 | 赛狐包裹 + WMS | 履约闭环 |
+
+---
+
+## 7. 修订记录
+
+| 日期 | 说明 |
+|------|------|
+| 2026-08-05 | 初版：文档核实 TK 12 接口；对照 T1/T2/T3/订单/内容；probe_tiktok.py + client 方法 |

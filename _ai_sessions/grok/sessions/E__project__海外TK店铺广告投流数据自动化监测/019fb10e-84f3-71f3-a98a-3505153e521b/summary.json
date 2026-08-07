@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb10e-84f3-71f3-a98a-3505153e521b",
+    "cwd": "E:\\project\\海外TK店铺广告投流数据自动化监测"
+  },
+  "session_summary": "Updating Old Scheduled Tasks on Colleagues' Machines",
+  "created_at": "2026-07-30T03:25:46.630420700Z",
+  "updated_at": "2026-07-30T03:32:52.019746700Z",
+  "num_messages": 42,
+  "num_chat_messages": 23,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 2,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外TK店铺广告投流数据自动化监测/",
+  "git_remotes": [
+    "https://github.com/JMCATTT/tk-shop-ad-monitor.git"
+  ],
+  "head_commit": "de71178a2990f69cad3cdf83c2b6324e9184e5d9",
+  "head_branch": "main",
+  "request_id": "4200afee-2693-4b04-9a3a-bbd8077735ea",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T03:32:52.019746700Z",
+  "generated_title": "Updating Old Scheduled Tasks on Colleagues' Machines",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

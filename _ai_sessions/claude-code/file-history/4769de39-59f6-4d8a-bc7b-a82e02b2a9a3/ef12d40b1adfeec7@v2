@@ -1,0 +1,24 @@
+---
+name: traffic-plugin-primary
+description: 2026-07-31 起日常流量用 Chrome 插件 v14，上下架服务器赛狐，本机 Playwright 流量退役
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: 4769de39-59f6-4d8a-bc7b-a82e02b2a9a3
+  modified: 2026-07-31T07:56:18.532Z
+---
+
+主路径（2026-07-31 定）：
+
+| 通道 | 职责 |
+|------|------|
+| **temu-plugin v14+**（同事日常 Chrome） | 仅流量：待关注增加 + 近期下降 + 多店空闲轮巡 + 必提醒。`DELIST_IN_PLUGIN=false`，不报在售下降/下架点名 |
+| **服务器 temu-sellfox** | 仅上下架点名（赛狐 selectStatus=12） |
+| **本机 Playwright temu-monitor** | 代码保留作应急/DOM 回归；**停发** traffic-local 给同事日常；勿与插件双开 |
+
+插件 bgVersion 字符串：`v14-仅流量`；manifest `0.2.0`。升级须 chrome://extensions **关开开关**重建 SW。
+
+分发包：`_dist/temu-plugin-v14-*.zip`（加载已解压）。
+
+**Why:** 本机第二套 `.userdata` Chrome 与日常同账号双端易互踢/进程被挤；插件共用登录态规避。下架已在固定 IP 赛狐跑通不必回插件。
+**How to apply:** 同事装插件 + 停 Node 常驻；服务器不动 sellfox。改流量逻辑优先改 `temu-plugin/`，勿默认推 `pack-traffic-local`。相关 [[temu-plugin-versions]] [[sellfox-server-deploy]] [[temu-monitor-project]]。

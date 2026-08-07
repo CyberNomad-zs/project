@@ -1,0 +1,422 @@
+// background.js —— 跨标签编排（service worker）。
+// 守住核心业务规则：按渠道串行闭环、先选模板→再筛渠道、渠道→店铺/快递方映射、失败留存。
+// WMS 同源单账号约束：同一浏览器 WMS 只能登一个店铺，故【只处理当前登录店铺对应的渠道】，
+// 另一店铺的渠道跳过并提示切换后再跑一次（连 ERP 下单都不做，避免下了单发不掉变残留单）。
+importScripts("rules.js");
+
+const ERP_URL = "https://www.sellfox.com/amzup-web-main/web/orderShip/index.html";
+const ORDERINFO_WMS = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html";
+const INDEX_WMS = "http://193.112.93.60:9999/index.html";
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 日志缓冲放在后台，弹窗只是"观众"。弹窗关闭/重开不影响日志——重开时从这里重放。
+// 也写一份到 storage.session（内存级，不落盘），防 service worker 被回收后丢失。
+let logBuffer = [];
+let running = false;
+const ports = new Set();
+
+// MV3 保活：service worker 空闲 ~30s 就被回收，会杀死正在跑的任务（表现=日志卡在某行不动）。
+// 运行期间每 20s 调一次 chrome API，重置空闲计时器，盖住 sleep/等待页面加载 的静默间隙。
+let keepAliveTimer = null;
+function startKeepAlive() {
+  if (keepAliveTimer) return;
+  keepAliveTimer = setInterval(() => { try { chrome.runtime.getPlatformInfo(() => {}); } catch (e) {} }, 20000);
+}
+function stopKeepAlive() { if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; } }
+
+function broadcast(msg) { for (const p of ports) { try { p.postMessage(msg); } catch (e) {} } }
+function log(line) {
+  logBuffer.push(line);
+  broadcast({ type: "log", line });
+  try { chrome.storage.session.set({ hwcLog: logBuffer, hwcRunning: running }); } catch (e) {}
+}
+async function loadBufferIfEmpty() {
+  if (logBuffer.length) return;
+  try {
+    const s = await chrome.storage.session.get(["hwcLog", "hwcRunning"]);
+    if (s.hwcLog) logBuffer = s.hwcLog;
+    running = !!s.hwcRunning;
+  } catch (e) {}
+}
+
+async function findTab(pattern) {
+  const tabs = await chrome.tabs.query({ url: pattern });
+  return tabs[0] || null;
+}
+
+// 导航并【轮询等页面就绪】——不再赌"加载完成事件"（跳到相同 URL 时该事件可能不触发=假死）。
+// 发起跳转后，每 1.5s 注入并调一次 opMsg，直到 okFn(结果) 为真（说明我们要的 DOM 已出现）。
+// 页面重载中 executeScript 可能抛错，忽略后重试。超时返回最后一次结果。
+async function gotoUntil(tabId, url, side, opMsg, okFn, timeout = 40000) {
+  await chrome.tabs.update(tabId, { url });
+  const deadline = Date.now() + timeout;
+  let last = null;
+  while (Date.now() < deadline) {
+    await sleep(1500);
+    try { const r = await runOp(tabId, side, opMsg); last = r; if (okFn(r)) return r; }
+    catch (e) { last = { error: String((e && e.message) || e) }; }
+  }
+  return last;
+}
+
+// 给 Promise 加超时，防止某个坏 frame（永远加载中的 iframe）让 executeScript 永不返回=假死。
+function withTimeout(p, ms, label) {
+  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("超时:" + label)), ms))]);
+}
+
+async function getFrames(tabId) {
+  try {
+    const fs = await chrome.webNavigation.getAllFrames({ tabId });
+    return fs && fs.length ? fs : [{ frameId: 0, url: "" }];
+  } catch (e) { return [{ frameId: 0, url: "" }]; }
+}
+
+// 【关键】逐个 frame 注入并 dispatch，每个 frame 单独限时。
+// 不再用 allFrames:true 一次性注入——那样只要有一个坏 frame 就整体卡死（sellfox 有常驻加载的 iframe）。
+async function runOp(tabId, side, opMsg) {
+  const files = side === "erp" ? ["lib.js", "content_erp.js"] : ["lib.js", "content_wms.js"];
+  const glob = side === "erp" ? "__HWC_ERP" : "__HWC_WMS";
+  const frames = await getFrames(tabId);
+  for (const fr of frames) {
+    try {
+      await withTimeout(
+        chrome.scripting.executeScript({ target: { tabId, frameIds: [fr.frameId] }, files }),
+        6000, "注入");
+      const res = await withTimeout(
+        chrome.scripting.executeScript({
+          target: { tabId, frameIds: [fr.frameId] },
+          func: async (g, m) => {
+            try { const o = window[g]; return o ? await o.dispatch(m) : null; }
+            catch (e) { return { error: String((e && e.stack) || e) }; }
+          },
+          args: [glob, opMsg],
+        }),
+        90000, "执行");
+      const r = res && res[0] && res[0].result;
+      if (r !== null && r !== undefined) return r;   // 命中承载目标 DOM 的 frame
+    } catch (e) { /* 该 frame 无权限/已卸载/超时，跳过 */ }
+  }
+  return null;
+}
+
+// 在页面里跑的自包含探测函数（不依赖 lib.js）：报告关键控件结构 + 当前【已打开】的下拉选项。
+function erpProbeInPage() {
+  const norm = (s) => (s || "").replace(/\s/g, "");
+  const vis = (el) => !!el && el.offsetParent !== null;
+  const q = (sel) => { try { return document.querySelectorAll(sel).length; } catch (e) { return -1; } };
+
+  const wuliu = [...document.querySelectorAll("button,.el-button,[class*=btn],span,div,a")]
+    .filter((e) => norm(e.innerText) === "物流下单").length;
+  const tplEls = [...document.querySelectorAll("*")].filter((e) => !e.children.length && norm(e.innerText) === "筛选模板");
+
+  const counts = {
+    url: location.href.slice(0, 55),
+    vxe表: q(".vxe-table,.vxe-header--column"),
+    vxe全选框: q(".vxe-header--column.col--checkbox .vxe-cell--checkbox"),
+    物流下单按钮: wuliu,
+    筛选模板: tplEls.length,
+    渠道输入框: q("input[placeholder*='渠道']"),
+    total_style: q(".total_style"),
+    渠道main_label: q("span.main_label"),
+  };
+  if (counts.vxe表 <= 0 && counts.物流下单按钮 <= 0) return { counts };  // 非订单 frame，只回计数
+
+  // 渠道触发器 & 其外层链（判断该点哪一层才能弹开下拉）
+  const chan = document.querySelector("input[placeholder*='渠道']");
+  const chanInfo = chan ? {
+    inputCls: chan.className,
+    p1: chan.parentElement && chan.parentElement.className,
+    p2: chan.parentElement && chan.parentElement.parentElement && chan.parentElement.parentElement.className,
+    p3: chan.parentElement && chan.parentElement.parentElement && chan.parentElement.parentElement.parentElement && chan.parentElement.parentElement.parentElement.className,
+  } : null;
+  // 筛选模板触发器结构
+  const tplInfo = tplEls.slice(0, 2).map((e) => ({ tag: e.tagName, cls: e.className, p1: e.parentElement && e.parentElement.className }));
+  // main_label 样本：判断这些是"渠道下拉选项"还是"订单行里的渠道文字"
+  const mlSample = [...document.querySelectorAll("span.main_label")].slice(0, 8)
+    .map((e) => ({ text: (e.innerText || "").trim().slice(0, 28), visible: vis(e), p1: e.parentElement && e.parentElement.className }));
+  // 当前【已打开】的下拉/弹层里的可见叶子文本（需先在页面手动点开下拉再探测）
+  const containers = [...document.querySelectorAll(".el-popper,.el-select-dropdown,.el-dropdown-menu,.el-popover,.el-scrollbar,[class*=dropdown],[class*=popover]")].filter(vis);
+  const openItems = [];
+  containers.forEach((c) => {
+    [...c.querySelectorAll("*")].forEach((e) => {
+      if (e.children.length) return;
+      const t = (e.innerText || "").trim();
+      if (!t || t.length > 40 || !vis(e)) return;
+      openItems.push({ cls: e.className, tag: e.tagName, text: t.slice(0, 28) });
+    });
+  });
+
+  return {
+    counts,
+    渠道触发器: chanInfo,
+    筛选模板触发器: tplInfo,
+    main_label样本: mlSample,
+    打开的下拉容器: [...new Set(containers.map((c) => c.className))].slice(0, 8),
+    打开的下拉选项: openItems.slice(0, 30),
+  };
+}
+
+// 主动探测：扩展自己去点渠道/模板的各层触发器，报告哪层能弹开下拉、选项真实类名。
+function activeProbeInPage() {
+  const vis = (el) => !!el && el.offsetParent !== null;
+  const norm = (s) => (s || "").replace(/\s/g, "");
+  function realClick(el) {
+    if (!el) return;
+    try { el.scrollIntoView({ block: "center" }); } catch (e) {}
+    const r = el.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const base = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+    for (const t of ["pointerover", "pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+      let ev;
+      try { ev = t.startsWith("pointer") ? new PointerEvent(t, { ...base, pointerId: 1, isPrimary: true }) : new MouseEvent(t, base); }
+      catch (e) { ev = new MouseEvent(t.replace("pointer", "mouse"), base); }
+      el.dispatchEvent(ev);
+    }
+  }
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const input = document.querySelector("input[placeholder*='渠道']");
+  const cont = input && input.closest(".select-container");
+  const trig = input && input.closest(".popover_trigger");
+
+  const cn = (el) => (el && typeof el.className === "string" ? el.className : (el && el.className && el.className.baseVal) || "");
+  const leafText = (e) => (e.innerText || "").trim();
+  // 只发 mousedown/mouseup（不发 click）——有些自定义 popover 靠 mousedown 展开、click 反而触发 outside-close。
+  const mousedownOnly = (el) => {
+    const r = el.getBoundingClientRect();
+    const base = { bubbles: true, cancelable: true, view: window, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2, button: 0, buttons: 1 };
+    for (const t of ["pointerdown", "mousedown", "pointerup", "mouseup"]) {
+      let ev; try { ev = t.startsWith("pointer") ? new PointerEvent(t, { ...base, pointerId: 1, isPrimary: true }) : new MouseEvent(t, base); } catch (e) { ev = new MouseEvent(t.replace("pointer", "mouse"), base); }
+      el.dispatchEvent(ev);
+    }
+  };
+  const focusThenClick = (el) => { try { el.focus(); } catch (e) {} realClick(el); };
+  return (async () => {
+    const out = {};
+    // 只查少量相关元素——绝不做 body* 全量扫描（赛狐 DOM 巨大，全量遍历+逐元素可见性计算会拖到超时）。
+    const visMainLabels = () => [...document.querySelectorAll("span.main_label")].filter(vis);
+    const visDropdowns = () => [...document.querySelectorAll(".el-popover, .select-menu, .sf_select__filter, .el-select-dropdown")].filter(vis);
+
+    // 1) 筛选模板选项（快，只查 popper 内）
+    try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+    await sleep(400);
+    const tplRef0 = document.querySelector(".search_more_temp_reference");
+    out.筛选模板_触发器class = tplRef0 && cn(tplRef0);
+    realClick(tplRef0); await sleep(1200);
+    out.筛选模板_选项 = [...document.querySelectorAll("[class*=popper] *,.el-popover *")]
+      .filter((e) => !e.children.length && vis(e) && (e.innerText || "").trim())
+      .slice(0, 20).map((e) => (e.innerText || "").trim().slice(0, 24));
+    try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+    await sleep(600);
+
+    // 2) 复现 run 失败序列：先【真正应用模板】，再多种方式试开渠道，看哪种能破（轻量指标，无全量扫描）。
+    out.模板后渠道 = { 已选模板: false, trials: [] };
+    const tplRef = document.querySelector(".search_more_temp_reference");
+    if (tplRef) {
+      realClick(tplRef); await sleep(1500);
+      const tOpt = [...document.querySelectorAll("[class*=popper] span, [class*=popper] div, .el-popover span, .el-popover div")]
+        .find((e) => !e.children.length && vis(e) && norm(e.innerText) === norm("未取消等待发货"));
+      if (tOpt) { realClick(tOpt); await sleep(2500); out.模板后渠道.已选模板 = true; }
+      try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+      try { document.body.click(); } catch (e) {}
+      await sleep(1500);
+    }
+    const chanInput = () => document.querySelector("input[placeholder*='渠道']");
+    async function tryOpen(name, fn) {
+      try { await fn(); } catch (e) {}
+      await sleep(1500);
+      const ml = visMainLabels();
+      const ci = chanInput();
+      out.模板后渠道.trials.push({
+        name,
+        mainLabelVisible: ml.length,
+        样本: ml.slice(0, 6).map((e) => (e.innerText || "").trim().slice(0, 22)),
+        inputVisible: ci ? vis(ci) : null,
+        可见下拉容器: visDropdowns().map((p) => cn(p).split(" ")[0]).filter(Boolean).slice(0, 6),
+      });
+      try { document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); } catch (e) {}
+      await sleep(400); try { document.body.click(); } catch (e) {} await sleep(400);
+    }
+    await tryOpen("input:realClick", () => realClick(chanInput()));
+    await tryOpen("input:双击", async () => { realClick(chanInput()); await sleep(300); realClick(chanInput()); });
+    await tryOpen("input:focus+click", () => { const i = chanInput(); try { i.focus(); } catch (e) {} realClick(i); });
+    await tryOpen("popover_trigger:realClick", () => { const t = chanInput() && chanInput().closest(".popover_trigger"); if (t) realClick(t); });
+    await tryOpen("select-container:realClick", () => { const t = chanInput() && chanInput().closest(".select-container"); if (t) realClick(t); });
+
+    return out;
+  })();
+}
+
+async function probeErp() {
+  log("=== ERP 页面元素探测 ===");
+  const erpTab = await findTab("https://www.sellfox.com/*");
+  if (!erpTab) { log("✗ 没找到赛狐 ERP 标签页，请先打开 ERP 订单页。"); return; }
+  const frames = await getFrames(erpTab.id);
+  log(`共 ${frames.length} 个 frame（逐个探测，坏 frame 会超时跳过）`);
+  let anyHit = false;
+  for (const fr of frames) {
+    const tag = `frame#${fr.frameId} ${(fr.url || "").slice(0, 46)}`;
+    try {
+      const res = await withTimeout(
+        chrome.scripting.executeScript({ target: { tabId: erpTab.id, frameIds: [fr.frameId] }, func: erpProbeInPage }),
+        5000, "探测");
+      const r = res && res[0] && res[0].result;
+      log(`${tag} => ${JSON.stringify(r)}`);
+      const c = (r && r.counts) || r || {};   // 计数嵌在 r.counts 下（旧代码读 r.vxe表 恒 false=假警报）
+      if (c.vxe表 > 0 || c.物流下单按钮 > 0) anyHit = true;
+    } catch (e) {
+      log(`${tag} => 跳过（${String((e && e.message) || e)}）`);
+    }
+  }
+  log(anyHit ? "✅ 找到订单表所在 frame，扩展应能识别。" : "🔴 没找到 vxe表/物流下单按钮。");
+  // 主动探测：点触发器看下拉能否弹开、选项真实类名（在主 frame#0 上跑）
+  log("--- 主动探测（自动点渠道/模板触发器）---");
+  try {
+    const ar = await withTimeout(
+      chrome.scripting.executeScript({ target: { tabId: erpTab.id, frameIds: [0] }, func: activeProbeInPage }),
+      60000, "主动探测");   // 含「模板后渠道」5 种试开复现，较慢，放宽到 60s（原 20s 会截断）
+    log(JSON.stringify(ar && ar[0] && ar[0].result));
+  } catch (e) { log("主动探测失败: " + String((e && e.message) || e)); }
+}
+
+async function run(dry) {
+  const R = self.HWC_RULES;
+  log(`▶ 开始运行（${dry ? "DRY 空跑" : "真跑"}）`);
+
+  const erpTab = await findTab("https://www.sellfox.com/*");
+  if (!erpTab) { log("✗ 没找到赛狐 ERP 标签页。请先在本浏览器打开并登录 ERP 订单页。"); return; }
+  const wmsTab = await findTab("http://193.112.93.60:9999/*");
+  if (!wmsTab) { log("✗ 没找到海外仓 WMS 标签页。请先在本浏览器打开并登录 WMS。"); return; }
+
+  // 读 WMS 当前登录店铺（顶部 Hi，XXX）——轮询到读出显示名为止
+  log("· 读取 WMS 当前登录店铺…");
+  const acct = await gotoUntil(wmsTab.id, INDEX_WMS, "wms",
+    { op: "currentAccount" }, (r) => r && r.display);
+  const display = acct && acct.display;
+  const curLogin = R.shopByDisplay(display);
+  if (!curLogin) {
+    log(`✗ 读不到 WMS 当前登录店铺（顶部 Hi，${display || "?"}）。请确认 WMS 已登录后重试。`);
+    return;
+  }
+  const curShop = R.SHOPS[curLogin].shop;
+  log(`● 当前 WMS 登录店铺：${curShop}（${curLogin}）。本轮只处理该店铺对应的渠道。`);
+
+  const failures = [];
+  const needSwitch = [];
+
+  for (const channel of R.CHANNEL_ORDER) {
+    const login = R.channelAccountLogin(channel);
+    if (login !== curLogin) { needSwitch.push(channel); continue; }
+
+    log("————————————————————————");
+    log(`[渠道] ${channel}  ->  ${curShop}`);
+
+    // ① 重置 ERP 过滤：整页导航到订单页（等价 Python open_order_ship），轮询到 vxe 表就绪
+    log("  · 打开 ERP 订单页并重置筛选…");
+    const erpReady = await gotoUntil(erpTab.id, ERP_URL, "erp", { op: "ping" }, (r) => r && r.ok);
+    if (!erpReady || !erpReady.ok) {
+      log(`[渠道] ${channel} ERP 页面未就绪（可能会话失效/未登录/加载超时），跳过`);
+      continue;
+    }
+    const er = await runOp(erpTab.id, "erp", { op: "placeOrder", channel, dry });
+    if (!er) { log(`[渠道] ${channel} ERP 无响应（frame 未命中/未登录），跳过`); continue; }
+    (er.logs || []).forEach(log);
+    if (er.error) { log(`[渠道] ${channel} ERP 出错：${er.error}`); continue; }
+    if (er.channelFilterFailed) {
+      log(`[渠道] ${channel} 渠道筛选失败（${er.reason || "原因见上方 ❌ 诊断行"}），跳过（防全量误下单）`);
+      if (er.available && er.available.length) log(`[渠道] ${channel} 下拉当前可选渠道=${JSON.stringify(er.available)}`);
+      continue;
+    }
+    if (!er.count) { log(`[渠道] ${channel} 无待处理订单，跳过`); continue; }
+    if (er.fail_orders && er.fail_orders.length)
+      failures.push({ stage: "ERP物流下单", channel, orders: er.fail_orders });
+
+    let placed = er.success;
+    if (placed == null) placed = dry ? er.count : 0;   // DRY 没真下单，用 count 代表“会下单数”
+    if (!placed) { log(`[渠道] ${channel} 无成功下单，跳过 WMS 发货`); continue; }
+
+    // ② WMS 该店铺发货（本渠道末段对应的单一快递方；失败即留存不换）
+    const courier = R.channelCourier(channel);
+    log(`  · 打开 WMS 平台订单页（快递方 ${courier}）…`);
+    const wmsReady = await gotoUntil(wmsTab.id, ORDERINFO_WMS, "wms", { op: "ping" }, (r) => r && r.ok);
+    if (!wmsReady || !wmsReady.ok) {
+      log(`[渠道] ${channel} WMS 平台订单页未就绪，跳过发货`);
+      continue;
+    }
+    const wr = await runOp(wmsTab.id, "wms", { op: "processShop", courier, dry });
+    if (!wr) { log(`[渠道] ${channel} WMS 无响应，跳过`); continue; }
+    (wr.logs || []).forEach(log);
+    if (wr.left_orders && wr.left_orders.length && !dry)
+      failures.push({ stage: "WMS发货", channel, orders: wr.left_orders });
+    log(`[渠道] ${channel} 闭环完成`);
+  }
+
+  log("==============================");
+  if (needSwitch.length) {
+    const other = curLogin === "JMCAT" ? "金猫（JMSM）" : "黑猫（JMCAT）";
+    log(`⏭ 另有 ${needSwitch.length} 个渠道属于【${other}】，本轮已跳过：`);
+    needSwitch.forEach((c) => log("   · " + c));
+    log(`👉 请把 WMS 切换登录到【${other}】后，再点一次「开始发货」。`);
+  }
+  if (failures.length) {
+    log("⚠️ 失败/留存订单（需人工跟进）：");
+    failures.forEach((f) => log(`   [${f.stage}] ${f.channel}: ${JSON.stringify(f.orders)}`));
+  } else {
+    log("✅ 本轮无失败/留存订单。");
+  }
+  log(dry ? "◼ DRY 空跑结束（未真实下单/发货）。" : "◼ 真跑结束。");
+}
+
+// 三方仓成功 → 确认发货（独立操作，不走按渠道闭环）。成功 tab 全选前先选筛选模板「未取消等待发货」。
+async function runConfirmShip(dry) {
+  log(`▶ 三方仓成功→确认发货（${dry ? "DRY 空跑" : "真跑"}）`);
+  const erpTab = await findTab("https://www.sellfox.com/*");
+  if (!erpTab) { log("✗ 没找到赛狐 ERP 标签页。请先在本浏览器打开并登录 ERP 订单页。"); return; }
+  log("· 打开 ERP 订单页并重置筛选…");
+  const erpReady = await gotoUntil(erpTab.id, ERP_URL, "erp", { op: "ping" }, (r) => r && r.ok);
+  if (!erpReady || !erpReady.ok) { log("✗ ERP 页面未就绪（会话失效/未登录/加载超时）。"); return; }
+  const r = await runOp(erpTab.id, "erp", { op: "confirmShip", dry });
+  if (!r) { log("✗ ERP 无响应（frame 未命中/未登录）。"); return; }
+  (r.logs || []).forEach(log);
+  if (r.error) { log("✗ 确认发货出错：" + r.error); return; }
+  if (r.fail_orders && r.fail_orders.length && !dry)
+    log("⚠️ 确认发货失败/留存订单（需人工跟进）：" + JSON.stringify(r.fail_orders));
+  log(dry ? "◼ DRY 空跑结束（未真实确认发货）。" : "◼ 确认发货结束。");
+}
+
+// 与 popup 的长连接：弹窗一打开就连上，后台立刻把完整日志缓冲重放给它（故关了再开日志还在）。
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "hwc") return;
+  ports.add(port);
+  port.onDisconnect.addListener(() => ports.delete(port));
+  loadBufferIfEmpty().then(() => {
+    try { port.postMessage({ type: "buffer", lines: logBuffer, running }); } catch (e) {}
+  });
+  port.onMessage.addListener(async (msg) => {
+    if (!msg) return;
+    if (msg.cmd === "probe") {
+      logBuffer = [];
+      broadcast({ type: "status", running: false });
+      startKeepAlive();   // 探测(含复现序列)可能跑 40-50s，跨过 SW 30s 空闲回收线，保活防中断
+      try { await probeErp(); }
+      catch (e) { log("✗ 探测异常：" + String((e && e.stack) || e)); }
+      finally { stopKeepAlive(); broadcast({ type: "done" }); }
+      return;
+    }
+    if (msg.cmd === "run") {
+      if (running) { log("（已有任务在运行中，忽略重复开始）"); return; }
+      running = true;
+      logBuffer = [];
+      startKeepAlive();
+      broadcast({ type: "status", running: true });
+      try { await run(!!msg.dry); }
+      catch (e) { log("✗ 运行异常：" + String((e && e.stack) || e)); }
+      finally {
+        running = false;
+        stopKeepAlive();
+        try { chrome.storage.session.set({ hwcLog: logBuffer, hwcRunning: false }); } catch (e) {}
+        broadcast({ type: "status", running: false });
+        broadcast({ type: "done" });
+      }
+    }
+  });
+});

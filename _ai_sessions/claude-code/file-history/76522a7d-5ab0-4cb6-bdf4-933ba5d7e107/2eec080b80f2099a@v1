@@ -1,0 +1,246 @@
+# TK 经营驾驶舱 · 整体开发计划
+
+## Context
+
+清泉中心库已具备 TK **广告系列日、商品快照、订单、店日/健康/财务壳、异常任务** 及 **PG→飞书 T1/T2/异常任务** 同步；任务台已接 TK 异常与广告列表。  
+对照 `TK仪表盘设计思路.xmind`，完整目标是：**店铺总览 + 巡店异常 + 内容渠道 + 联盟达人**。  
+当前最大空洞：**(1) 真店 KPI 未采满；(2) 无内容/短视频 CTR·转化事实层；(3) 无达人/联盟事实层；(4) 飞书仪表盘组件需 UI 重绑；(5) AI 素材分级与经营盘混绑。**  
+本计划按「先把已有链路跑满 → 再扩域采集 → 最后深钻看板」分期，**数据必须经 PostgreSQL**，飞书/任务台只读中心。
+
+---
+
+## 目标架构（不变）
+
+```text
+紫鸟/插件采集
+  → POST /api/v1/ingest/{source}
+  → PostgreSQL tk.fact_*
+  → 规则 Job → tk.fact_tk_anomaly_task（+ 可选 public.task）
+  → export/feishu 或 feishu_tk_daily_sync → 飞书多维表
+  → 任务台 / 飞书仪表盘只读
+```
+
+原则：
+- 生产禁止长期直写飞书绕过 PG
+- 新域先 **采集可稳 → schema → ingest → 规则/同步 → 看板**
+- 混币禁止无脑加总；率类（ROI/CTR/CVR）写入前算好或看板用求和重算
+
+---
+
+## 现状基线（2026-08-04）
+
+| 能力 | 状态 |
+|------|------|
+| `tk.fact_ads_campaign_daily` | 有数据（约 26 行样例/真采） |
+| `tk.fact_tiktok_product` | 表有，行少；库存规则已通 |
+| `tk.fact_tiktok_order` | 表有 |
+| `tk.fact_tiktok_shop_daily` / health / finance | **表有、行空**；T1 用广告 rollup 兜底 |
+| `tk.fact_tk_anomaly_task` | 广告 ROI/空耗 + 库存规则；已同步飞书 19 条 |
+| 内容/短视频 CTR·CVR | **无表无字段无采集** |
+| 达人/联盟花费·GMV | **无表无字段无采集** |
+| 飞书 T1/T2/异常任务 | 表与同步脚本就绪；仪表盘组件 ⚠ 需 UI 重绑 |
+| 任务台 | TK 异常任务、广告投流列表真实；内容/达人页无 |
+| AI 素材 S/A/B/C/D | 飞书独立表空壳；**不纳入经营 P0** |
+
+---
+
+## 差距矩阵（XMind → 系统）
+
+| XMind 模块 | 关键指标 | PG | 采集 | 飞书 | 任务台 | 建议优先级 |
+|------------|----------|----|------|------|--------|------------|
+| 店铺顶层数字卡 | GMV/订单/客户/AOV/退款 | 字段有 | shop-modules 未稳 | T1 | 弱 | **P0** |
+| 渠道 GMV 占比 | 卡/视频/直播/达人 | 无 | 无 | 无 | 无 | **P2** |
+| 商品 GMV 排行 | 商品×日 GMV | 弱（销量快照） | products 有限 | 无 T3 | 无 | P1 后半 |
+| 巡店·广告异常 | ROI/空耗/消耗异动 | 部分 | ads 有 | 异常任务+T2 | 有 | **P0 收尾 / P1 加规则** |
+| 巡店·库存 | 断货/低库存 | 有 | products | 异常任务 | 有 | **P0** |
+| 巡店·商品流量 | 曝光/CTR/CVR 暴跌 | 无 | 无 | 无 | 无 | **P2** |
+| 巡店·达人异常 | 联盟 GMV/佣金/动销 | 无 | 无 | 无 | 无 | **P3** |
+| 内容 TAB | 短视频播放/转化 | 无 | 无 | 无 | 无 | **P2** |
+| 达人 TAB | 达人花费/GMV/佣金 | 无 | 无 | 无 | 无 | **P3** |
+| AI 素材分级 | S/A/B/C/D | 无 | 无 | 空壳表 | 无 | **P4 可选** |
+
+---
+
+## 分期计划
+
+### P0 — 经营主链路跑满（约 1～2 周）
+
+**目标：** XMind「店铺顶层」在真数据上可看；巡店广告/库存异常日更闭环。
+
+| # | 工作项 | 产出 | 关键路径 |
+|---|--------|------|----------|
+| P0.1 | 跑通并固化 `run-shop-modules` → `tiktok_shop_daily`（+ health/finance 能采尽采） | `fact_tiktok_shop_daily` 日更有行 | `collectors/tiktok-ads/scripts/run-shop-modules.ps1` |
+| P0.2 | 日更：ads → products/orders → shop → **规则** → **feishu sync** | 计划任务或 `night-loop` 串起来 | 现有 `feishu-tk-daily-sync.ps1`、`tk_*_anomaly_eval` |
+| P0.3 | 飞书 **D1 多店 + D2 广告** 按重绑清单改绑 T1/T2；挂异常任务视图 | 无 ⚠ 组件；数字卡 ROI 用求和重算 | `docs/TK-飞书驾驶舱-仪表盘重绑清单.md`（**UI 人工**） |
+| P0.4 | 任务台 TK 总览：读 T1 汇总 API（可新建轻量 `GET /tk/shop-daily/summary`） | 工作台看见店 GMV/花费 | `web` + `tk_ops` |
+| P0.5 | 验收文档与数据质量门禁 | 日更失败告警（日志/飞书机器人可选） | scripts |
+
+**P0 验收：**
+- [ ] 连续 ≥3 个业务日 `shop_daily` 有多店行，T1 同步 **不再依赖** ads fallback（或 fallback 比例可观测）
+- [ ] T2 与 PG ads 行数一致；异常任务飞书与 PG open 数一致
+- [ ] D1/D2 核心数字卡无重配报错
+- [ ] 广告 ROI/空耗、库存规则在 ingest 后自动出单
+
+**P0 不做：** 内容 CTR、达人、AI 素材中心化、分时 GMV。
+
+---
+
+### P1 — 巡店异常加深 + 商品经营（约 1～2 周）
+
+**目标：** 广告规则更全；商品侧可排行；任务台/飞书异常更好用。
+
+| # | 工作项 | 说明 |
+|---|--------|------|
+| P1.1 | 广告规则扩展 | `ads_budget_burn`、`ads_cpa_high`（字典已有 code）；消耗环比飙/骤可后置 |
+| P1.2 | 广告事实可选补列 | 若后台能抓：**CTR/CVR/展示** → `fact_ads_campaign_daily` 加列（仍是系列粒度，不是短视频） |
+| P1.3 | 商品日/快照增强 | `sales_qty` 稳定日更；可选 `fact_tiktok_product_daily`（店×商品×日）支撑排行 |
+| P1.4 | 飞书 T3 商品表（可选） | 同步商品 TOP；仪表盘清单组件 |
+| P1.5 | 异常任务体验 | 任务台筛选「广告/库存」；飞书视图未闭环/P0；规则失败不阻断 ingest（已有） |
+| P1.6 | 中心任务投影策略 | 统一 `tk_rules_project_center_task` 与负责人字段 |
+
+**P1 验收：**
+- [ ] 预算将尽/高 CPA 能稳定出单（有数据时）
+- [ ] 商品排行至少有一版（PG 或飞书）
+- [ ] 回归：`pytest` TK 相关 + 一次全量 feishu dry-run/sync
+
+---
+
+### P2 — 内容渠道 / 短视频分析（约 2～4 周，依赖采集可行性）
+
+**目标：** 补齐 XMind「内容 TAB」+ 巡店「商品卡流量异常」的数据层。
+
+**前置门禁（缺一不开全量开发）：**
+1. 商家中心「内容分析 / 商品数据分析」页面 **可稳定紫鸟抓取**（或官方 API）
+2. 字段字典评审通过（曝光、点击、CTR、成交、转化率、渠道类型、视频 ID…）
+3. 指定业务日粒度与币种
+
+| # | 工作项 | 说明 |
+|---|--------|------|
+| P2.0 | 采集 POC | 单店抓 1 页 → 原始 JSON 样例入库 `ingest_raw` |
+| P2.1 | Schema | 新建例如 `tk.fact_tiktok_content_daily` 和/或 `tk.fact_tiktok_product_traffic_daily` |
+| P2.2 | Ingest source | 如 `tiktok_content` / `tiktok_product_traffic` |
+| P2.3 | 规则 | 曝光暴跌、CTR/CVR 骤降 → anomaly codes（新字典项） |
+| P2.4 | 飞书 | T4 内容日表 + 仪表盘 D3 内容 TAB（与 D1/D2 分离） |
+| P2.5 | 任务台 | 只读列表 + 异常跳转 |
+
+**表草案（实施时再落迁移）：**
+
+```text
+tk.fact_tiktok_content_daily
+  shop_external_id, biz_date,
+  channel  -- product_card | short_video | live | affiliate | other
+  content_id, content_title,  -- 视频/直播可空
+  impressions, clicks, ctr,
+  orders, gmv, cvr, play_count,
+  currency, source_url, raw_extra, ...
+  UNIQUE (shop_external_id, biz_date, channel, coalesce(content_id,''))
+```
+
+**P2 验收：** 至少 1 店连续 7 日内容渠道数据可在飞书/任务台出 CTR·转化趋势；流量类异常能出单。
+
+---
+
+### P3 — 联盟达人专区（约 2～4 周，依赖联盟中心采集）
+
+**目标：** XMind「达人 TAB」+ 巡店达人异常；**达人广告花费/GMV/佣金** 入 PG。
+
+**前置门禁：** 联盟中心「数据分析-表现」可抓；达人 ID 稳定；佣金/花费字段口径确认（花费是联盟广告还是佣金成本）。
+
+| # | 工作项 |
+|---|--------|
+| P3.0 | 采集 POC + 口径文档（达人花费 vs 佣金 vs 归因 GMV） |
+| P3.1 | `tk.fact_tiktok_affiliate_daily`（店×日汇总）+ `tk.fact_tiktok_affiliate_creator_daily`（店×达人×日） |
+| P3.2 | Ingest + 飞书 T5 + 仪表盘 D4 |
+| P3.3 | 规则：联盟 GMV 下滑、动销达人下降、佣金成本异常 |
+| P3.4 | 与广告系列花费的关系说明（不可简单加总） |
+
+---
+
+### P4 — AI 素材分级（可选，独立产品线）
+
+见 `docs/TK-AI素材分级-数据链路评估.md`。  
+**仅当** 有作品级花费/订单 **或** 稳定 AI 批跑时，再建 `fact_tk_creative_*` 并同步 `AI广告智能筛选分析表`。  
+**禁止** 用 campaign 日假填 S/A/B/C/D。
+
+---
+
+## 横切能力（各期共用）
+
+| 项 | 做法 |
+|----|------|
+| 配置 | `.env` 飞书 table_id；采集 `stores.config`；规则阈值 `Settings` |
+| 同步 | `scripts/feishu_tk_daily_sync.py` 按 table_key 扩展；`sync_feishu_map` 幂等 |
+| 规则 | `app/domain/tk_*_rules.py` + ingest 批末 + CLI；失败不回滚事实 |
+| 质量 | 日更后校验：行数、最新 biz_date、open 异常数、fallback 标记 |
+| 安全 | 密钥仅 `.env`；ingest API Key；飞书 token 不进库明文展示 |
+| 文档 | 每期更新：建表方案、字段映射、仪表盘搭法、验收清单 |
+| 测试 | 单测规则 + API 集成测 + 一次飞书 dry_run |
+
+---
+
+## 推荐实施顺序（执行排期）
+
+```text
+现在 ──P0──► 店日真数 + 日更闭环 + 飞书 D1/D2 重绑 + 任务台总览
+      ──P1──► 广告规则加深 + 商品排行
+      ──门禁──► 内容页可采？
+           是 ──P2──► 内容/短视频 CTR·转化
+           否 ──卡住采集研发，不先建空表装门面
+      ──门禁──► 联盟中心可采？
+           是 ──P3──► 达人花费/GMV
+      ──可选──P4──► AI 素材
+```
+
+---
+
+## 资源与职责（建议）
+
+| 角色 | 职责 |
+|------|------|
+| 采集/紫鸟 | P0 shop-modules 稳；P2/P3 POC |
+| 后端 | schema、ingest、规则、sync、API |
+| 前端任务台 | TK 总览、内容/达人只读页（随期） |
+| 业务/运营 | 飞书仪表盘 UI 重绑；阈值确认；口径签字 |
+| 负责人 | 门禁评审（P2/P3 开干前） |
+
+---
+
+## 风险
+
+| 风险 | 缓解 |
+|------|------|
+| 商家中心 DOM 常变 | POC 先固化选择器；raw_extra 保底；失败告警 |
+| shop_daily 长期空 | P0 最高优先；T1 fallback 打标「广告估」 |
+| 内容/达人不可采 | 不建空 schema 充数；计划停在门禁 |
+| 仪表盘混绑 AI 表 | 文档强制 D1/D2/D3 分盘 |
+| 双写飞书残留 | 中心化 Stage B：`writeMode=center` 后停直写 |
+
+---
+
+## 近期立刻可执行的下一刀（P0 启动包）
+
+1. 生产机跑 `run-shop-modules` + 查 `SELECT count(*), min(biz_date), max(biz_date) FROM tk.fact_tiktok_shop_daily`
+2. `feishu-tk-daily-sync.ps1 -LookbackDays 14`（含 anomaly）
+3. 运营按重绑清单修 D1/D2
+4. （可选开发）`GET /api/v1/tk/shop-daily` 汇总 + 任务台 TK 总览卡片
+5. 把日更串进计划任务并写验收 checklist
+
+---
+
+## 关键文档（已有，实施时改）
+
+- `docs/TK-飞书驾驶舱建表方案.md` / `仪表盘搭法.md` / `仪表盘重绑清单.md`
+- `docs/TK-异常任务-PG建表说明.md`
+- `docs/TK-AI素材分级-数据链路评估.md`
+- `docs/TK中心化改造方案.md`
+- `TK仪表盘设计思路.xmind`（需求源）
+- 代码：`app/jobs/tk_feishu_sync.py`、`app/domain/tk_*_rules.py`、`app/api/tk_ops.py`、`scripts/feishu_tk_daily_sync.py`
+
+---
+
+## 成功画像（3 个月）
+
+- 老板/运营每天打开飞书 D1/D2：**真 GMV + 广告 + 未闭环异常** 无需问库  
+- 任务台与飞书异常任务一致，广告/库存自动出单  
+- 内容 CTR/转化、达人花费：**有采集门禁通过后的正式表**，不再靠口头或表格手工  
+- AI 素材若上线，与经营盘分离、不污染 ROI 口径

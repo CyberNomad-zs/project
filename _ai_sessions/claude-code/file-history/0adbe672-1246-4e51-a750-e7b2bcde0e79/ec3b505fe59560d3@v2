@@ -1,0 +1,119 @@
+# -*- coding: utf-8 -*-
+"""
+全流程发货 - 定时循环（默认每 30 分钟一轮）。
+每轮跑【完整一条龙】(= run_shipping.run_full_once)：
+  ① ERP 按渠道物流下单 -> ② WMS 对应账号改快递方+批量发货
+  -> ③ 三方仓待更新拉跟踪号 -> ④ 成功标签确认发货（扣库存+提交平台，不可逆）
+失败订单留存到 logs/failures_*.txt 并日志提醒；每轮发一张运行汇总卡片到飞书。
+
+与另外两个循环的区别：
+  · shipping_loop.py  只做 ①②（下单+发货），不收尾。
+  · status_update_loop.py 只做 ③（拉跟踪号）。
+  · 本脚本 = 全流程一条龙常驻，含 ④确认发货。
+
+⚠️ 真实动作：config.DRY_RUN=False 时每轮会【真实下单 + 发货 + 确认发货(扣库存/提交平台，不可逆)】。
+   config.DRY_RUN=True 时只空跑演练（走筛选/统计，不真下单/发货/确认），可先这样观察几轮。
+   真跑请用启动器或：PowerShell 里  $env:HWC_DRY_RUN='0'; python full_loop.py
+
+会话：ERP 会话约 10 分钟过期、有活动即续期。每轮开头 ping isLogin；两轮之间的等待期
+      每 KEEPALIVE 秒保活一次；检测到会话失效即退出（释放 profile 便于重新登录）。
+
+用法：
+    1) 先手动登录一次：  python capture/erp_manual_login.py
+    2) 启动全流程循环：  python full_loop.py        （Ctrl+C 停止）
+    会话失效会自动退出，重登后再启动。
+"""
+import time
+import config, core, rules, notify, erp
+from core import log, erp_is_logged_in
+from run_shipping import run_full_once
+from playwright.sync_api import sync_playwright
+
+INTERVAL = 1800   # 两轮之间目标间隔（秒）= 30 分钟（以“每轮开始”计时；单轮超时则跑完立即下一轮）
+KEEPALIVE = 240   # 等待期保活 ping 间隔（秒）= 4 分钟，防会话过期（30 分钟间隔期间会多次保活）
+
+
+def _log(msg):
+    log(f"[全流程循环] {msg}")
+
+
+def wait_with_keepalive(page, seconds):
+    """等待 seconds 秒，其间每 KEEPALIVE 秒 ping 一次 isLogin 保活+探活。
+    返回 True=会话仍有效；False=会话已失效（应退出）。"""
+    waited = 0
+    while waited < seconds:
+        chunk = min(KEEPALIVE, seconds - waited)
+        time.sleep(chunk)
+        waited += chunk
+        if not erp_is_logged_in(page):
+            return False
+    return True
+
+
+def main():
+    core.log.begin_run("全流程循环", interval_sec=INTERVAL, channels=len(rules.CHANNEL_ORDER))
+    _log(f"启动 RUN_ID={core.RUN_ID}，目标间隔 {INTERVAL}s（{INTERVAL//60} 分钟）  DRY_RUN={config.DRY_RUN}")
+    if not config.DRY_RUN:
+        _log("⚠️ 真实模式：每轮会【真实下单 + 发货 + 确认发货(扣库存/提交平台，不可逆)】！")
+
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        if not core.ensure_erp(page):
+            _log("ERP 会话无效。请先： python capture/erp_manual_login.py  再启动本脚本。")
+            notify.notify_shipping(
+                run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                failures=[{"stage": "启动检查", "channel": "-", "account": "", "orders": [],
+                           "reason": "ERP 会话失效，全流程循环未启动。请重新登录后再启动。"}],
+                elapsed_sec=0.0, channels=len(rules.CHANNEL_ORDER))
+            ctx.close(); return
+
+        # WMS 用独立 browser（每店铺一个干净 context），与 ERP 持久 context 分开，避免账号串会话。
+        # 有头模式自动最大化窗口（见 core.open_wms_browser / new_wms_context）。
+        wms_browser = core.open_wms_browser(p)
+        cycle = 0
+        try:
+            while True:
+                cycle += 1
+                if not erp_is_logged_in(page):
+                    _log("会话失效，退出。请重新登录后再启动本脚本。")
+                    break
+                start = time.time()
+                _log(f"===== 第 {cycle} 轮开始（下单→发货→拉跟踪号→确认发货）=====")
+                try:
+                    fails = run_full_once(page, wms_browser, report=(cycle == 1)) or []
+                    _log(f"第 {cycle} 轮结束，失败留存 {len(fails)} 组")
+                    notify.notify_shipping(run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                                           failures=fails, elapsed_sec=round(time.time() - start, 1),
+                                           channels=len(rules.CHANNEL_ORDER), cycle=cycle)
+                except Exception as e:
+                    _log(f"第 {cycle} 轮异常: {e}")
+                    notify.notify_shipping(
+                        run_id=core.RUN_ID, dry_run=config.DRY_RUN,
+                        failures=[{"stage": "全流程循环异常", "channel": "-", "account": "",
+                                   "orders": [], "reason": str(e)}],
+                        elapsed_sec=round(time.time() - start, 1),
+                        channels=len(rules.CHANNEL_ORDER), cycle=cycle)
+                    if not erp_is_logged_in(page):
+                        _log("会话已失效，退出。请重新登录后再启动。")
+                        break
+
+                elapsed = time.time() - start
+                wait = INTERVAL - elapsed
+                if wait > 0:
+                    _log(f"本轮耗时 {int(elapsed)}s，等待 {int(wait)}s 后进入下一轮（其间保活）")
+                    if not wait_with_keepalive(page, wait):
+                        _log("会话失效（保活期间检测到）。退出，请重新登录后再启动。")
+                        break
+                else:
+                    _log(f"本轮耗时 {int(elapsed)}s ≥ {INTERVAL}s，立即进入下一轮")
+        finally:
+            try:
+                wms_browser.close()
+            except Exception:
+                pass
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

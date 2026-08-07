@@ -1,0 +1,61 @@
+const DEFAULT = {
+  webhook: '',
+  intervalMinutes: 15,
+  enabled: true,
+  storeName: '',
+  mustRemindEnabled: true,
+  mustRemindTimes: ['09:30', '16:30'],
+};
+
+function timesToStr(arr) {
+  if (!Array.isArray(arr) || !arr.length) return '09:30, 16:30';
+  return arr.join(', ');
+}
+function parseTimes(str) {
+  const parts = String(str || '')
+    .split(/[,，;；\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const out = [];
+  const seen = {};
+  for (const p of parts) {
+    const m = p.match(/^(\d{1,2})[:.：](\d{2})$/);
+    if (!m) continue;
+    const h = Number(m[1]);
+    const min = Number(m[2]);
+    if (h > 23 || min > 59) continue;
+    const label = String(h).padStart(2, '0') + ':' + String(min).padStart(2, '0');
+    if (seen[label]) continue;
+    seen[label] = true;
+    out.push(label);
+  }
+  return out.length ? out : DEFAULT.mustRemindTimes.slice();
+}
+
+async function load() {
+  const { config } = await chrome.storage.local.get('config');
+  const c = Object.assign({}, DEFAULT, config || {});
+  document.getElementById('webhook').value = c.webhook || '';
+  document.getElementById('storeName').value = c.storeName || '';
+  document.getElementById('interval').value = c.intervalMinutes || 15;
+  document.getElementById('enabled').checked = c.enabled !== false;
+  document.getElementById('mustRemindEnabled').checked = c.mustRemindEnabled !== false;
+  document.getElementById('mustRemindTimes').value = timesToStr(c.mustRemindTimes);
+}
+
+document.getElementById('save').addEventListener('click', async () => {
+  const config = {
+    webhook: document.getElementById('webhook').value.trim(),
+    storeName: document.getElementById('storeName').value.trim(),
+    intervalMinutes: Math.max(1, Number(document.getElementById('interval').value) || 15),
+    enabled: document.getElementById('enabled').checked,
+    mustRemindEnabled: document.getElementById('mustRemindEnabled').checked,
+    mustRemindTimes: parseTimes(document.getElementById('mustRemindTimes').value),
+  };
+  await chrome.storage.local.set({ config });
+  const el = document.getElementById('saved');
+  el.textContent = '✓ 已保存（必提醒 ' + config.mustRemindTimes.join('、') + '）';
+  setTimeout(() => (el.textContent = ''), 3000);
+});
+
+load();

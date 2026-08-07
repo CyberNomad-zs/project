@@ -1,0 +1,96 @@
+# -*- coding: utf-8 -*-
+"""
+定位工具栏【物流下单】真实按钮并用 Playwright 真实点击触发，观察后续弹窗。
+若弹出确认/选仓框：只 dump + 截图，【不点确认】，关浏览器放弃。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def dump_dialogs(fr, tag):
+    print(f"\n----- 弹窗 [{tag}] -----")
+    data = fr.evaluate(r"""() => {
+        const out=[];
+        // 广撒网：任何看起来像浮层/对话框的可见容器
+        document.querySelectorAll("[class*=dialog],[class*=modal],[class*=drawer],[class*=Dialog],[class*=Modal],[role=dialog]").forEach(box=>{
+            if(box.offsetParent===null) return;
+            const r=box.getBoundingClientRect(); if(r.width<120||r.height<60) return;
+            const btns=[...box.querySelectorAll('button,.el-button,[class*=btn]')]
+                .filter(b=>b.offsetParent!==null)
+                .map(b=>(b.innerText||'').trim().replace(/\s+/g,' ')).filter(t=>t&&t.length<=12);
+            out.push({cls:box.className.slice(0,60), text:(box.innerText||'').trim().slice(0,300).replace(/\n/g,' | '), btns:[...new Set(btns)]});
+        });
+        // 去重（父子容器会重复）
+        return out;
+    }""")
+    seen=set(); uniq=[]
+    for d in data:
+        k=d['text'][:80]
+        if k in seen: continue
+        seen.add(k); uniq.append(d)
+    if not uniq:
+        print("（无浮层）")
+    for i,d in enumerate(uniq):
+        print(f"[{i}] cls={d['cls']}")
+        print(f"    文本: {d['text']}")
+        print(f"    按钮: {d['btns']}")
+    return uniq
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        fr = page.main_frame
+        for _ in range(20):
+            time.sleep(1)
+            n = fr.evaluate("() => {const a=[...document.querySelectorAll('.total_style')].map(e=>parseInt((e.innerText||'0').replace(/\\D/g,''),10)).filter(x=>!isNaN(x)); return a.length?Math.max(...a):0;}")
+            if n>0: break
+        print("待处理 total =", n)
+
+        # 全选
+        fr.query_selector(".vxe-header--column.col--checkbox .vxe-cell--checkbox").click()
+        time.sleep(1.5)
+        print("已选 =", fr.evaluate("() => document.querySelectorAll('.vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked').length"))
+
+        # 定位工具栏物流下单真实元素（exact text, 不在行内, 可见, y 最小）
+        handles = fr.query_selector_all("button, .el-button, .base_button_comp, .myj-btn, [class*=btn]")
+        target=None; tinfo=None
+        for h in handles:
+            try:
+                t=(h.inner_text() or "").replace("　"," ").strip()
+                if t.replace(" ","")!="物流下单": continue
+                inrow=h.evaluate("e=>!!e.closest('.vxe-body--row')")
+                if inrow: continue
+                if not h.is_visible(): continue
+                bb=h.bounding_box()
+                if not bb: continue
+                if target is None or bb["y"]<tinfo["y"]:
+                    target=h; tinfo=bb
+            except Exception:
+                pass
+        print("工具栏物流下单元素:", tinfo)
+        if not target:
+            print("!! 未定位到工具栏物流下单按钮"); time.sleep(5); ctx.close(); return
+
+        # Playwright 真实点击
+        target.click()
+        print(">>> 已真实点击【物流下单】")
+        for t in (2,3,5):
+            time.sleep(t)
+            dump_dialogs(fr, f"+{t}s")
+        page.screenshot(path=os.path.join(config.DUMP_DIR, "erp_realclick.png"), full_page=True)
+        print("\n截图: capture/dumps/erp_realclick.png")
+        print("【未点任何确认】保持 30 秒供查看，然后关闭放弃提交。")
+        time.sleep(30)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

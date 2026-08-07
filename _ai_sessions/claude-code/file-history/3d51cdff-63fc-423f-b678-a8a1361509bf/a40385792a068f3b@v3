@@ -1,0 +1,47 @@
+{
+  "_comment": "复制为 stores.config.json 后修改。店铺列表每次运行时从紫鸟动态获取，不要写死 storeId（除非 includeStoreIds）。",
+  "feishu": {
+    "appId": "cli_xxxxxxxx",
+    "appSecret": "从开放平台获取，勿提交真实密钥到 Git",
+    "appToken": "多维表格 app_token",
+    "tableId": "table_id"
+  },
+  "filter": {
+    "platformContains": ["TikTok"],
+    "nameContains": [],
+    "nameExclude": [],
+    "requireIp": true,
+    "includeStoreIds": [],
+    "excludeStoreIds": []
+  },
+  "_filter_note": "excludeStoreIds 示例：Nookora Home 核验未完成时填 \"27841084722470\"，核验通过后删掉。",
+  "adsUrl": {
+    "default": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+    "byPlatform": {
+      "TikTok Shop-英国-本土": "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
+      "TikTok Shop-欧盟": "https://seller.eu.tiktokshopglobalselling.com/ads-creation/dashboard"
+    }
+  },
+  "storeNameMap": {
+    "Tiktok_Shop2": "Deal to deal",
+    "Nookora Home": "Nookora Home",
+    "Tiktok - KK Seagull": "Gardena",
+    "TikTok - Pop": "TikTok - Pop",
+    "TT-L": "TT-L"
+  },
+  "options": {
+    "dryRun": true,
+    "dateMode": "yesterday",
+    "closeAfter": true,
+    "waitAfterOpenMs": 25000,
+    "waitAfterVisitMs": 25000,
+    "delayBetweenStoresMs": 5000,
+    "scrapeRetries": 2,
+    "scrapeRetryWaitMs": 12000
+  },
+  "analysis": {
+    "enabled": true,
+    "lowRoiThreshold": 3,
+    "writeSummaryToFeishu": true
+  }
+}

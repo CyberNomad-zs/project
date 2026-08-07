@@ -1,0 +1,288 @@
+// 隔离世界：① 注入 inject.js；② 转发接口响应(带当前店名)；③ 读流量待关注 chip；
+// ④ 接收后台指令自动切店(轮巡用)。
+(function () {
+  const LOG = (...a) => { try { console.log('[TemuMon]', ...a); } catch (e) {} };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  console.log('%c[TemuMon] content.js 已加载 —— 限流明细版 v2', 'color:#16a34a;font-weight:bold');
+
+  // 注入 MAIN world hook
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) { /* ignore */ }
+
+  // ---------- 读当前店铺名（右上角英文店名） ----------
+  function findStoreNameEl() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (t.length < 2 || t.length > 30) continue;
+      if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue;
+      if (r.left < W * 0.5) continue;
+      if (!best || r.left > best.left) best = { el, left: r.left };
+    }
+    return best ? best.el : null;
+  }
+  function readStoreName() { const el = findStoreNameEl(); return el ? (el.textContent || '').trim() : null; }
+
+  // ---------- 转发接口响应 ----------
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try { chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body, store: readStoreName() }); } catch (err) {}
+  });
+
+  // ---------- 读流量异常 ----------
+  // ①「商品流量待关注」是常驻的快速筛选 chip，实测 DOM（勿凭空改）：
+  //     <div class="use-quick-field_tsx_card__HASH"><span>商品流量待关注</span>
+  //       <span class="use-quick-field_tsx_countDistance__HASH">4</span></div>
+  //   计数在独立的 countDistance span 里（chip 常驻，N=0 也在，只有 N 变大才是真异常）。
+  // ②「商品流量近期有下降」不是 chip，是逐行红色徽标（见 countDeclineBadges）。
+  // 关键坑：行内徽标「商品流量待关注 ›」嵌在价格 TD 里 → 价格单元格文本也含该标签。
+  //   旧的"全页捞文本+最短优先"靠排序巧合才没读到价格数字；这里改为直接锚定 chip 容器。
+  function readChipCount(all, label) {
+    const re = new RegExp(label);
+    // 精确路径：定位快速筛选 chip 容器（class 前缀 use-quick-field_tsx_card__ 稳定，
+    // hash 后缀随构建变，用 *= 匹配前缀；card__ 带双下划线以免误匹配 cardBlock__）。
+    for (const card of document.querySelectorAll('[class*="use-quick-field_tsx_card__"]')) {
+      if (!re.test(card.textContent || '')) continue;
+      const cnt = card.querySelector('[class*="countDistance"]');
+      if (cnt && /\d/.test(cnt.textContent || '')) {
+        return Number((cnt.textContent || '').replace(/[^\d]/g, ''));
+      }
+      const m = (card.textContent || '').match(new RegExp(label + '[^\\d]{0,3}([\\d,]+)'));
+      if (m) return Number(m[1].replace(/,/g, ''));
+    }
+    // 兜底：chip class 若被改名，退回旧的全页文本匹配（最短优先 + 就近数字）
+    const labels = all
+      .filter((e) => re.test(e.textContent || '') && (e.textContent || '').trim().length < 24)
+      .sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of labels) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(new RegExp(label + '[^\\d]{0,3}([\\d,]+)'));
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+      let sib = el.nextElementSibling;
+      for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
+        const st = (sib.textContent || '').trim();
+        if (/^[\d,]+$/.test(st)) return Number(st.replace(/,/g, ''));
+      }
+    }
+    return null; // 读不到 → 未知（不当作 0，也不当作"有"）
+  }
+  // 「商品流量近期有下降」不是带计数的筛选 chip，而是逐行的红色徽标（列「商品优化事项」下）。
+  // 因此按"当前页可见的行内徽标个数"来统计。注意：只覆盖当前页（默认 20 条/页），
+  // 下降商品若在其它页则数不到——被动读数的固有限制，要精确总数得点筛选（主动模式）。
+  function countDeclineBadges(all) {
+    let n = 0;
+    for (const e of all) {
+      const t = (e.textContent || '').trim();
+      if (!/商品流量近期有下降/.test(t) || t.length > 20) continue;
+      // 只数最内层节点，避免父容器重复计数
+      if ([...e.children].some((c) => /商品流量近期有下降/.test(c.textContent || ''))) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width > 0 && r.height > 0) n++; // 只数真正渲染出来的行徽标，排除隐藏的筛选项/图例
+    }
+    return n;
+  }
+  // 扫描当前页商品行：按「SPU ID(=productId)」边界把行分组成商品，
+  // 识别哪些商品带「商品流量待关注 / 商品流量近期有下降」徽标，取 productId + 商品名 + SKC。
+  // 局限：只覆盖当前页(默认 20 条/页)，跨页的限流/下降商品扫不到——被动读的固有限制
+  //（chip 计数 trafficWatch 才是全量总数；这里只为「点名 + 给编辑链接」）。
+  function scanProducts() {
+    const rows = [...document.querySelectorAll('[data-testid="beast-core-table-body-tr"]')];
+    const products = [];
+    let cur = null;
+    for (const tr of rows) {
+      const t = tr.textContent || '';
+      const spu = t.match(/SPU\s*ID[:：]\s*(\d+)/); // DOM「SPU ID」= API/编辑页的 productId
+      if (spu) {
+        // 商品名只在「商品信息」那一格取（含 SPU ID 的 td），排除「标签：值」属性行，取最长一段。
+        // （曾扫整行 → 第 3 条抓成隔壁「商品属性」列的「主体材质：铝合金」，故限定到该 td。）
+        const infoTd = [...tr.querySelectorAll('td')].find((td) => /SPU\s*ID/.test(td.textContent || '')) || tr;
+        const name = [...infoTd.querySelectorAll('*')].map((e) => (e.textContent || '').trim())
+          .filter((x) => x.length >= 6 && x.length <= 80 && /[一-龥]/.test(x) && !/^.{0,6}[:：]/.test(x) && !/SPU|SKC/.test(x))
+          .sort((a, b) => b.length - a.length)[0] || '';
+        cur = { productId: spu[1], skc: (t.match(/SKC\s*ID[:：]\s*(\d+)/) || [])[1] || '', name: name, watch: false, decline: false };
+        products.push(cur);
+      }
+      if (cur) {
+        if (/商品流量待关注/.test(t)) cur.watch = true;
+        if (/商品流量近期有下降/.test(t)) cur.decline = true;
+      }
+    }
+    return products;
+  }
+  function readTraffic() {
+    const all = [...document.querySelectorAll('*')];
+    return {
+      watch: readChipCount(all, '商品流量待关注'),
+      decline: countDeclineBadges(all),
+    };
+  }
+  const pickItem = (p) => ({ productId: p.productId, name: p.name, skc: p.skc });
+  // 常驻轮询：每 2s 读一次 chip 计数 + 扫一次商品明细，但**只在结果变化时上报**
+  //（靠 dedupe 避免刷爆后台）。这样用户后点「商品流量待关注」筛选/翻页时，
+  // 明细也会在 2s 内自动刷新——旧版只在加载后 40s 内扫、之后点筛选就不扫了。
+  let tries = 0;
+  let lastKey = '';
+  setInterval(() => {
+    tries++;
+    // 商品表格是否已渲染出行——徽标在行里，必须等行出来再扫，否则会在徽标出现前就读成空
+    const gridReady = !!document.querySelector('[data-testid="beast-core-table-body-tr"]');
+    const { watch, decline } = readTraffic();
+    const msg = { type: 'chipStats', store: readStoreName() };
+    if (watch != null) msg.trafficWatch = watch;
+    let watchItems = [];
+    let declineItems = [];
+    if (gridReady) {
+      const products = scanProducts();
+      watchItems = products.filter((p) => p.watch).map(pickItem);
+      declineItems = products.filter((p) => p.decline).map(pickItem);
+      msg.trafficDecline = decline; // 仅在表格渲染后 decline 才可信
+      msg.watchItems = watchItems;
+      msg.declineItems = declineItems;
+    }
+    // 有 count 时等网格就绪再发（尽量带上明细）；网格长时间卡「加载中」(tries>8≈16s)时 count-only 兜底
+    const readyOrTimedOut = gridReady || tries > 8;
+    if (!((msg.trafficWatch != null && readyOrTimedOut) || 'trafficDecline' in msg)) return;
+    // 结果没变化就不重发；变化了（如刚点了筛选、切了店）才上报
+    const key = JSON.stringify([msg.store, msg.trafficWatch, msg.trafficDecline,
+      watchItems.map((i) => i.productId), declineItems.map((i) => i.productId)]);
+    if (key === lastKey) return;
+    lastKey = key;
+    try { chrome.runtime.sendMessage(msg); } catch (e) {}
+  }, 2000);
+
+  // ---------- 切店自动化（轮巡用，由后台指令驱动） ----------
+  async function waitFor(fn, timeout, step) {
+    const t0 = Date.now();
+    for (;;) { let r; try { r = fn(); } catch (e) { r = null; } if (r) return r; if (Date.now() - t0 > (timeout || 6000)) return null; await sleep(step || 200); }
+  }
+  function textEls(re, maxLen) {
+    return [...document.querySelectorAll('*')].filter((e) => { const t = (e.textContent || '').trim(); return re.test(t) && t.length <= (maxLen || 40); });
+  }
+  function innermost(els) { return els.slice().sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0] || null; }
+  function clickableAncestor(el) { let n = el; for (let i = 0; i < 5 && n; i++) { if (n.tagName === 'BUTTON' || n.tagName === 'A' || n.getAttribute('role') === 'button') return n; n = n.parentElement; } return el; }
+  // 完整鼠标事件序列（很多组件要 mousedown/up 才触发，单纯 click 不生效）
+  function realClick(el) {
+    if (!el) return false;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (e) {}
+    }
+    try { el.click(); } catch (e) {}
+    return true;
+  }
+  function modalOpen() { return textEls(/切换店铺|您的账户存在/, 20).length > 0; }
+  function closeModal() {
+    const x = document.querySelector('[aria-label="Close"],[aria-label="关闭"],.beast-core-modal-close,.semi-modal-close,.SnowModal_closeIcon');
+    if (x) { realClick(x); return; }
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+  }
+
+  // 压缩输出某元素的 HTML 骨架（去 style/data 属性），便于回传诊断
+  function domSkel(el, maxLen) {
+    if (!el) return 'null';
+    let h = (el.outerHTML || '');
+    h = h.replace(/\s(style|data-[\w-]+|aria-[\w-]+)="[^"]*"/g, '').replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ');
+    return h.slice(0, maxLen || 2200);
+  }
+
+  function visible(el) { const b = el.getBoundingClientRect(); return b.width > 0 && b.height > 0; }
+
+  async function openStoreModal(diag) {
+    diag = diag || [];
+    if (modalOpen()) { diag.push('弹窗已开'); return true; }
+    const nameEl = findStoreNameEl();
+    diag.push('店名=' + (nameEl ? (nameEl.textContent || '').trim() : 'null'));
+    if (nameEl) {
+      // 只点一次触发下拉：点店名的可点祖先 + 店名右侧箭头坐标（避免多次点击把下拉又关掉）
+      const r = nameEl.getBoundingClientRect();
+      realClick(clickableAncestor(nameEl));
+      const el = document.elementFromPoint(Math.min(window.innerWidth - 3, r.right + 14), r.top + r.height / 2);
+      if (el && el !== nameEl) realClick(el);
+    }
+    // 下拉里“切换”按钮：只认可见的、精确文本“切换”，取最后一个（下拉通常在 DOM 靠后）
+    const sw = await waitFor(() => {
+      const cands = textEls(/^切换$/, 6).filter(visible);
+      return cands.length ? clickableAncestor(cands[cands.length - 1]) : null;
+    }, 3500);
+    diag.push('下拉切换按钮=' + !!sw);
+    if (sw) realClick(sw);
+    const ok = !!(await waitFor(() => (modalOpen() ? true : null), 4500));
+    diag.push('弹窗打开=' + ok);
+    if (!ok) {
+      const cands = textEls(/切换/, 8).map((e) => {
+        const b = e.getBoundingClientRect();
+        return e.tagName + '.' + String(e.className || '').split(' ')[0] + '[' + (e.textContent || '').trim().slice(0, 6) + ',y' + Math.round(b.top) + ',w' + Math.round(b.width) + ']';
+      });
+      diag.push('切换候选(' + cands.length + ')=' + cands.join(' '));
+      diag.push('模态计数 切换店铺=' + textEls(/切换店铺/, 20).length + ' 您的账户=' + textEls(/您的账户/, 40).length);
+    }
+    return ok;
+  }
+
+  async function listStores() {
+    if (!(await openStoreModal())) return [];
+    await sleep(500);
+    // 每个店铺行都带“半托管/全托管”标签；据此定位店名，避开背景页面的杂项英文
+    const tags = textEls(/托管/, 6).filter(visible);
+    const names = [];
+    for (const tag of tags) {
+      let row = tag.parentElement;
+      for (let i = 0; i < 4 && row; i++) {
+        const en = [...row.querySelectorAll('span,div,p,a')]
+          .map((e) => (e.textContent || '').trim())
+          .find((t) => /^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/.test(t) && t.length >= 2 && t.length <= 30 && !/^(NEW|Beta)$/i.test(t));
+        if (en) { names.push(en); break; }
+        row = row.parentElement;
+      }
+    }
+    closeModal();
+    const uniq = [...new Set(names)];
+    LOG('listStores =>', uniq);
+    return uniq;
+  }
+
+  async function switchTo(target) {
+    const diag = [];
+    if (!(await openStoreModal(diag))) return { ok: false, msg: '打不开弹窗 | ' + diag.join(' ; ') };
+    await sleep(300);
+    const esc = String(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rows = textEls(new RegExp(esc), 120).filter((e) => /切换/.test(e.textContent || ''));
+    const row = innermost(rows);
+    if (!row) { closeModal(); return { ok: false, msg: '弹窗里没找到店铺 ' + target }; }
+    let btn = [...row.querySelectorAll('button,[role=button]')].find((b) => /切换/.test(b.textContent || '') && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+    if (!btn) {
+      const cands = textEls(/^切换$/, 6).map(clickableAncestor).filter((b) => b && !b.disabled);
+      btn = cands.find((b) => row.contains(b) || (b.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_CONTAINED_BY)) || null;
+    }
+    if (!btn) { closeModal(); return { ok: false, msg: '没找到可点的切换按钮(' + target + ')，可能已是当前店' }; }
+    LOG('switchTo click', target);
+    realClick(btn); // 触发切店（SPA 更新或整页重载）
+    return { ok: true, msg: '已点击切换到 ' + target };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || !msg.cmd) return;
+    (async () => {
+      try {
+        if (msg.cmd === 'ping') { sendResponse({ store: readStoreName() }); return; }
+        if (msg.cmd === 'listStores') { sendResponse({ names: await listStores() }); return; }
+        if (msg.cmd === 'switchTo') { sendResponse(await switchTo(msg.target)); return; }
+      } catch (e) { sendResponse({ ok: false, msg: String((e && e.message) || e) }); }
+    })();
+    return true;
+  });
+})();

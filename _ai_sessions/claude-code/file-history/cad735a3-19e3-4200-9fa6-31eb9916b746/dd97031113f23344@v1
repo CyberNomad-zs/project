@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+from app.notify.owner_push import build_owner_messages
+from app.sync.feishu_schema import action_pk_for_task, action_shell_from_task
+
+
+def test_action_shell_is_pending_for_owner():
+    task = {
+        "task_id": "T20260721-abc",
+        "biz_date": "2026-07-21",
+        "shop_name": "特米-UK",
+        "asin": "B0TEST",
+        "product_title": "English Title",
+        "product_title_cn": "G4 20W",
+        "anomaly_type": "sales_drop",
+        "level": "red",
+        "owner": "潘启豪",
+        "status": "open",
+    }
+    shell = action_shell_from_task(task)
+    assert shell["主键"] == action_pk_for_task("T20260721-abc")
+    assert shell["关联异常编号"] == "T20260721-abc"
+    assert shell["店铺"] == "特米-UK"
+    assert shell["ASIN"] == "B0TEST"
+    assert shell["中文名称"] == "G4 20W"
+    assert shell["执行人"] == "潘启豪"
+    assert shell["闭环状态"] == "待核实"
+    assert shell["是否属实"] == "待核实"
+    # 负责人补全字段不由系统写死成有效结论
+    assert "原因" not in shell or not shell.get("原因")
+    assert "采取动作" not in shell or not shell.get("采取动作")
+
+
+def test_build_owner_messages_groups_by_owner():
+    tasks = [
+        {
+            "task_id": "T1",
+            "shop_name": "特米-UK",
+            "asin": "A1",
+            "level": "red",
+            "anomaly_type": "sales_drop",
+            "owner": "潘启豪",
+            "status": "open",
+            "product_title_cn": "灯珠",
+            "value_summary": "当日销售额 7000 · 销售额环比 -30%",
+        },
+        {
+            "task_id": "T2",
+            "shop_name": "字同道合",
+            "asin": "A2",
+            "level": "orange",
+            "anomaly_type": "inventory_low",
+            "owner": "梦晴",
+            "status": "open",
+        },
+        {
+            "task_id": "T3",
+            "shop_name": "x",
+            "asin": "A3",
+            "level": "yellow",
+            "anomaly_type": "sales_drop",
+            "owner": "梦晴",
+            "status": "open",
+        },
+    ]
+    msgs = build_owner_messages(tasks, biz_date="2026-07-21")
+    owners = {m["owner"] for m in msgs}
+    assert owners == {"潘启豪", "梦晴"}
+    pan = next(m for m in msgs if m["owner"] == "潘启豪")
+    assert pan["red"] == 1 and pan["orange"] == 0
+    assert "T1" in pan["text"]
+    assert "待你处理" in pan["text"]
+    assert "当日销售额" in pan["text"]

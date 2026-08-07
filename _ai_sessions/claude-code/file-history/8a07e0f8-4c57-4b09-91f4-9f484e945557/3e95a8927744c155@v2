@@ -1,0 +1,138 @@
+// 排雷 spike：在当前 ERP 标签页的所有 frame 里尝试用【合成点击】驱动 vxe-table。
+// 决定性验证 = 表头全选后 .row--checked 是否 > 0。全选可逆、无业务后果；物流下单按钮只定位不点击。
+
+const out = document.getElementById("out");
+const btn = document.getElementById("run");
+
+function paint(lines) {
+  out.innerHTML = lines.join("\n");
+}
+
+// 这个函数会被序列化后注入到页面每个 frame 里执行，必须完全自包含（不能引用外部变量/函数）。
+function probeInPage() {
+  const norm = (s) => (s || "").replace(/　/g, " ").replace(/\s/g, "");
+
+  // 完整鼠标事件序列的“合成点击”——比 el.click() 多派发 pointer/mousedown/mouseup，
+  // 这是让 vxe-table / Element-UI 这类框架真正响应的关键（el.click() 只派发 click 常被忽略）。
+  function realClick(el) {
+    if (!el) return false;
+    try { el.scrollIntoView({ block: "center" }); } catch (e) {}
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const base = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy, button: 0, buttons: 1 };
+    const seq = ["pointerover", "pointerenter", "pointerdown", "mousedown", "pointerup", "mouseup", "click"];
+    for (const type of seq) {
+      let ev;
+      try {
+        ev = type.startsWith("pointer")
+          ? new PointerEvent(type, { ...base, pointerId: 1, isPrimary: true })
+          : new MouseEvent(type, base);
+      } catch (e) {
+        ev = new MouseEvent(type.replace("pointer", "mouse"), base);
+      }
+      el.dispatchEvent(ev);
+    }
+    return true;
+  }
+
+  // 该 frame 是否承载订单表？没有就返回 null（其它 frame 会命中）。
+  const header = document.querySelector(".vxe-header--column.col--checkbox .vxe-cell--checkbox");
+  if (!header) return null;
+
+  const report = { frameUrl: location.href.slice(0, 120), steps: [] };
+
+  // 1) 订单总数（.total_style 取最大；异步加载可能为 0）
+  const totals = [...document.querySelectorAll(".total_style")]
+    .map((e) => parseInt((e.innerText || "0").replace(/\D/g, ""), 10))
+    .filter((x) => !isNaN(x));
+  report.orderCount = totals.length ? Math.max(...totals) : 0;
+
+  // 2) 决定性测试：表头全选（合成点击）
+  const checkedSel = ".vxe-body--row.row--checked, .vxe-cell--checkbox.is--checked";
+  report.checkedBefore = document.querySelectorAll(checkedSel).length;
+  const headerDisabled = (header.getAttribute("class") || "").includes("is--disabled");
+  if (headerDisabled) {
+    report.steps.push({ name: "全选", ok: false, msg: "表头全选框 is--disabled（可能无数据/未加载）" });
+  } else {
+    realClick(header);
+  }
+
+  return new Promise((resolve) => {
+    // vxe 勾选是同步的，但给一帧时间刷新样式
+    setTimeout(() => {
+      report.checkedAfter = document.querySelectorAll(checkedSel).length;
+      report.selectAllWorked = report.checkedAfter > report.checkedBefore || report.checkedAfter > 0;
+      report.steps.push({
+        name: "全选(合成点击)",
+        ok: report.selectAllWorked,
+        msg: `勾选标记 ${report.checkedBefore} -> ${report.checkedAfter}`,
+      });
+
+      // 3) 定位（不点击！）工具栏「物流下单」按钮
+      let toolbarBtn = null, minY = Infinity;
+      const cands = document.querySelectorAll("button, .el-button, .base_button_comp, .myj-btn, [class*=btn]");
+      for (const h of cands) {
+        if (norm(h.innerText) !== "物流下单") continue;
+        if (h.closest(".vxe-body--row")) continue;      // 排除行内同名按钮
+        if (h.offsetParent === null) continue;          // 不可见
+        const rr = h.getBoundingClientRect();
+        if (rr.top < minY) { minY = rr.top; toolbarBtn = h; }
+      }
+      report.placeOrderBtnFound = !!toolbarBtn;
+      report.steps.push({
+        name: "定位物流下单按钮(不点击)",
+        ok: !!toolbarBtn,
+        msg: toolbarBtn ? `找到，y=${Math.round(minY)}` : "未找到工具栏物流下单按钮",
+      });
+
+      resolve(report);
+    }, 250);
+  });
+}
+
+btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  paint(["⏳ 正在当前标签页排雷…"]);
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !/sellfox\.com/.test(tab.url || "")) {
+      paint([`<span class="bad">✗ 当前标签页不是赛狐 ERP。</span>`,
+             `当前: ${tab ? tab.url : "无"}`,
+             `请切到 ERP【待处理】订单页再排雷。`]);
+      btn.disabled = false; return;
+    }
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true },
+      func: probeInPage,
+    });
+    const hits = results.map((r) => r.result).filter(Boolean);
+    if (!hits.length) {
+      paint([`<span class="warn">⚠ 所有 frame 都没找到订单表(.vxe-header)。</span>`,
+             `请确认当前在【待处理】视图且表格已加载出来。`]);
+      btn.disabled = false; return;
+    }
+
+    const lines = [];
+    for (const rep of hits) {
+      lines.push(`frame: ${rep.frameUrl}`);
+      lines.push(`订单总数: ${rep.orderCount}`);
+      for (const s of rep.steps) {
+        const tag = s.ok ? `<span class="ok">✓</span>` : `<span class="bad">✗</span>`;
+        lines.push(`  ${tag} ${s.name} — ${s.msg}`);
+      }
+      lines.push("");
+      // 结论
+      if (rep.selectAllWorked) {
+        lines.push(`<span class="ok">🟢 结论：合成点击能驱动 vxe-table 全选 → 扩展方案可行！</span>`);
+      } else {
+        lines.push(`<span class="bad">🔴 结论：合成点击【没有】选中任何行 → vxe 需要可信事件，`);
+        lines.push(`扩展方案在 ERP 侧走不通，建议改走「Playwright 连真实浏览器(CDP)」折中方案。</span>`);
+      }
+    }
+    paint(lines);
+  } catch (e) {
+    paint([`<span class="bad">✗ 出错：${e && e.message ? e.message : e}</span>`]);
+  } finally {
+    btn.disabled = false;
+  }
+});

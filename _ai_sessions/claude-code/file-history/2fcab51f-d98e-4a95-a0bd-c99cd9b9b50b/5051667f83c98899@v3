@@ -1,0 +1,80 @@
+========================================
+  Temu 店铺监测 · 同事本机版使用说明
+========================================
+
+【分工】
+  本机（你的电脑）只跑：
+    · 商品流量待关注（数量增加 + 商品链接）
+    · 商品流量近期有下降（徽标 + 商品链接）
+    · 在售数量 / 多店轮巡
+    · 飞书告警、登录过期提醒
+
+  下架 / 上架 由公司固定 IP 服务器自动跑（赛狐），
+  本机不要配置、不要运行赛狐相关功能。
+
+  不必再装 Chrome 插件（若已装请关掉，避免双报）。
+
+
+==== A. 发送方打包前，务必删掉 ====
+
+  - .userdata\              登录态（本机绑定，别人用不了）
+  - data\                   监测基线与日志
+  - logs\
+  - sellfox.config.json     赛狐密钥（勿发给同事）
+  - openapi.config.json     若有
+  - config.json             含你的飞书 webhook；同事用 example 自己填
+  - node_modules\           让对方自己 npm install
+
+
+==== B. 同事首次使用（约 10 分钟）====
+
+  1) 安装 Node.js LTS（https://nodejs.org）+ Google Chrome
+  2) 解压本包，进入 temu-monitor 目录
+  3) 双击 启动.bat / start-menu.bat（或美化启动器）
+       首次会自动：
+         - 若没有 config.json，从 config.example.json 复制一份
+         - 若没有依赖，自动 npm install
+     然后用记事本打开 config.json，改两处（必做，否则飞书收不到）：
+       - feishuWebhooks：自己飞书群机器人 webhook
+       - storeList：要盯的店名（与卖家中心顶栏英文名一致）
+         例：["Agnis","HomeCove","Twilight Cove"]
+       - fullRun 保持 false（不要改成 true）
+  4) 登录（只需做一次，过期再做）：
+       启动器菜单选 1  或  美化启动器点「登录 Temu」
+       在弹出的 Chrome 里登录 Temu 卖家后台，等到商品列表即可
+  5) 测试一轮：菜单选 2（Traffic once）
+       首轮只建基准，一般不告警；看窗口是否读到各店数据
+  6) 常驻：菜单选 3 或 4（开机自启）
+
+
+==== C. 日常 ====
+
+  - 推荐双击「美化启动器.bat」（有 Python 时图形界面）
+  - 无 Python 时用「启动.bat」/ start-menu.bat 英文菜单
+  - 默认每 15 分钟扫一轮流量（intervalMinutes 可改）
+  - 登录过期：飞书橙色提醒 或 日志写未登录 → 再跑一次「登录 Temu」
+  - 监测时不要用同一 .userdata 再开人工 Chrome 登 Temu
+
+
+==== D. 不要做 ====
+
+  - 不要把 fullRun 改成 true
+  - 不要配置 / 运行 sellfox（探测、once、常驻）——那是服务器的事
+  - 不要向同事索要或外传 sellfox.config.json
+  - 已装的 Temu 监测 Chrome 插件请卸掉或关掉
+
+
+==== E. 命令速查 ====
+
+  npm run login          登录一次
+  npm run once           流量一轮
+  npm run start          流量常驻
+  （赛狐上下架：服务器 systemctl status temu-sellfox，本机不用）
+
+
+==== F. 出问题 ====
+
+  - 「未登录」→ npm run login
+  - 窗口闪一下没数据 → 看 logs\ 或 data\monitor.log；确认 Chrome 已装
+  - 飞书没消息 → 检查 config.json 的 feishuWebhooks；首轮不告警是正常的
+  - 若日志出现 sellfox / 40005 白名单 → 说明误开了 fullRun，改回 false

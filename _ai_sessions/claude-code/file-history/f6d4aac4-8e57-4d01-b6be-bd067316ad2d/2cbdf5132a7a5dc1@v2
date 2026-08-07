@@ -1,0 +1,131 @@
+/** 扩展常量与默认配置 */
+
+export const STORAGE_KEYS = {
+  CONFIG: 'tk_ad_config',
+  LOGS: 'tk_ad_logs',
+  LAST_RESULT: 'tk_ad_last_result',
+  FEISHU_TOKEN: 'tk_ad_feishu_token',
+  API_CACHE: 'tk_ad_api_cache'
+};
+
+export const DEFAULT_CONFIG = {
+  feishu: {
+    appId: '',
+    appSecret: '',
+    appToken: '',
+    tableId: ''
+  },
+  schedule: {
+    enabled: false,
+    hour: 7,
+    minute: 30
+  },
+  dateMode: 'yesterday', // yesterday | today | custom
+  customDate: '', // YYYY-MM-DD when dateMode=custom
+  storeMappings: [
+    // { alias: 'Deal to deal', name: 'Deal to deal' }
+  ],
+  dryRun: true,
+  writeMode: 'append', // append | replace-day
+  defaultStoreName: ''
+};
+
+export const ALARM_NAME = 'tk_ad_daily_scrape';
+
+export const MSG = {
+  SCRAPE_PAGE: 'SCRAPE_PAGE',
+  SCRAPE_RESULT: 'SCRAPE_RESULT',
+  RUN_FULL: 'RUN_FULL',
+  WRITE_FEISHU: 'WRITE_FEISHU',
+  GET_CONFIG: 'GET_CONFIG',
+  SAVE_CONFIG: 'SAVE_CONFIG',
+  GET_LOGS: 'GET_LOGS',
+  CLEAR_LOGS: 'CLEAR_LOGS',
+  GET_LAST_RESULT: 'GET_LAST_RESULT',
+  TEST_FEISHU: 'TEST_FEISHU',
+  API_PAYLOAD: 'API_PAYLOAD',
+  PING: 'PING'
+};
+
+/** 表头同义词：中英文，用于 DOM 列匹配 */
+export const HEADER_ALIASES = {
+  campaign: [
+    '广告系列',
+    '广告系列名称',
+    '系列名称',
+    'campaign',
+    'campaign name',
+    'ad group',
+    'product',
+    '品名',
+    '名称',
+    'name'
+  ],
+  spend: [
+    '广告花费',
+    '花费',
+    '消耗',
+    'cost',
+    'spend',
+    'ad spend',
+    'amount spent',
+    'budget spent'
+  ],
+  orders: [
+    '销量',
+    '订单',
+    '订单数',
+    'orders',
+    'units',
+    'units sold',
+    'sold',
+    'conversions',
+    'purchases'
+  ],
+  roi: [
+    'roi',
+    'roas',
+    '投资回报',
+    '回报率',
+    'return on ad spend',
+    'return on investment'
+  ],
+  revenue: [
+    '总收入',
+    '销售额',
+    '收入',
+    'gmv',
+    'revenue',
+    'gross revenue',
+    'ads gross revenue',
+    'sales',
+    'amount'
+  ]
+};
+
+export const FEISHU = {
+  TOKEN_URL: 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+  BITABLE_BATCH_CREATE: (appToken, tableId) =>
+    `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records/batch_create`,
+  BITABLE_LIST: (appToken, tableId) =>
+    `https://open.feishu.cn/open-apis/bitable/v1/apps/${appToken}/tables/${tableId}/records`,
+  BATCH_SIZE: 500,
+  MAX_RETRIES: 3
+};
+
+export const LOG_LIMIT = 200;
+
+/** 飞书多维表格字段名（需与建表一致） */
+export const BITABLE_FIELDS = {
+  date: '日期',
+  store: '店铺',
+  storeId: '店铺ID',
+  campaign: '广告系列名称',
+  spend: '广告花费',
+  orders: '销量',
+  roi: 'ROI',
+  revenue: '总收入',
+  scrapedAt: '抓取时间',
+  sourceUrl: '数据源URL',
+  status: '状态'
+};

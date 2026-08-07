@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 380px; font: 13px/1.5 -apple-system, "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; color: #1f2329; }
+    h1 { font-size: 14px; margin: 0 0 4px; }
+    .sub { color: #8a9099; font-size: 12px; margin-bottom: 10px; }
+    .store { border: 1px solid #eceef1; border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+    .store .name { font-weight: 700; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+    .store .name .r { display: flex; align-items: center; gap: 6px; }
+    .store .name .t { color: #8a9099; font-weight: 400; font-size: 11px; }
+    .store .name .del { color: #d92d20; font-weight: 400; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px; opacity: .6; }
+    .store .name .del:hover { opacity: 1; }
+    .addrow { display: flex; gap: 8px; margin-top: 10px; }
+    .addrow input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid #dcdfe6; border-radius: 6px; font-size: 12px; }
+    .addrow button { flex: 0 0 auto; padding: 6px 12px; }
+    .kv { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; }
+    .kv span b { color: #1456f0; }
+    .items { display: flex; flex-direction: column; margin-top: 5px; font-size: 11px; color: #8a9099; }
+    .items a { padding: 1px 0; text-decoration: none; }
+    .items a:hover { text-decoration: underline; }
+    .empty { color: #8a9099; font-size: 12px; padding: 14px 4px; text-align: center; background: #f6f7f9; border-radius: 8px; }
+    .btns { display: flex; gap: 8px; margin-top: 10px; }
+    button { flex: 1; padding: 7px 0; border: 1px solid #dcdfe6; background: #fff; border-radius: 6px; cursor: pointer; font-size: 12px; }
+    button.primary { background: #1456f0; color: #fff; border-color: #1456f0; }
+    #msg { margin-top: 8px; font-size: 12px; min-height: 16px; }
+    .ok { color: #16a34a; } .err { color: #d92d20; }
+    .foot { margin-top: 10px; display: flex; justify-content: space-between; align-items: center; }
+    a { color: #1456f0; text-decoration: none; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <h1>Temu 流量监测</h1>
+  <div class="sub" id="cfg">—</div>
+  <div id="stores"></div>
+  <div class="addrow">
+    <input id="newStore" type="text" placeholder="添加店铺名（如 HomeCove）" />
+    <button id="add">添加</button>
+  </div>
+  <div class="btns">
+    <button class="primary" id="cycle">轮巡所有店</button>
+    <button id="check">刷新当前</button>
+    <button id="test">测试飞书</button>
+  </div>
+  <div class="btns" style="margin-top:4px;">
+    <button id="frontCycleAll" style="font-size:11px;">📦 前台变体全查（可选）</button>
+  </div>
+  <div id="msg"></div>
+  <div class="sub" id="cycleInfo" style="margin-top:6px;"></div>
+  <div class="foot">
+    <span class="sub" id="hint" style="margin:0;">仅流量告警 · 下架看服务器 · 留着 goods/list</span>
+    <a href="#" id="opt">⚙ 设置</a>
+  </div>
+  <div id="logSection" style="margin-top:10px;border-top:1px solid #eceef1;padding-top:8px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <button id="logToggle" style="flex:0 0 auto;padding:4px 10px;font-size:11px;">📋 日志</button>
+      <button id="logExport" style="flex:0 0 auto;padding:4px 10px;font-size:11px;display:none;">导出</button>
+      <span id="logCount" style="font-size:11px;color:#8a9099;"></span>
+    </div>
+    <div id="logList" style="display:none;max-height:180px;overflow-y:auto;margin-top:6px;
+      font:10px/1.4 'SF Mono','Consolas','Menlo',monospace;background:#f6f7f9;
+      border-radius:6px;padding:6px 8px;word-break:break-all;">
+    </div>
+  </div>
+  <script src="logger.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

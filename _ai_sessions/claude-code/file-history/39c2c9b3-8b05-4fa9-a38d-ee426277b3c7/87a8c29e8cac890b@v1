@@ -1,0 +1,65 @@
+import crypto from 'node:crypto';
+import { log } from './logger.js';
+
+/**
+ * 飞书自定义机器人告警。
+ * 支持可选签名校验（config.feishuSecret）。
+ */
+
+function sign(secret, timestamp) {
+  const stringToSign = `${timestamp}\n${secret}`;
+  const hmac = crypto.createHmac('sha256', stringToSign);
+  hmac.update('');
+  return hmac.digest('base64');
+}
+
+/**
+ * 发送一条飞书卡片消息。
+ * @param {object} cfg
+ * @param {{title:string, template?:string, lines:string[]}} msg
+ */
+export async function sendFeishu(cfg, { title, template = 'red', lines }) {
+  if (!cfg.feishuWebhook) {
+    log.warn('未配置 feishuWebhook，跳过告警。内容：', title, lines);
+    return false;
+  }
+  const timestamp = Math.floor(Date.now() / 1000);
+  const body = {
+    msg_type: 'interactive',
+    card: {
+      config: { wide_screen_mode: true },
+      header: {
+        title: { tag: 'plain_text', content: title },
+        template,
+      },
+      elements: [
+        {
+          tag: 'div',
+          text: { tag: 'lark_md', content: lines.join('\n') },
+        },
+      ],
+    },
+  };
+  if (cfg.feishuSecret) {
+    body.timestamp = String(timestamp);
+    body.sign = sign(cfg.feishuSecret, timestamp);
+  }
+
+  try {
+    const resp = await fetch(cfg.feishuWebhook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data.code && data.code !== 0) {
+      log.error('飞书返回错误：', data);
+      return false;
+    }
+    log.info('飞书告警已发送：', title);
+    return true;
+  } catch (e) {
+    log.error('飞书发送失败：', e.message);
+    return false;
+  }
+}

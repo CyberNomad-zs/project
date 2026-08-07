@@ -1,0 +1,91 @@
+import { log } from './logger.js';
+import { closePopups } from './popups.js';
+
+/**
+ * 店铺切换器交互。右上角显示当前店铺名 + 下拉箭头，点击后弹出店铺列表。
+ *
+ * ⚠️ 选择器需在 calibrate 阶段用真实登录态核对后微调。默认用「结构 + 文本」
+ * 的容错策略，尽量不写死单一 class。
+ */
+
+// 打开店铺下拉的触发区（右上角店铺名附近）。多候选，取第一个可见的。
+const SWITCHER_TRIGGERS = [
+  '[class*="MallSelect"]',
+  '[class*="mall-select"]',
+  '[class*="shopSelect"]',
+  '[class*="StoreSelect"]',
+  'header [class*="select" i]:last-of-type',
+];
+
+// 下拉里每个店铺条目的候选选择器
+const STORE_ITEM_SELECTORS = [
+  '[class*="MallList"] [class*="item" i]',
+  '[class*="mall-list"] li',
+  '[role="listbox"] [role="option"]',
+  '[class*="dropdown" i] li',
+];
+
+/** 打开店铺下拉 */
+async function openSwitcher(page) {
+  for (const sel of SWITCHER_TRIGGERS) {
+    const el = page.locator(sel).first();
+    if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+      await el.click({ timeout: 2000 }).catch(() => {});
+      await page.waitForTimeout(800);
+      return true;
+    }
+  }
+  // 兜底：点击右上角区域
+  log.warn('未命中店铺切换器选择器，尝试兜底点击右上角');
+  return false;
+}
+
+/**
+ * 枚举账号下全部店铺名。
+ * @returns {Promise<string[]>}
+ */
+export async function listStores(page) {
+  await openSwitcher(page);
+  let names = [];
+  for (const sel of STORE_ITEM_SELECTORS) {
+    const items = page.locator(sel);
+    const n = await items.count().catch(() => 0);
+    if (n > 0) {
+      for (let i = 0; i < n; i++) {
+        const t = (await items.nth(i).innerText().catch(() => '')).trim();
+        if (t) names.push(t.split('\n')[0].trim());
+      }
+      if (names.length) break;
+    }
+  }
+  // 收起下拉
+  await page.keyboard.press('Escape').catch(() => {});
+  names = [...new Set(names)].filter(Boolean);
+  log.info(`枚举到 ${names.length} 个店铺：`, names);
+  return names;
+}
+
+/**
+ * 切换到指定店铺名，等待整页重载并关闭弹窗。
+ * @returns {Promise<boolean>} 是否成功切换
+ */
+export async function switchStore(page, storeName, cfg) {
+  await openSwitcher(page);
+  // 在下拉里点击匹配店铺名的条目
+  const target = page.getByText(storeName, { exact: false }).first();
+  const ok = await target.isVisible({ timeout: 2000 }).catch(() => false);
+  if (!ok) {
+    log.warn(`下拉中未找到店铺「${storeName}」`);
+    await page.keyboard.press('Escape').catch(() => {});
+    return false;
+  }
+  await target.click({ timeout: 3000 }).catch(() => {});
+
+  // 切换会触发「已切换」toast + 整页重载
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+  await page.waitForTimeout(3500);
+  await closePopups(page);
+  await page.waitForTimeout(1000);
+  await closePopups(page); // 二次清扫（有的弹窗延迟出现）
+  return true;
+}

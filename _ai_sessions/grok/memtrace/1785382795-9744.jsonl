@@ -1,0 +1,15 @@
+{"ts_ms":1785382825841,"kind":"start","pid":9744,"version":"0.2.113"}
+{"ts_ms":1785382825841,"kind":"sample"}
+{"ts_ms":1785382855842,"kind":"sample"}
+{"ts_ms":1785382858905,"kind":"purge","reason":"session-load-replay","hook_installed":false,"purge_us":0}
+{"ts_ms":1785382863547,"kind":"purge","reason":"session-load-replay","hook_installed":false,"purge_us":0}
+{"ts_ms":1785382885843,"kind":"sample"}
+{"ts_ms":1785382915846,"kind":"sample"}
+{"ts_ms":1785382945848,"kind":"sample"}
+{"ts_ms":1785382975849,"kind":"sample"}
+{"ts_ms":1785383005850,"kind":"sample"}
+{"ts_ms":1785383035850,"kind":"sample"}
+{"ts_ms":1785383065851,"kind":"sample"}
+{"ts_ms":1785383095852,"kind":"sample"}
+{"ts_ms":1785383125852,"kind":"sample"}
+{"ts_ms":1785383155853,"kind":"sample"}

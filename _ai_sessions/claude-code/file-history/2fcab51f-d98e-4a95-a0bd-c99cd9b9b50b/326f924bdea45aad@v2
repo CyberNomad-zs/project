@@ -1,0 +1,179 @@
+/**
+ * 赛狐 Temu 下架监测 CLI（挂在 temu-monitor 下）
+ *
+ *   node src/sellfox/cli.js init
+ *   node src/sellfox/cli.js probe
+ *   node src/sellfox/cli.js once | dry | start
+ */
+import { writeFileSync, existsSync, copyFileSync } from 'node:fs';
+import {
+  loadSellfoxConfig,
+  sellfoxConfigReady,
+  exampleConfigPath,
+  configPath,
+} from './config.js';
+import { runSellfoxOnce, probeSellfox } from './monitor.js';
+import { log } from '../logger.js';
+
+const cmd = process.argv[2] || 'once';
+
+function printHelp() {
+  console.log(`
+赛狐 OpenAPI · Temu 下架监测（temu-monitor）
+
+命令:
+  init     生成 sellfox.config.json（已存在则跳过）
+  probe    只读探测：拉父体 + selectStatus 分布
+  once     监测一轮（diff + 飞书 + 写快照）
+  dry      一轮但不发飞书、不写快照
+  start    按 intervalMinutes 常驻
+  help     帮助
+
+配置: temu-monitor/sellfox.config.json（已 gitignore）
+模板: temu-monitor/sellfox.config.example.json
+
+在售定义: selectStatus=12；下架: 上轮在售、本轮不在（常见变为 13）
+限流/待关注: 赛狐无字段 → 继续用插件
+`);
+}
+
+async function cmdInit() {
+  const dest = configPath();
+  if (existsSync(dest)) {
+    log.warn('已存在 sellfox.config.json，未覆盖。');
+    return;
+  }
+  const ex = exampleConfigPath();
+  if (existsSync(ex)) copyFileSync(ex, dest);
+  else {
+    writeFileSync(
+      dest,
+      JSON.stringify(
+        {
+          clientId: '',
+          clientSecret: '',
+          stores: [
+            { shopId: '396706', name: 'Agnis', enabled: true },
+            { shopId: '398202', name: 'HomeCove', enabled: true },
+            { shopId: '398203', name: 'Twilight Cove', enabled: true },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+  }
+  log.info('已生成', dest);
+  log.info('请填写 clientId/clientSecret（与 sellfox-bridge 相同即可）');
+}
+
+async function cmdProbe() {
+  const cfg = loadSellfoxConfig();
+  const ready = sellfoxConfigReady(cfg);
+  if (!ready.ok) {
+    log.error(ready.reason);
+    process.exitCode = 1;
+    return;
+  }
+  const r = await probeSellfox(cfg);
+  console.log(JSON.stringify(r, null, 2));
+}
+
+async function cmdOnce(dry) {
+  const cfg = loadSellfoxConfig();
+  const ready = sellfoxConfigReady(cfg);
+  if (!ready.ok) {
+    log.error(ready.reason);
+    log.info('先: node src/sellfox/cli.js init 并填写密钥');
+    process.exitCode = 1;
+    return;
+  }
+  const r = await runSellfoxOnce(cfg, { dryRun: !!dry });
+  console.log(JSON.stringify(r, null, 2));
+}
+
+async function cmdStart() {
+  const cfg = loadSellfoxConfig();
+  const ready = sellfoxConfigReady(cfg);
+  if (!ready.ok) {
+    log.error(ready.reason);
+    process.exitCode = 1;
+    return;
+  }
+
+  // 可被 systemd SIGTERM / Ctrl+C 干净打断 sleep，避免强杀
+  let stopping = false;
+  let wake = null;
+  const stop = (sig) => {
+    if (stopping) return;
+    stopping = true;
+    log.info(`收到 ${sig}，本轮结束后退出…`);
+    if (wake) wake();
+  };
+  process.on('SIGTERM', () => stop('SIGTERM'));
+  process.on('SIGINT', () => stop('SIGINT'));
+
+  function interruptibleSleep(ms) {
+    return new Promise((resolve) => {
+      if (stopping) return resolve();
+      const t = setTimeout(() => {
+        wake = null;
+        resolve();
+      }, ms);
+      wake = () => {
+        clearTimeout(t);
+        wake = null;
+        resolve();
+      };
+    });
+  }
+
+  log.info(`赛狐下架监测常驻，间隔 ${cfg.intervalMinutes} 分钟。Ctrl+C / systemctl stop 退出。`);
+  while (!stopping) {
+    const t0 = Date.now();
+    try {
+      await runSellfoxOnce(cfg);
+    } catch (e) {
+      log.error('本轮失败：', e.message);
+    }
+    if (stopping) break;
+    const waitMs = Math.max(60_000, cfg.intervalMinutes * 60_000 - (Date.now() - t0));
+    log.info(`${Math.round(waitMs / 1000)} 秒后下一轮`);
+    await interruptibleSleep(waitMs);
+  }
+  log.info('已退出常驻循环');
+}
+
+async function main() {
+  switch (cmd) {
+    case 'help':
+    case '-h':
+    case '--help':
+      printHelp();
+      break;
+    case 'init':
+      await cmdInit();
+      break;
+    case 'probe':
+      await cmdProbe();
+      break;
+    case 'once':
+      await cmdOnce(false);
+      break;
+    case 'dry':
+      await cmdOnce(true);
+      break;
+    case 'start':
+      await cmdStart();
+      break;
+    default:
+      log.error('未知命令：', cmd);
+      printHelp();
+      process.exitCode = 1;
+  }
+}
+
+main().catch((e) => {
+  log.error(e);
+  process.exitCode = 1;
+});

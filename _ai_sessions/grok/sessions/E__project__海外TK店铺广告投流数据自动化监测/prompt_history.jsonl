@@ -1,0 +1,38 @@
+{"timestamp":"2026-07-28T03:53:09.789692700Z","session_id":"019fa6da-945b-7e82-a3c6-8be88bad6beb","prompt":"这个自动化脚本抓取了哪些字段？","is_bash":false}
+{"timestamp":"2026-07-28T07:57:17.769295100Z","session_id":"019fa6da-945b-7e82-a3c6-8be88bad6beb","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\60bcaf4b8213fdc6427f0e2f014a631e.png  这是哪个店铺？","is_bash":false}
+{"timestamp":"2026-07-28T07:57:49.285787400Z","session_id":"019fa6da-945b-7e82-a3c6-8be88bad6beb","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\92c8e7e1cf866b3c6ebf8c3a5c323939\\33c7b5f53183ced48f9a4dc450b4ed38.png  对应哪个店铺？","is_bash":false}
+{"timestamp":"2026-07-28T09:09:57.907289800Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\92c8e7e1cf866b3c6ebf8c3a5c323939\\267f43076bd71eb5ef9a3bf97891c292.png  广告花费和销售额改为跟系统中一样按照美金计算","is_bash":false}
+{"timestamp":"2026-07-28T09:18:40.539042400Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"之前这个项目我是用Claudecode开发的，对话记忆这些你获取一下","is_bash":false}
+{"timestamp":"2026-07-28T09:21:36.733818Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\9e20f478899dc29eb19741386f9343c8\\b7db37a71c108d27d8d1e441c576d616.png  这是在干嘛","is_bash":false}
+{"timestamp":"2026-07-28T09:29:49.914958500Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"把现在飞书多维表格里面之前日期的数据记录都删了","is_bash":false}
+{"timestamp":"2026-07-28T09:32:52.177513700Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"现在有按业务键去重更新功能吗","is_bash":false}
+{"timestamp":"2026-07-28T09:34:52.244690500Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"daily-report-20260728-172002.log 是否跑完、有没有写进飞","is_bash":false}
+{"timestamp":"2026-07-28T09:36:22.489334700Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"刚刚跑的时候打开的网页不是全屏最大化","is_bash":false}
+{"timestamp":"2026-07-28T09:39:12.653177100Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"你不是通过API获取数据的吗，和页面展示与否有关系吗？","is_bash":false}
+{"timestamp":"2026-07-28T09:40:46.896945100Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"从 TikTok 拿广告数据可以对接TikTok/紫鸟侧的数据接口（或稳定拦截页面 XHR)","is_bash":false}
+{"timestamp":"2026-07-28T09:40:53.299360400Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"从 TikTok 拿广告数据可以对接TikTok/紫鸟侧的数据接口（或稳定拦截页面 XHR)吗？","is_bash":false}
+{"timestamp":"2026-07-28T09:43:07.946017400Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"这个项目之前刚开始是走插件路线，后面为什么转本地脚本了？","is_bash":false}
+{"timestamp":"2026-07-28T09:50:52.950354600Z","session_id":"019fa7fc-392d-7cd0-af12-48461d9d47b1","prompt":"E:\\project\\temu  这个项目的插件自动切换店铺和TK插件想实现的自动切换账号性质一样吗？","is_bash":false}
+{"timestamp":"2026-07-28T10:01:14.874113200Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"刚刚跑了一遍正式写入飞书","is_bash":false}
+{"timestamp":"2026-07-28T10:02:10.533993400Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"清泉中心：无法连接到远程服务器  啥意思？","is_bash":false}
+{"timestamp":"2026-07-28T10:04:56.562318Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\92c8e7e1cf866b3c6ebf8c3a5c323939\\6338b9777cf7d631189ed6255d948a75.png  E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\92c8e7e1cf866b3c6ebf8c3a5c323939\\43581e05c1f20a5e8ae783f07895fd7c.png   这个店铺这两条广告计划已经关了 但是还在抓取记录 能不能识别广告计划的状态","is_bash":false}
+{"timestamp":"2026-07-28T10:13:08.562291400Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"C","is_bash":false}
+{"timestamp":"2026-07-29T00:49:32.272486900Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"刚刚跑了一遍干跑","is_bash":false}
+{"timestamp":"2026-07-29T01:01:32.799360Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"刚刚跑了一遍干跑","is_bash":false}
+{"timestamp":"2026-07-29T01:02:26.579033800Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"我要给我的同事安装脚本，还需要调试什么环境吗","is_bash":false}
+{"timestamp":"2026-07-29T01:05:47.747921800Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"紫鸟API Key在哪拿","is_bash":false}
+{"timestamp":"2026-07-29T01:09:09.853946100Z","session_id":"019fa82b-9337-78c0-8efa-a8a40c268660","prompt":"把项目打包压缩，保留飞书密钥，店铺名映射表","is_bash":false}
+{"timestamp":"2026-07-29T01:35:54.055307600Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"写一个给运营人员看的美化启动器使用手册","is_bash":false}
+{"timestamp":"2026-07-29T02:06:18.919066700Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\msg\\file\\2026-07\\log.docx  刚刚同事电脑没跑起来，而且本地logs目录没有自动记录日志","is_bash":false}
+{"timestamp":"2026-07-29T02:10:20.126753800Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"打开并登录了「紫鸟」桌面客户端，只是账号和我不一样","is_bash":false}
+{"timestamp":"2026-07-29T02:14:40.864891Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"把项目重新打包压缩","is_bash":false}
+{"timestamp":"2026-07-29T02:26:46.541411700Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"为什么紫鸟 Bridge（127.0.0.1:9481）会未连通","is_bash":false}
+{"timestamp":"2026-07-29T03:03:33.826340900Z","session_id":"019fab83-1f1a-7f83-9c4f-fc00e2e84be8","prompt":"我本地的17：20的自动化任务可以停掉了，因为同事那边已经启动了","is_bash":false}
+{"timestamp":"2026-07-30T01:27:52.447929700Z","session_id":"019fb09c-212f-7a82-b1e2-58794cc0d0b1","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\9e20f478899dc29eb19741386f9343c8\\e0ea3ea2b66942531fda7dd95428f2d0.png  脚本抓取的数据不是昨日数据。E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\9e20f478899dc29eb19741386f9343c8\\682a928b542f02cd72f7dab0516a7817.png   店铺广告网页打开时数据查看默认时间是前一周，需要改为昨日。E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\9e20f478899dc29eb19741386f9343c8\\9121f537ea72e34d51c4248293bff1ea.png","is_bash":false}
+{"timestamp":"2026-07-30T01:36:03.963096100Z","session_id":"019fb09c-212f-7a82-b1e2-58794cc0d0b1","prompt":"日报关于数据指标是否超标的判断逻辑是什么？","is_bash":false}
+{"timestamp":"2026-07-30T03:08:42.196292400Z","session_id":"019fb09c-212f-7a82-b1e2-58794cc0d0b1","prompt":"ROI是什么？","is_bash":false}
+{"timestamp":"2026-07-30T03:09:44.343826400Z","session_id":"019fb09c-212f-7a82-b1e2-58794cc0d0b1","prompt":"跑正式写入飞书会生成日报吗？","is_bash":false}
+{"timestamp":"2026-07-30T03:11:29.898940700Z","session_id":"019fb09c-212f-7a82-b1e2-58794cc0d0b1","prompt":"把项目重新打包压缩","is_bash":false}
+{"timestamp":"2026-07-30T03:26:23.663245600Z","session_id":"019fb10e-84f3-71f3-a98a-3505153e521b","prompt":"刚刚又改了一版，但是老版本已经在同事电脑上安装了定时任务怎么办？","is_bash":false}
+{"timestamp":"2026-07-30T03:29:07.493614400Z","session_id":"019fb10e-84f3-71f3-a98a-3505153e521b","prompt":"换了项目路径，老项目删除了，只需要打开新项目点一下安装17:20 任务就可以了吗？","is_bash":false}
+{"timestamp":"2026-07-30T06:53:00.592626500Z","session_id":"019fb1cc-33e0-7b92-bc48-4464e38d4b9a","prompt":"E:\\wxfile\\xwechat_files\\wxid_xzeo0tkjsa3o22_0996\\temp\\RWTemp\\2026-07\\92c8e7e1cf866b3c6ebf8c3a5c323939\\87ba9bbe8d57f6eb59d71c8c132c6e00.png","is_bash":false}

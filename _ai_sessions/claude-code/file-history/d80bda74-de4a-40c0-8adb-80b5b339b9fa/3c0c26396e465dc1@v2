@@ -1,0 +1,103 @@
+# 赛狐开放 API 参考（ASIN 健康度驾驶舱版）
+
+> 面向本仓库「赛狐 → 飞书/本地」日同步。  
+> 文档来源：官方 [赛狐开放平台](https://sellfoxapi.apifox.cn)（访问密码见内部保管，勿提交到公开仓库）。  
+> 更新：2026-07-21
+
+---
+
+## 1. 接入信息
+
+| 项 | 值 |
+|---|---|
+| 接入域名 | `https://openapi.sellfox.com` |
+| 官方文档 | `https://sellfoxapi.apifox.cn` |
+| Token | `GET /api/oauth/v2/token.json` |
+| 业务方法 | 除 Token 外均为 **POST** + JSON body |
+| 鉴权 | Query：`access_token, client_id, timestamp(ms), nonce, sign` |
+| 签名 | HMAC-SHA256；body **不参与**；参数按 key 字典序拼接 |
+| 限流 | 约 **1 次/秒**；超限 `40019` |
+| 分页 | `pageSize` 最大 **100** |
+| IP | 白名单；不在名单 `40005` |
+| 成功码 | `code = 0`（部分接口亦见 200） |
+
+实现：`app/clients/sellfox.py`
+
+---
+
+## 2. 认证与签名
+
+### Token
+
+```
+GET /api/oauth/v2/token.json?client_id=...&client_secret=...&grant_type=client_credentials
+```
+
+- `expires_in` 单位为**毫秒**，约 24 小时  
+- 必须缓存；失效码 `40001` 时再刷  
+
+### 签名串示例
+
+```text
+access_token=...&client_id=...&method=post&nonce=...&timestamp=...&url=/api/productAnalyze/V2/pageList.json
+```
+
+使用 `client_secret` 做 HMAC-SHA256 hex。
+
+---
+
+## 3. 本项目使用的接口
+
+| 优先级 | 用途 | Path |
+|---|---|---|
+| P0 | 产品分析 2.0（ASIN 主数据） | `/api/productAnalyze/V2/pageList.json` |
+| P1 | FBA 库存明细 | `/api/inventoryManage/fba/pageList.json` |
+| P1 | 评价明细 | `/api/review/pageDetailList.json` |
+| P2 | 店铺表现按天 | `/api/stats/getShopDataByDay.json` |
+| P2 | 在线产品 V2 | `/api/order/api/product/v2/pageList.json` |
+
+### 产品分析 V2 要点
+
+- `dimType=1`：ASIN 维度  
+- `startDate` / `endDate`：业务日  
+- `compareTypeList: ["1"]`：环比  
+- `fieldModules`：批量字段分类（**不拉** `PROFIT_INFO`）  
+  - `PRODUCT_INFO`, `SALE_INFO`, `SESSION_PERFORMANCE_INFO`, `PERFORMANCE_INFO`, `AD_INFO`, `FBA_INVENTORY_INFO`, `REVIEW_PERFORMANCE_INFO`  
+- 指标定义：官方 doc-8966970  
+
+一期已实现同步：`app/sync/product_analyze.py`  
+冒烟：`python scripts/smoke_sellfox.py`
+
+---
+
+## 4. 错误码（常用）
+
+| code | 含义 |
+|---|---|
+| 40001 | token 失效 |
+| 40005 | IP 不在白名单 |
+| 40011 | 签名错误 |
+| 40012 | nonce 重复 |
+| 40013 | 时间戳超 ±15 分钟 |
+| 40014 | 参数/分页问题（pageSize≤100） |
+| 40019 | 限流 |
+| 40021 | 接口无权限 |
+
+---
+
+## 5. 历史说明（物流链路）
+
+早期导出曾包含包裹发货接口（`packageShip/*`），属于 **WMS/出库** 场景，**不是**本驾驶舱数据源。  
+若仍需物流对接，请单独维护，勿与 ASIN 日同步混用。
+
+---
+
+## 6. 本地命令
+
+```powershell
+# 配置 .env 后
+python scripts\smoke_sellfox.py
+python -m app.main sync --date YYYY-MM-DD
+python -m app.main rules --date YYYY-MM-DD
+python -m app.main once --dry-run-notify
+```

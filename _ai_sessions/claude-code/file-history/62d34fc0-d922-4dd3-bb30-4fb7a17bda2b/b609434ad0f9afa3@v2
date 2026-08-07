@@ -1,0 +1,51 @@
+# -*- coding: utf-8 -*-
+"""飞书连通测试：读取 g2-3shops 配置，发一条测试消息。"""
+import sys
+
+import yaml
+
+from bridge.notify import Notifier
+
+
+def main():
+    cfg_path = "config/config.g2-3shops.yaml"
+    try:
+        with open(cfg_path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        print(f"读取配置失败: {cfg_path}\n{e}")
+        return 1
+
+    notify = cfg.get("notify") or {}
+    webhook = (notify.get("feishu_webhook") or "").strip()
+    customer = (cfg.get("customer") or {}).get("name") or "test"
+
+    print(f"配置: {cfg_path}")
+    print(f"客户: {customer}")
+    if not webhook:
+        print("失败: config 中 notify.feishu_webhook 为空，未配置飞书机器人。")
+        print("请在 config/config.g2-3shops.yaml 的 notify.feishu_webhook 填入群机器人 webhook。")
+        return 2
+
+    # 脱敏显示
+    shown = webhook if len(webhook) < 40 else webhook[:28] + "..." + webhook[-8:]
+    print(f"webhook: {shown}")
+
+    n = Notifier(webhook, customer)
+    ok = n._send("飞书连通测试 OK（来自美化启动器）")
+    if ok:
+        print("发送成功：请到飞书群查看是否收到测试消息。")
+        return 0
+    print("发送失败：请查看上方错误或 bridge 日志（网络/webhook 失效/签名校验等）。")
+    return 3
+
+
+if __name__ == "__main__":
+    code = main()
+    print()
+    if sys.platform == "win32":
+        try:
+            input("按回车关闭…")
+        except EOFError:
+            pass
+    sys.exit(code)

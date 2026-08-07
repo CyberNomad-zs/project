@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fa7fc-392d-7cd0-af12-48461d9d47b1",
+    "cwd": "E:\\project\\海外TK店铺广告投流数据自动化监测"
+  },
+  "session_summary": "Ad Spend Sales USD Currency Alignment",
+  "created_at": "2026-07-28T09:09:12.715866400Z",
+  "updated_at": "2026-07-28T09:51:30.922567100Z",
+  "num_messages": 690,
+  "num_chat_messages": 307,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 12,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/海外TK店铺广告投流数据自动化监测/",
+  "git_remotes": [
+    "https://github.com/JMCATTT/tk-shop-ad-monitor.git"
+  ],
+  "head_commit": "de71178a2990f69cad3cdf83c2b6324e9184e5d9",
+  "head_branch": "main",
+  "request_id": "a287c68b-3980-4f53-b834-87af7ab90413",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-28T09:51:30.922567100Z",
+  "generated_title": "Ad Spend Sales USD Currency Alignment",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

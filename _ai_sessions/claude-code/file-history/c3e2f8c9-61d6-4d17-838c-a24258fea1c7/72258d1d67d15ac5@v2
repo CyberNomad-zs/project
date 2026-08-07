@@ -1,0 +1,215 @@
+# 工作日报 · 2026-07-30
+
+> 协作工具：Claude Code + Grok Build  
+> 覆盖项目：Temu 监测 / 海外仓发货自动化 / 海外 TK 广告投流监测 / 清泉跨境系统（企业级）
+
+---
+
+## 一、今日总览
+
+| 项目 | 主线成果 | 状态 |
+|------|----------|------|
+| **Temu 监测** | 本机/服务器职责拆分；赛狐上下架服务器部署包；同事本机「仅流量」分发包 | 已可交付同事试用 |
+| **海外仓** | ERP 循环保活强化 + 关浏览器自动续跑；更新包发出 | 已打包可覆盖更新 |
+| **海外 TK 广告监测** | 日期默认昨日、多店脚本/文档加固；正式跑通 7/29 日报并写入飞书 | 日更链路可用 |
+| **清泉跨境（企业级）** | 生产部署文件；Ops 知识库 A+B；TK 采集迁入中心；P2a 订单管线骨架 + night-loop；推 PR | 广告已通，订单待紫鸟实页校准 |
+
+**一句话**：今天把「本机易变 IP / 易掉线 / 单点采集」往「固定服务器 + 中心库 + 可交接包」收了一轮；Temu 与海外仓偏交付运维，清泉偏中台能力与 TK 整站采集下一阶段。
+
+---
+
+## 二、分项目明细
+
+### 1. Temu（`E:\project\temu`）· Claude Code 为主
+
+**背景问题**  
+本机 IP 常变，赛狐 OpenAPI 白名单要反复申请；同事本机若误开赛狐会报错。
+
+**今日完成**
+
+1. **架构分工固化**
+   - **本机 / 同事电脑**：只跑商品流量待关注、流量近期下降、在售数量、多店轮巡、飞书告警（浏览器 Playwright）。
+   - **固定公网 IP 服务器**：只跑赛狐 OpenAPI 下架/上架点名（不依赖 Chrome）。
+   - 默认 `fullRun: false`；本机不必带 `sellfox.config.json`。
+
+2. **服务器侧**
+   - 编写 `deploy/README-SERVER.md`、`pack-sellfox.ps1`、`install-sellfox-linux.sh`、`sellfox.service`、`remote-install.sh`、`check-status.sh`。
+   - 目标路径：`/opt/temu-monitor` + systemd `temu-sellfox`。
+   - 赛狐 client（HMAC 签名）、在售集合 diff、CLI（init/probe/once/start）完善。
+
+3. **同事本机交付包**（多次迭代，最终约 18:18）
+   - 产物：`_dist/temu-traffic-local-20260730-181840.zip`
+   - 含：`首次运行.bat` / `first-run.bat`（生成 config + npm install）、`启动.bat`、`美化启动器.bat`、`gui.py`、`使用说明.txt`
+   - 明确：删掉 `.userdata` / 密钥 / `node_modules` 再发；不要开 fullRun；插件可卸以免双报。
+
+4. **工程细节**
+   - bat 工作目录 / 中文路径问题排查与 `_fix_bats.py` 修正。
+   - README / SELLFOX.md / 使用说明与代码分工对齐。
+
+**待办 / 风险**
+
+- 服务器实装：上传 zip → 白名单加固定 IP → `systemctl` 拉起并观察一轮。
+- 同事机实测登录 Temu + 首轮建流量基准。
+- 密钥勿进 git / 勿进同事包。
+
+**工具**：Claude Code（长会话 `2fcab51f…`）；Grok 有拉取 Claude 记忆会话，主改在 Claude。
+
+---
+
+### 2. 海外仓（`E:\project\海外仓`）· Grok Build + Claude Code
+
+**背景问题**
+
+1. 全流程循环一两轮后「会话失效」退出，需反复重登。  
+2. 发货/空闲时把自动化浏览器点「×」关掉 → `Target closed`，循环挂死，必须一直开着窗。
+
+**今日完成**
+
+1. **ERP 保活**
+   - 等待期约每 2 分钟真实打开订单页续期（不只 ping isLogin）。
+   - 网络超时不再误判掉线杀进程。
+   - 真掉线：同窗口开登录页 + 飞书提醒，滑块后可续。
+
+2. **关窗自动续跑**
+   - `core.py`：`is_browser_dead_error` / `ensure_browsers` / `recover_after_browser_dead` 等。
+   - `full_loop.py`、`shipping_loop.py`、`status_update_loop.py` 接入恢复逻辑。
+   - 关窗后自动重启浏览器，profile 会话仍有效则无需重登。
+
+3. **交付**
+   - 更新包：`同事更新_循环保活+关窗续跑_20260730-1619.zip`
+   - 说明：`automation/同事更新_ERP保活说明.txt`（覆盖 4 个 py，勿覆盖 secrets / profile / logs）。
+   - 强调：**双机不要同时对同一赛狐账号真跑**，防抢单/互踢会话。
+
+**待办 / 风险**
+
+- 同事机覆盖后跑一轮 [A] 全流程验证。
+- 某一轮做到一半被叉掉，当轮未完成订单靠下一轮整轮重试（文档已说明）。
+
+**工具**：Grok「Browser Close Recovery…」「Retrieve Claude Memory」；Claude 侧继续落地改代码与打包。
+
+---
+
+### 3. 海外 TK 店铺广告投流数据自动化监测（`E:\project\海外TK…`）
+
+**今日完成**
+
+1. **抓取与配置**
+   - 默认业务日期对齐「昨日」相关逻辑（`set-date-range.js` 等）。
+   - `run-multi-store.ps1`、extension（content / service-worker / constants）、`stores.config` 同步调整。
+   - 文档：`运维与排障.md`、`每日定时任务.md`、`美化启动器使用手册.md` 更新。
+
+2. **实跑验收（约 09:50–09:58）**
+   - 预览店铺列表 → 正式多店写入飞书。
+   - **业务日 2026-07-29 日报**：店铺 **3/3 成功**  
+     - 系列 11 · 花费 **115.01 USD** · 销量 68 · 销售额 **1205.55 USD** · 综合 ROI **10.48**  
+     - 销售额最高：SHOP INOUT（905.25 / ROI 9.74）  
+     - ROI 最高：Gardena（18.64）  
+     - 关注：SHOP INOUT 有 1 个系列花费>0 销售额为 0（马桶盖7/13）
+
+3. **与清泉关系**  
+   - 源项目继续本机/同事日更；代码副本已进入清泉 `collectors/tiktok-ads`（原则：只在副本上改，不回写覆盖源项目）。
+
+**待办 / 风险**
+
+- 欧盟店代理不稳（与清泉侧同一问题）。
+- 同事机旧计划任务更新（Grok 有专门会话）。
+
+**工具**：Grok（日期默认昨日、计划任务、字段分析等）+ 本机实跑日志；午后能力向清泉中心收敛。
+
+---
+
+### 4. 清泉跨境系统（企业级）（`E:\project\清泉跨境系统（企业级）`）· 今日权重最高
+
+**Git 今日提交（摘要）**
+
+| 时间 | 说明 |
+|------|------|
+| 11:24 | 2C4G 服务器 SSH 密钥、ops 笔记、生产 docker-compose / nginx / deploy.sh |
+| 15:16 | Ops 知识库 A+B 切片 + TikTok ads collector 迁入（大体量） |
+| 17:10 | dual ingest 客户端加固、多店重试、`repost-last-from-debug` |
+| 17:58 | **P2a 订单管线** + 整站采集路线图 + `night-loop.ps1` |
+| 18:31 | 按 seller-uk 订单列表 DOM 校准 `scrape-orders-page.js` |
+
+**今日完成**
+
+1. **生产与运维底座**
+   - `deploy/docker-compose.prod.yml`、`deploy.sh`、nginx 配置、`docs/ops/SERVER.md`、部署密钥目录说明。
+
+2. **Ops 知识库 A+B（PROGRESS.md）**
+   - 迁移 `004_ops_knowledge.sql` 种子；task 写路径结构化 action/effect。
+   - guidance / 草稿 / publish / demote / metric-backfill。
+   - Web 抽屉双块；**pytest 6 passed**。
+
+3. **TK 采集中心化**
+   - 自海外 TK 项目复制 collector 至 `collectors/tiktok-ads`（`COPIED.md` 约定）。
+   - P0/P1 广告 dual 上报清泉；P1 字段迁移 `003_…`。
+   - 职责升级：**整站运营数据**（广告只是第一域）——路线图已写。
+
+4. **P2a 订单（PROGRESS-tk-full-scrape.md）**
+   - 迁移 `005_tiktok_orders.sql`（本机+生产已执行）。
+   - Ingest：`tiktok_orders` → `fact_tiktok_order`（生产幂等 smoke 通过）。
+   - 抓取骨架 `scrape-orders-page.js`、`run-orders.ps1`、客户端多 source。
+   - `night-loop.ps1`：Bridge 起来自动跑 ads/orders。
+   - 晚间按 UK 实页 DOM 再校准 scraper。
+   - 分支推送：`feature/tk-ads-dual` → PR  
+     https://github.com/JMZLAI/qingquan-kuajing/pull/1
+
+5. **Grok 侧**  
+   - 项目现状总览、架构图分析续聊、知识库/目标相关会话；与 Claude 落地实现形成互补。
+
+**待办 / 阻塞**
+
+- [ ] 紫鸟登录后实跑校准订单表头（无 Bridge 不假成功）。
+- [ ] 订单飞书表（可选）。
+- [ ] P2b 商品 / P2c 店级 KPI。
+- [ ] 欧盟广告页网络仍不稳。
+- [ ] 英区 ads 日更持续观察 dual（飞书 + PG）。
+
+---
+
+## 三、跨项目协同关系（今日视角）
+
+```text
+海外 TK 源项目 ──日更实跑/飞书──► 运营可见日报
+        │
+        └──副本──► 清泉 collectors/tiktok-ads ──ingest──► PG 事实表
+                         │
+                         ├── tiktok_ads（已通）
+                         └── tiktok_orders（骨架+校准中）
+
+Temu：本机流量包 ↔ 服务器赛狐上下架（固定 IP）
+海外仓：本机 ERP/WMS 循环（保活+关窗恢复）独立运维包
+```
+
+---
+
+## 四、明日建议优先级
+
+1. **清泉 / TK**：紫鸟在线 → ads 日更稳跑 + orders 实页出 ≥1 店有效行 → 确认 PG 幂等。  
+2. **Temu**：服务器装赛狐服务并白名单；同事解压流量包完成首次运行。  
+3. **海外仓**：同事覆盖 4 文件后验证关窗续跑与保活。  
+4. **TK 源项目**：关注零销系列；欧盟代理策略单独立项。
+
+---
+
+## 五、产出物清单（便于交接）
+
+| 产出 | 路径 |
+|------|------|
+| Temu 同事本机包 | `temu/_dist/temu-traffic-local-20260730-181840.zip` |
+| Temu 本机说明 | `temu/temu-monitor/使用说明.txt` |
+| Temu 服务器部署说明 | `temu/temu-monitor/deploy/README-SERVER.md` |
+| 海外仓更新包 | `海外仓/同事更新_循环保活+关窗续跑_20260730-1619.zip` |
+| 海外仓更新说明 | `海外仓/automation/同事更新_ERP保活说明.txt` |
+| TK 7/29 日报 | `海外TK…/日报/日报-2026-07-29.md`（及 json/简报） |
+| TK 整站路线图 | `清泉…/collectors/tiktok-ads/docs/TK-整站运营数据采集路线图.md` |
+| TK 进度板 | `清泉…/PROGRESS-tk-full-scrape.md` |
+| Ops 知识库进度 | `清泉…/PROGRESS.md` |
+| GitHub PR | https://github.com/JMZLAI/qingquan-kuajing/pull/1 |
+
+---
+
+## 六、备注
+
+- 日报依据：四目录今日文件 mtime、清泉 git log、Claude/Grok 会话摘要与进度文档；未臆造未在证据中的上线结果。  
+- 涉及密钥的配置（赛狐、飞书 webhook、stores.config）均按「本机保留、示例进库、勿外传」处理，日报不粘贴密钥。

@@ -1,0 +1,1 @@
+- [用中文沟通](communicate-in-chinese.md) — 用户要求中文回复，勿用日文/英文

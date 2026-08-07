@@ -1,0 +1,122 @@
+/**
+ * 在 TikTok 广告数据面板页执行，返回广告系列行 JSON 字符串
+ * 由 ziniao-cli page exec 注入；勿依赖 chrome extension API
+ */
+(function () {
+  function cleanText(t) {
+    return String(t ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    let s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s
+      .replace(/[,\s]/g, '')
+      .replace(/[¥$€£￥USD|GBP|EUR]/gi, '')
+      .replace(/%/g, '');
+    const paren = s.match(/^\((.+)\)$/);
+    if (paren) s = `-${paren[1]}`;
+    const n = Number(s);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  const HEADER_ALIASES = {
+    campaign: ['品名', '广告系列', '广告系列名称', '系列名称', 'campaign', 'campaign name', 'product', '名称'],
+    spend: ['广告花费', '广告成本', '花费', '成本', '消耗', 'cost', 'spend', 'ad spend'],
+    orders: ['销量', '订单', 'sku 订单', 'sku订单', 'orders', 'units', 'units sold'],
+    roi: ['roi', 'roas', '投资回报率', '投资回报', '回报率'],
+    revenue: ['销售额', '总收入', '销售收入', '收入', 'gmv', 'revenue', 'gross revenue']
+  };
+
+  function matchHeaderField(headerText) {
+    const t = cleanText(headerText).toLowerCase();
+    if (!t) return null;
+    const order = ['roi', 'spend', 'orders', 'revenue', 'campaign'];
+    for (const field of order) {
+      for (const a of HEADER_ALIASES[field]) {
+        const al = a.toLowerCase();
+        if (!(t === al || t.includes(al) || (al.length >= 2 && al.includes(t)))) continue;
+        if (field === 'spend' && /平均下单|cost per|per order|\bcpc\b|\bcpa\b/.test(t)) continue;
+        return field;
+      }
+    }
+    return null;
+  }
+
+  function parseHtmlTable(table) {
+    let headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+    if (!headerRow) return [];
+    const headerCells = [...headerRow.querySelectorAll('th, td')];
+    const fields = headerCells.map((c) => matchHeaderField(c.innerText || ''));
+    if (!fields.some(Boolean)) return [];
+    const bodyRows = table.querySelectorAll('tbody tr');
+    const rows = bodyRows.length ? [...bodyRows] : [...table.querySelectorAll('tr')].slice(1);
+    const results = [];
+    for (const tr of rows) {
+      const cells = [...tr.querySelectorAll('td, th')];
+      if (!cells.length) continue;
+      const row = {};
+      fields.forEach((field, i) => {
+        if (!field || !cells[i]) return;
+        const text = cleanText(cells[i].innerText || '');
+        row[field] = field === 'campaign' ? text : parseNumber(text) ?? text;
+      });
+      if (row.campaign || row.spend != null || row.revenue != null) results.push(row);
+    }
+    return results;
+  }
+
+  function scoreRows(rows) {
+    if (!rows?.length) return 0;
+    let s = rows.length;
+    for (const r of rows.slice(0, 5)) {
+      if (r.campaign) s += 2;
+      if (r.spend != null && r.spend !== '') s += 2;
+      if (r.roi != null) s += 2;
+      if (r.revenue != null) s += 2;
+    }
+    return s;
+  }
+
+  let best = [];
+  let source = 'none';
+  for (const table of document.querySelectorAll('table')) {
+    const rows = parseHtmlTable(table);
+    if (scoreRows(rows) > scoreRows(best)) {
+      best = rows;
+      source = 'html-table';
+    }
+  }
+
+  // 过滤汇总行
+  best = best.filter((r) => {
+    const c = cleanText(r.campaign || '').toLowerCase();
+    if (!c) return false;
+    if (['total', '合计', '总计', '汇总', 'summary', 'all'].includes(c)) return false;
+    return true;
+  });
+
+  // 探测店铺展示名
+  let storeHint = '';
+  for (const el of [...document.querySelectorAll('div, span, h1, h2')].slice(0, 300)) {
+    const t = cleanText(el.innerText || '');
+    if (t.length > 5 && t.length < 100 && /主要账号|主账号/.test(t)) {
+      storeHint = t.replace(/主要账号|主账号/g, '').trim();
+      break;
+    }
+  }
+
+  return JSON.stringify({
+    ok: best.length > 0,
+    source,
+    storeHint,
+    url: location.href,
+    title: document.title,
+    rows: best,
+    error: best.length ? null : '未识别到广告表格，请确认已进入广告数据面板'
+  });
+})();

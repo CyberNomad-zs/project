@@ -1,0 +1,206 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+def _num(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _first(v: Any) -> Any:
+    if isinstance(v, list):
+        return v[0] if v else None
+    return v
+
+
+def _first_str(v: Any) -> str:
+    x = _first(v)
+    return "" if x is None else str(x)
+
+
+def _fm(fields_map: dict[str, Any], key: str) -> dict[str, Any]:
+    node = fields_map.get(key)
+    return node if isinstance(node, dict) else {}
+
+
+def _curr(fields_map: dict[str, Any], key: str) -> float | None:
+    return _num(_fm(fields_map, key).get("currValue"))
+
+
+def _mom(fields_map: dict[str, Any], key: str) -> float | None:
+    return _num(_fm(fields_map, key).get("momValue"))
+
+
+def _mom_pct_ratio(fields_map: dict[str, Any], key: str) -> float | None:
+    """环比百分比字符串 '40.3200' / '-9.2100' → 比例 0.4032 / -0.0921。"""
+    p = _num(_fm(fields_map, key).get("momPercent"))
+    if p is None:
+        return None
+    return p / 100.0
+
+
+def _pp_from_ratio_or_percent(curr: float | None, mom: float | None) -> float | None:
+    """转化率等：curr/mom 可能是 0-100 或 0-1，输出百分点差。"""
+    if curr is None or mom is None:
+        return None
+    c, m = curr, mom
+    if abs(c) <= 1.5 and abs(m) <= 1.5:
+        return (c - m) * 100.0
+    return c - m
+
+
+def resolve_owner(shop_name: str, owners: dict[str, str] | None) -> str | None:
+    if not owners or not shop_name:
+        return None
+    if shop_name in owners:
+        return owners[shop_name]
+    # 前缀/包含匹配：配置写「特米」可匹配「特米-UK」
+    for key, val in owners.items():
+        if key and (shop_name.startswith(key) or key in shop_name):
+            return val
+    return None
+
+
+def map_product_analyze_row(
+    raw: dict[str, Any],
+    *,
+    biz_date: str,
+    owner: str | None = None,
+    product_grade: str | None = None,
+    owners: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Map Sellfox productAnalyze V2 真实结构 → asin_daily 列。
+
+    真实返回特点：
+    - 维度字段多为 *List / shopInfos
+    - 指标在 fieldsMap[field].{currValue,momValue,momPercent}
+    """
+    fm = raw.get("fieldsMap") if isinstance(raw.get("fieldsMap"), dict) else {}
+
+    shop_infos = raw.get("shopInfos") or []
+    shop0 = shop_infos[0] if shop_infos and isinstance(shop_infos[0], dict) else {}
+    shop_name = str(
+        shop0.get("shopName")
+        or _first_str(raw.get("shopNameList"))
+        or raw.get("shopName")
+        or ""
+    )
+    marketplace = str(
+        shop0.get("marketplaceName")
+        or _first_str(raw.get("marketplaceNameList"))
+        or raw.get("marketplaceName")
+        or ""
+    )
+    shop_id = str(
+        shop0.get("shopId")
+        or _first_str(raw.get("shopIdList"))
+        or raw.get("shopId")
+        or ""
+    )
+    asin = _first_str(raw.get("asinList") or raw.get("asin"))
+    if owner is None:
+        owner = resolve_owner(shop_name, owners)
+
+    sale_price = _curr(fm, "salePrice")
+    sale_price_base = _mom(fm, "salePrice")
+    sale_change = _mom_pct_ratio(fm, "salePrice")
+
+    order_num = _curr(fm, "orderNum")
+    order_base = _mom(fm, "orderNum")
+    order_change = _mom_pct_ratio(fm, "orderNum")
+
+    sessions = _curr(fm, "sessions")
+    sessions_base = _mom(fm, "sessions")
+    sessions_change = _mom_pct_ratio(fm, "sessions")
+
+    cvr = _curr(fm, "conversionRate")
+    cvr_base = _mom(fm, "conversionRate")
+    # momPercent 对转化是相对变化；规则更关心百分点差
+    cvr_pp = _pp_from_ratio_or_percent(cvr, cvr_base)
+    if cvr_pp is None:
+        # fallback: momPercent 当相对变化时无法直接变 pp
+        cvr_pp = None
+
+    ad_cost = _curr(fm, "adTotalCost")
+    ad_cost_change = _mom_pct_ratio(fm, "adTotalCost")
+    ad_sales = _curr(fm, "adTotalSale")
+    if ad_sales is None:
+        ad_sales = _curr(fm, "adSalePriceDirectTotal")
+    ad_sales_change = _mom_pct_ratio(fm, "adTotalSale")
+    if ad_sales_change is None:
+        ad_sales_change = _mom_pct_ratio(fm, "adSalePriceDirectTotal")
+
+    acos = _curr(fm, "acos")
+    # ACOS 常为 0-100 数值
+    rating = _curr(fm, "rating")
+    rating_base = _mom(fm, "rating")
+    rating_change = None
+    if rating is not None and rating_base is not None:
+        rating_change = rating - rating_base
+
+    brand = _first_str(raw.get("brandNameList") or raw.get("brandName"))
+    title = raw.get("title") or _first_str(raw.get("commodityNameList"))
+
+    return {
+        "biz_date": biz_date,
+        "marketplace": marketplace,
+        "shop_name": shop_name,
+        "shop_id": shop_id,
+        "asin": asin,
+        "parent_asin": _first_str(raw.get("parentAsinList") or raw.get("parentAsin"))
+        or None,
+        "sku": _first_str(raw.get("skuList") or raw.get("sku")) or None,
+        "msku": _first_str(raw.get("mskuList") or raw.get("msku")) or None,
+        "title": title,
+        "brand": brand or None,
+        "open_date": raw.get("openDate"),
+        "product_grade": product_grade,
+        "owner": owner,
+        "sale_price": sale_price,
+        "sale_num": _curr(fm, "saleNum"),
+        "order_num": order_num,
+        "avg_sale_price": _curr(fm, "avgSalePrice"),
+        "sale_price_change_pct": sale_change,
+        "order_num_change_pct": order_change,
+        "sale_price_baseline": sale_price_base,
+        "order_num_baseline": order_base,
+        "sessions": sessions,
+        "sessions_baseline": sessions_base,
+        "sessions_change_pct": sessions_change,
+        "page_view": _curr(fm, "pageView"),
+        "conversion_rate": cvr,
+        "conversion_rate_change_pp": cvr_pp,
+        "buy_box_percent": _curr(fm, "buyBoxPercent"),
+        "ad_impression": _curr(fm, "adTotalImpression"),
+        "ad_clicks": _curr(fm, "adClicks"),
+        "ad_ctr": _curr(fm, "adClickRate"),
+        "ad_cost": ad_cost,
+        "ad_cost_change_pct": ad_cost_change,
+        "cpc": _curr(fm, "cpc"),
+        "acos": acos,
+        "ad_sales": ad_sales,
+        "ad_sales_change_pct": ad_sales_change,
+        "available": _curr(fm, "available")
+        if _curr(fm, "available") is not None
+        else _num(raw.get("fbaAvailable")),
+        "in_transit": _curr(fm, "inTransit"),
+        "available_days": _curr(fm, "availableDays")
+        if _curr(fm, "availableDays") is not None
+        else _num(raw.get("fbmAvailableDays")),
+        "inv_age_365_plus": _curr(fm, "invAge365PlusDays"),
+        "rating": rating,
+        "rating_change": rating_change,
+        "rating_count": _curr(fm, "ratingCount"),
+        "low_review_num": _curr(fm, "lowReviewNum"),
+        "review_num": _curr(fm, "reviewNum"),
+        "raw_json": raw,
+        "seven_sale_num": _curr(fm, "sevenSaleNum"),
+        "seven_sale_price": _curr(fm, "sevenSalePrice"),
+        "zero_order_streak": None,
+        "currency": raw.get("currency") or _curr(fm, "currency"),
+    }

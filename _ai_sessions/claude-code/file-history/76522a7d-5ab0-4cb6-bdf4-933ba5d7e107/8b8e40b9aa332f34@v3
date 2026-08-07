@@ -1,0 +1,180 @@
+# P2.1b: probe candidate video-detail / list URLs for stable content_id.
+# Default SkipIngest; debug JSON only. Does NOT create content fact tables.
+#
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-video-url-matrix.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\run-video-url-matrix.ps1 -StoreId 27501502216807
+
+param(
+  [string]$ConfigPath = "",
+  [string]$StoreId = "27501502216807"
+)
+
+$ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
+$root = Split-Path $PSScriptRoot -Parent
+if (-not $ConfigPath) { $ConfigPath = Join-Path $root 'config\stores.config.deal-only.json' }
+
+$logsDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+}
+function Write-Utf8File([string]$Path, [string]$Content) {
+  $utf8 = New-Object System.Text.UTF8Encoding $false
+  [System.IO.File]::WriteAllText($Path, $Content, $utf8)
+}
+function ConvertTo-ProcessArgument([string]$s) {
+  if ($null -eq $s) { return '""' }
+  if ($s -match '[\s"]') { return '"' + ($s -replace '"', '\"') + '"' }
+  return $s
+}
+function Initialize-ZiniaoCli {
+  if ($script:ZiniaoNode) { return }
+  $node = (Get-Command node -ErrorAction SilentlyContinue).Source
+  if (-not $node) { throw 'node not found' }
+  $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+  if (-not (Test-Path $runJs)) { throw 'ziniao-cli run.js not found' }
+  $script:ZiniaoNode = $node
+  $script:ZiniaoRunJs = $runJs
+}
+function Invoke-Ziniao([string[]]$CliArgs) {
+  Initialize-ZiniaoCli
+  $utf8 = [System.Text.UTF8Encoding]::new($false)
+  $allArgs = @($script:ZiniaoRunJs) + @($CliArgs)
+  $argLine = ($allArgs | ForEach-Object { ConvertTo-ProcessArgument ([string]$_) }) -join ' '
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $script:ZiniaoNode
+  $psi.Arguments = $argLine
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = $utf8
+  $psi.StandardErrorEncoding = $utf8
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($stderr) { Write-Host $stderr }
+  return $stdout
+}
+function ConvertTo-ScrapeOneLine([string]$js) {
+  return (($js -replace '(?m)^\s*//.*$', '' -replace '\r?\n', ' ' -replace '\s+', ' ').Trim())
+}
+function Get-ScrapePayload([string]$execOut) {
+  if ([string]::IsNullOrWhiteSpace($execOut)) { return $null }
+  try {
+    $j = $execOut | ConvertFrom-Json
+    if ($j.data -and $j.data.data -and $j.data.data.result) {
+      return ([string]$j.data.data.result | ConvertFrom-Json)
+    }
+    if ($null -ne $j.ok) { return $j }
+  } catch { }
+  $m = [regex]::Matches($execOut, '\{(?:[^{}]|(?<o>\{)|(?<-o>\}))+(?(o)(?!))\}')
+  if ($m.Count -gt 0) {
+    try { return ($m[$m.Count - 1].Value | ConvertFrom-Json) } catch { }
+  }
+  return $null
+}
+
+# Candidate paths for 视频详情 / list (UK). Avoid video-top-selling (platform hot board).
+$candidates = @(
+  @{ key = 'video-analytics'; url = 'https://seller-uk.tiktok.com/compass/video-analytics?shop_region=GB'; script = 'overview' },
+  @{ key = 'video-analytics-detail'; url = 'https://seller-uk.tiktok.com/compass/video-analytics/detail?shop_region=GB'; script = 'list' },
+  @{ key = 'video-analytics-video-detail'; url = 'https://seller-uk.tiktok.com/compass/video-analytics/video-detail?shop_region=GB'; script = 'list' },
+  @{ key = 'video-analytics-list'; url = 'https://seller-uk.tiktok.com/compass/video-analytics/list?shop_region=GB'; script = 'list' },
+  @{ key = 'video-analytics-videos'; url = 'https://seller-uk.tiktok.com/compass/video-analytics/videos?shop_region=GB'; script = 'list' },
+  @{ key = 'video-detail'; url = 'https://seller-uk.tiktok.com/compass/video-detail?shop_region=GB'; script = 'list' },
+  @{ key = 'content-video-detail'; url = 'https://seller-uk.tiktok.com/compass/content-analysis/video/detail?shop_region=GB'; script = 'list' }
+)
+
+$overviewJs = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot 'scrape-content-overview-page.js') -Raw -Encoding UTF8)
+$listJs = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot 'scrape-video-list-page.js') -Raw -Encoding UTF8)
+$checkJs = ConvertTo-ScrapeOneLine (Get-Content (Join-Path $PSScriptRoot '_check-page-url.js') -Raw -Encoding UTF8)
+
+Write-Step ("===== video URL matrix START store={0} =====" -f $StoreId)
+Write-Step 'open store on video-analytics...'
+$ziniaoWinLib = Join-Path $PSScriptRoot 'ziniao-window.ps1'
+if (Test-Path $ziniaoWinLib) { . $ziniaoWinLib }
+if (Get-Command New-ZiniaoStoreOpenArgs -ErrorAction SilentlyContinue) {
+  $null = Invoke-Ziniao (New-ZiniaoStoreOpenArgs -StoreId $StoreId -Url $candidates[0].url -WindowRatio 'full')
+} else {
+  $null = Invoke-Ziniao @('store', 'open', '--id', $StoreId, '--url', $candidates[0].url, '--window-ratio', 'full')
+}
+Start-Sleep -Seconds 28
+if (Get-Command Invoke-ZiniaoStoreMaximize -ErrorAction SilentlyContinue) {
+  Invoke-ZiniaoStoreMaximize -StoreId $StoreId -InvokeZiniao ${function:Invoke-Ziniao} -WriteStep ${function:Write-Step} | Out-Null
+}
+
+$results = @()
+foreach ($c in $candidates) {
+  Write-Step ("-- {0} {1}" -f $c.key, $c.url)
+  $row = [ordered]@{
+    key = $c.key
+    targetUrl = $c.url
+    landedHref = $null
+    ok = $false
+    contentIdCount = 0
+    videoRowCount = 0
+    bodyLen = 0
+    sample = $null
+    error = $null
+    debugPath = $null
+  }
+  try {
+    $null = Invoke-Ziniao @('page', 'visit', '--store-id', $StoreId, '--url', $c.url, '--wait-until', 'load', '--timeout', '120000')
+    Start-Sleep -Seconds 22
+    $chk = Get-ScrapePayload (Invoke-Ziniao @('page', 'exec', '--store-id', $StoreId, '--script', $checkJs, '--timeout', '30000'))
+    if ($chk) {
+      $row.landedHref = [string]$chk.href
+      $row.bodyLen = $(if ($chk.bodyLen) { [int]$chk.bodyLen } else { 0 })
+      if ($chk.blank -or ([string]$chk.href -match 'about:blank')) {
+        throw 'about:blank'
+      }
+    }
+    $js = if ($c.script -eq 'overview') { $overviewJs } else { $listJs }
+    $payload = Get-ScrapePayload (Invoke-Ziniao @('page', 'exec', '--store-id', $StoreId, '--script', $js, '--timeout', '60000'))
+    if (-not $payload) { throw 'no payload' }
+    $row.ok = [bool]$payload.ok
+    if ($null -ne $payload.contentIdCount) { $row.contentIdCount = [int]$payload.contentIdCount }
+    elseif ($payload.videos) {
+      $row.contentIdCount = @($payload.videos | Where-Object { $_.contentId -or $_.content_id }).Count
+      $row.videoRowCount = @($payload.videos).Count
+    }
+    if ($payload.raw -and $payload.raw.videoRowCount) { $row.videoRowCount = [int]$payload.raw.videoRowCount }
+    if ($payload.raw -and $payload.raw.sample) { $row.sample = [string]$payload.raw.sample }
+    elseif ($payload.raw -and $payload.raw.bodyLen) { $row.bodyLen = [int]$payload.raw.bodyLen }
+    if ($payload.error) { $row.error = [string]$payload.error }
+    if ($payload.url) { $row.landedHref = [string]$payload.url }
+
+    $dbg = Join-Path $logsDir ("video-matrix-{0}-{1}-{2}.json" -f $c.key, $StoreId, $stamp)
+    Write-Utf8File -Path $dbg -Content (($payload | ConvertTo-Json -Depth 12))
+    $row.debugPath = $dbg
+    Write-Step ("   landed={0} ok={1} contentIdCount={2} videos={3}" -f $row.landedHref, $row.ok, $row.contentIdCount, $row.videoRowCount)
+  } catch {
+    $row.error = [string]$_
+    Write-Step ("   FAIL {0}" -f $row.error)
+  }
+  $results += [pscustomobject]$row
+  Start-Sleep -Seconds 4
+}
+
+try { $null = Invoke-Ziniao @('store', 'close', '--id', $StoreId) } catch { }
+
+Write-Step '======== MATRIX SUMMARY ========'
+$results | Format-Table key, ok, contentIdCount, videoRowCount, landedHref, error -AutoSize
+$sumPath = Join-Path $logsDir ("video-url-matrix-summary-{0}.json" -f $stamp)
+Write-Utf8File -Path $sumPath -Content (($results | ConvertTo-Json -Depth 8))
+Write-Step ("summary: {0}" -f $sumPath)
+Write-Step '===== video URL matrix END ====='
+$best = @($results | Where-Object { $_.contentIdCount -gt 0 } | Sort-Object contentIdCount -Descending)
+if ($best.Count -gt 0) {
+  Write-Step ("BEST content_id path: {0} n={1}" -f $best[0].key, $best[0].contentIdCount)
+} else {
+  Write-Step 'BEST: none — content_id gate still blocked'
+}

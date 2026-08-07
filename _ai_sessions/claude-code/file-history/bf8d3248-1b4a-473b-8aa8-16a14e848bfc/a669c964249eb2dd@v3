@@ -1,0 +1,251 @@
+# -*- coding: utf-8 -*-
+"""
+API 抓包侦察：挂网络监听，把 ERP / WMS 在浏览器里真实发出的 XHR/fetch 接口
+（URL、方法、请求体、响应体）dump 下来，用于评估「能否把『点页面』改成『直接调 API』」。
+
+本脚本【不改动业务逻辑、自身不发货】：你在弹出的浏览器里手动走一遍要抓的流程，
+脚本实时把命中目标系统的接口记录并落盘。若要抓「发货/物流下单」这类写接口，
+需要你真实点一次（建议用一单真实/测试单）——只读接口（列表、筛选）则无需真发。
+
+用法（在 automation 目录下运行）：
+    python capture/api_sniffer.py erp          # 抓 ERP（赛狐），复用已登录会话
+    python capture/api_sniffer.py wms JMSM     # 抓 WMS，用账号登录（JMSM=金猫 / JMCAT=黑猫）
+
+操作完在终端按回车（或 Ctrl+C）结束。产物在 capture/dumps/api/：
+    <tag>_<时间>.jsonl      每次调用的明细（method/url/请求体/响应体，逐条落盘防丢）
+    <tag>_endpoints.txt     去重后的端点清单（method + path，按调用次数排序）——先看这个
+"""
+import os, sys, json, time, traceback
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config, core, secrets, erp, rules
+from core import log
+from playwright.sync_api import sync_playwright
+
+# 只记录命中这些 host 的请求（其它第三方/静态资源忽略）
+TARGET_HOSTS = ("sellfox.com", "193.112.93.60")
+OUT_DIR = os.path.join(config.DUMP_DIR, "api")
+os.makedirs(OUT_DIR, exist_ok=True)
+BODY_LIMIT = 20000   # 请求/响应体截断长度，防超大响应刷爆文件
+
+
+class Sniffer:
+    """context 级网络监听器：只收 XHR/fetch 且命中 TARGET_HOSTS 的调用。"""
+
+    def __init__(self, tag):
+        self.tag = tag
+        self.seq = 0
+        self.records = []
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(time.time()))
+        self.path = os.path.join(OUT_DIR, f"{tag}_{stamp}.jsonl")
+
+    def _want(self, req):
+        try:
+            if req.resource_type not in ("xhr", "fetch"):
+                return False
+            return any(h in req.url for h in TARGET_HOSTS)
+        except Exception:
+            return False
+
+    def on_response(self, response):
+        req = response.request
+        if not self._want(req):
+            return
+        self.seq += 1
+        rec = {
+            "seq": self.seq,
+            "ts": time.strftime("%H:%M:%S", time.localtime(time.time())),
+            "method": req.method,
+            "url": req.url,
+            "status": None,
+            "req_body": None,
+            "resp_ct": None,
+            "resp_body": None,
+        }
+        try:
+            rec["req_body"] = (req.post_data or "")[:BODY_LIMIT]
+        except Exception:
+            pass
+        try:
+            rec["status"] = response.status
+            ct = (response.header_value("content-type") or "")
+            rec["resp_ct"] = ct
+            # 只取文本类响应体（json/text/js/xml 或未声明），二进制（图片等）不取
+            if ct == "" or any(k in ct for k in ("json", "text", "javascript", "xml")):
+                rec["resp_body"] = response.text()[:BODY_LIMIT]
+        except Exception as e:
+            rec["resp_body"] = f"<响应体读取失败: {e}>"
+        self.records.append(rec)
+        # 逐条追加落盘，防中途 Ctrl+C / 崩溃丢数据
+        try:
+            with open(self.path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+        log(f"[API]#{self.seq:>3} {req.method:<4} {req.url.split('?')[0]}  -> {rec['status']}")
+
+    def summary(self):
+        """输出去重端点清单（method + 去 query 的 path），按调用次数排序。"""
+        seen = {}
+        for r in self.records:
+            key = f"{r['method']} {r['url'].split('?')[0]}"
+            seen[key] = seen.get(key, 0) + 1
+        lines = [f"{c:>3}x  {k}" for k, c in sorted(seen.items(), key=lambda x: -x[1])]
+        sm_path = os.path.join(OUT_DIR, f"{self.tag}_endpoints.txt")
+        try:
+            with open(sm_path, "w", encoding="utf-8") as f:
+                f.write(f"# {self.tag} 端点清单  共{len(self.records)}次调用 {len(seen)}个端点\n")
+                f.write("\n".join(lines))
+        except Exception:
+            pass
+        log("=" * 60)
+        log(f"[API] 共抓到 {len(self.records)} 次调用，{len(seen)} 个去重端点")
+        if lines:
+            log("[API] 端点清单：\n" + "\n".join(lines))
+        log(f"[API] 明细 : {self.path}")
+        log(f"[API] 端点 : {sm_path}")
+
+
+def _wait_user():
+    log(">>> 请在浏览器里手动操作要抓的流程；完成后回到本终端按【回车】结束（Ctrl+C 亦可）。")
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+def sniff_erp():
+    """抓 ERP：复用持久 profile 里的登录态，导航到订单发货页后由你手动操作。"""
+    config.HEADLESS = False   # 抓包需可见浏览器供手动操作
+    sn = Sniffer("erp")
+    with sync_playwright() as p:
+        ctx = core.open_context(p)
+        ctx.on("response", sn.on_response)
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        try:
+            if not core.ensure_erp(page):
+                log("[ERP] 会话失效，请先： python capture/erp_manual_login.py")
+                return
+            core.safe_goto(page, config.ERP_URL)
+            log("-" * 60)
+            log("[ERP] 建议手动走这几条以覆盖关键接口：")
+            log("  · 待处理 -> 选筛选模板 -> 筛渠道 -> 全选 -> （物流下单，想抓写接口就真点一单）")
+            log("  · 三方仓 -> 待更新 -> 全选 -> 手动更新（拉跟踪号，只读，可放心点）")
+            _wait_user()
+        finally:
+            sn.summary()
+            try: ctx.close()
+            except Exception: pass
+
+
+def sniff_wms(login):
+    """抓 WMS：用指定账号登录后，导航到平台订单页由你手动操作。"""
+    config.HEADLESS = False
+    acct = next((a for a in secrets.WMS_ACCOUNTS if a["login"] == login), None)
+    if not acct:
+        log(f"[WMS] 未找到账号 {login}；可选：{[a['login'] for a in secrets.WMS_ACCOUNTS]}")
+        return
+    sn = Sniffer("wms")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True)
+        ctx.on("response", sn.on_response)
+        page = ctx.new_page()
+        try:
+            if not core.wms_login(page, acct):
+                log("[WMS] 登录失败，终止"); return
+            core.safe_goto(page, core.ORDERINFO_WMS)
+            log("-" * 60)
+            log(f"[WMS] 已登录 {acct['shop']}（{acct['login']}）。建议手动走：")
+            log("  · 未发货 -> 查询 -> 全选 -> 批量修改快递方 -> 是否偏远=否 -> 查询")
+            log("  · （批量发货：想抓写接口就真发一单；只想抓查询/改快递方接口可不点发货）")
+            _wait_user()
+        finally:
+            sn.summary()
+            try: browser.close()
+            except Exception: pass
+
+
+def sniff_erp_auto():
+    """自动抓 ERP：无需手动操作、无需按回车。复用登录态，自动触发只读接口
+    （切视图/筛选模板/渠道筛选/查列表/统计），DRY_RUN 强制开，绝不点『物流下单』。跑完自动落盘退出。"""
+    config.DRY_RUN = True          # 双保险：绝不触发任何写操作
+    sn = Sniffer("erp")
+    print(">>> [auto] 启动 Playwright ...", flush=True)
+    try:
+        with sync_playwright() as p:
+            print(">>> [auto] 启动持久化浏览器（读取已保存的登录态）...", flush=True)
+            ctx = core.open_context(p)
+            ctx.on("response", sn.on_response)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                print(">>> [auto] 校验 ERP 会话 ...", flush=True)
+                if not core.ensure_erp(page):
+                    print("!!! [auto] ERP 会话失效，请先： python capture/erp_manual_login.py", flush=True)
+                    return
+                print(">>> [auto] 打开订单发货页 + 阶段统计（只读）...", flush=True)
+                erp.open_order_ship(page)
+                erp.report_counts(page)
+                ch = rules.CHANNEL_ORDER[0] if rules.CHANNEL_ORDER else None
+                print(f">>> [auto] 待处理->选模板->筛渠道({ch})->全选（DRY，不下单，只抓筛选/列表接口）...", flush=True)
+                erp.place_logistics_orders(page, channel_keyword=ch)
+                print(">>> [auto] 完成，正在汇总接口 ...", flush=True)
+            finally:
+                sn.summary()
+                try: ctx.close()
+                except Exception: pass
+    except Exception:
+        print("!!! [auto] 运行异常：\n" + traceback.format_exc(), flush=True)
+        sn.summary()
+
+
+def sniff_wms_auto(login):
+    """自动抓 WMS：无需手动操作。用账号登录后自动打开未发货列表并查询（只读），抓查询/列表接口。
+    不改快递方、不发货（那些是写操作，需手动模式真点一次才抓得到）。"""
+    config.DRY_RUN = True
+    acct = next((a for a in secrets.WMS_ACCOUNTS if a["login"] == login), None)
+    if not acct:
+        print(f"!!! [auto] 未找到账号 {login}；可选：{[a['login'] for a in secrets.WMS_ACCOUNTS]}", flush=True)
+        return
+    sn = Sniffer("wms")
+    print(">>> [auto] 启动 Playwright ...", flush=True)
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=config.HEADLESS, args=["--no-sandbox"])
+            ctx = browser.new_context(ignore_https_errors=True)
+            ctx.on("response", sn.on_response)
+            page = ctx.new_page()
+            try:
+                print(f">>> [auto] 登录 WMS {acct['shop']}（{acct['login']}）...", flush=True)
+                if not core.wms_login(page, acct):
+                    print("!!! [auto] WMS 登录失败", flush=True); return
+                print(">>> [auto] 打开平台订单未发货列表 + 查询（只读）...", flush=True)
+                from wms import open_platform_orders, ensure_unshipped_filter, count_rows
+                open_platform_orders(page)
+                ensure_unshipped_filter(page)
+                print(f">>> [auto] 未发货 ≈ {count_rows(page)} 条", flush=True)
+            finally:
+                sn.summary()
+                try: browser.close()
+                except Exception: pass
+    except Exception:
+        print("!!! [auto] 运行异常：\n" + traceback.format_exc(), flush=True)
+        sn.summary()
+
+
+def main():
+    mode = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+    if mode == "erp":
+        sniff_erp()
+    elif mode == "erp-auto":
+        sniff_erp_auto()
+    elif mode == "wms":
+        sniff_wms(sys.argv[2] if len(sys.argv) > 2 else "JMSM")
+    elif mode == "wms-auto":
+        sniff_wms_auto(sys.argv[2] if len(sys.argv) > 2 else "JMSM")
+    else:
+        print(__doc__)
+        print("参数错误。示例： python capture/api_sniffer.py erp-auto")
+
+
+if __name__ == "__main__":
+    main()

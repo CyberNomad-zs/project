@@ -1,0 +1,569 @@
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Iterator
+
+import httpx
+
+from app.config import Settings, get_settings
+
+logger = logging.getLogger(__name__)
+
+
+class FeishuError(Exception):
+    def __init__(self, code: int | str, message: str, payload: Any = None) -> None:
+        super().__init__(f"[{code}] {message}")
+        self.code = code
+        self.message = message
+        self.payload = payload
+
+
+class FeishuClient:
+    """飞书开放平台：tenant token + 多维表格 + 自定义机器人 webhook。"""
+
+    BASE = "https://open.feishu.cn/open-apis"
+
+    def __init__(self, settings: Settings | None = None, timeout: float = 60.0) -> None:
+        self.settings = settings or get_settings()
+        if not self.settings.has_feishu:
+            raise FeishuError("config", "缺少 FEISHU_APP_ID / FEISHU_APP_SECRET")
+        self._http = httpx.Client(timeout=timeout)
+        self._token: str | None = None
+        self._token_expire_at: float = 0.0
+
+    def close(self) -> None:
+        self._http.close()
+
+    def __enter__(self) -> FeishuClient:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def get_tenant_access_token(self, *, force: bool = False) -> str:
+        if not force and self._token and self._token_expire_at - 60 > time.time():
+            return self._token
+        url = f"{self.BASE}/auth/v3/tenant_access_token/internal"
+        resp = self._http.post(
+            url,
+            json={
+                "app_id": self.settings.feishu_app_id,
+                "app_secret": self.settings.feishu_app_secret,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("code") != 0:
+            raise FeishuError(data.get("code"), data.get("msg") or "token failed", data)
+        self._token = data["tenant_access_token"]
+        self._token_expire_at = time.time() + int(data.get("expire") or 7200)
+        return self._token
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "Authorization": f"Bearer {self.get_tenant_access_token()}",
+            "Content-Type": "application/json; charset=utf-8",
+        }
+
+    def _api(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self.BASE}{path}"
+        resp = self._http.request(
+            method,
+            url,
+            headers=self._headers(),
+            params=params,
+            json=json_body,
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            resp.raise_for_status()
+            raise FeishuError(resp.status_code, resp.text[:500])
+        # 飞书业务错误常伴随 HTTP 400，优先解析 body
+        if data.get("code") not in (0, None) or not resp.is_success:
+            if data.get("code") in (0, None) and not resp.is_success:
+                raise FeishuError(resp.status_code, resp.text[:500], data)
+            if data.get("code") not in (0, None):
+                raise FeishuError(
+                    data.get("code"),
+                    data.get("msg") or "api error",
+                    data,
+                )
+        return data
+
+    # --- bitable meta ---
+    def create_bitable_app(self, name: str, *, folder_token: str | None = None) -> dict[str, Any]:
+        """创建多维表格应用，返回 app 信息（含 app_token）。"""
+        body: dict[str, Any] = {"name": name}
+        if folder_token:
+            body["folder_token"] = folder_token
+        data = self._api("POST", "/bitable/v1/apps", json_body=body)
+        return data.get("data") or {}
+
+    def list_tables(self, app_token: str) -> list[dict[str, Any]]:
+        data = self._api("GET", f"/bitable/v1/apps/{app_token}/tables")
+        items = (data.get("data") or {}).get("items") or []
+        return items
+
+    def create_table(
+        self,
+        app_token: str,
+        name: str,
+        fields: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """fields 例: [{"field_name":"日期","type":5}, ...]  type 见飞书文档。"""
+        body = {"table": {"name": name, "default_view_name": "默认视图", "fields": fields}}
+        data = self._api(
+            "POST",
+            f"/bitable/v1/apps/{app_token}/tables",
+            json_body=body,
+        )
+        return data.get("data") or {}
+
+    def list_fields(self, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        data = self._api(
+            "GET",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+        )
+        return (data.get("data") or {}).get("items") or []
+
+    def create_field(
+        self,
+        app_token: str,
+        table_id: str,
+        field_name: str,
+        field_type: int,
+        *,
+        property_: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"field_name": field_name, "type": field_type}
+        if property_:
+            body["property"] = property_
+        data = self._api(
+            "POST",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/fields",
+            json_body=body,
+        )
+        return data.get("data") or {}
+
+    # --- views ---
+    def list_views(self, app_token: str, table_id: str) -> list[dict[str, Any]]:
+        data = self._api("GET", f"/bitable/v1/apps/{app_token}/tables/{table_id}/views")
+        return (data.get("data") or {}).get("items") or []
+
+    def create_view(
+        self,
+        app_token: str,
+        table_id: str,
+        view_name: str,
+        *,
+        view_type: str = "grid",
+    ) -> dict[str, Any]:
+        data = self._api(
+            "POST",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/views",
+            json_body={"view_name": view_name, "view_type": view_type},
+        )
+        return (data.get("data") or {}).get("view") or data.get("data") or {}
+
+    def patch_view(
+        self,
+        app_token: str,
+        table_id: str,
+        view_id: str,
+        body: dict[str, Any],
+    ) -> dict[str, Any]:
+        data = self._api(
+            "PATCH",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/views/{view_id}",
+            json_body=body,
+        )
+        return data.get("data") or {}
+
+    def delete_view(self, app_token: str, table_id: str, view_id: str) -> None:
+        """删除视图。"""
+        self._api(
+            "DELETE",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/views/{view_id}",
+        )
+
+    def patch_view_filter(
+        self,
+        app_token: str,
+        table_id: str,
+        view_id: str,
+        *,
+        field_id: str,
+        operator: str,
+        value: str,
+        conjunction: str = "and",
+    ) -> dict[str, Any]:
+        """设置单条件筛选。value 格式因字段类型而异，常见为 JSON 数组字符串如 '["特米-UK"]'。"""
+        body = {
+            "property": {
+                "filter_info": {
+                    "conjunction": conjunction,
+                    "conditions": [
+                        {
+                            "field_id": field_id,
+                            "operator": operator,
+                            "value": value,
+                        }
+                    ],
+                }
+            }
+        }
+        return self.patch_view(app_token, table_id, view_id, body)
+
+    def patch_view_filter_or(
+        self,
+        app_token: str,
+        table_id: str,
+        view_id: str,
+        *,
+        field_id: str,
+        values: list[str],
+        operator: str = "is",
+    ) -> dict[str, Any]:
+        """多值 OR 筛选：店铺 is A OR is B OR is C。"""
+        import json
+
+        conditions = []
+        for v in values:
+            if not v:
+                continue
+            conditions.append(
+                {
+                    "field_id": field_id,
+                    "operator": operator,
+                    "value": json.dumps([v], ensure_ascii=False),
+                }
+            )
+        if not conditions:
+            raise FeishuError("filter", "patch_view_filter_or 需要至少一个 value")
+        body = {
+            "property": {
+                "filter_info": {
+                    "conjunction": "or" if len(conditions) > 1 else "and",
+                    "conditions": conditions,
+                }
+            }
+        }
+        return self.patch_view(app_token, table_id, view_id, body)
+
+    def field_id_map(self, app_token: str, table_id: str) -> dict[str, str]:
+        return {
+            f.get("field_name"): f.get("field_id")
+            for f in self.list_fields(app_token, table_id)
+            if f.get("field_name") and f.get("field_id")
+        }
+
+    # --- records ---
+    def bitable_list_records(
+        self,
+        app_token: str,
+        table_id: str,
+        *,
+        page_size: int = 100,
+        page_token: str | None = None,
+        filter_expr: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"page_size": page_size}
+        if page_token:
+            params["page_token"] = page_token
+        if filter_expr:
+            params["filter"] = filter_expr
+        data = self._api(
+            "GET",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/records",
+            params=params,
+        )
+        return data.get("data") or {}
+
+    def iter_records(
+        self,
+        app_token: str,
+        table_id: str,
+        *,
+        page_size: int = 100,
+        filter_expr: str | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        page_token = None
+        while True:
+            data = self.bitable_list_records(
+                app_token,
+                table_id,
+                page_size=page_size,
+                page_token=page_token,
+                filter_expr=filter_expr,
+            )
+            for item in data.get("items") or []:
+                yield item
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token")
+            if not page_token:
+                break
+
+    def bitable_batch_create(
+        self,
+        app_token: str,
+        table_id: str,
+        records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        data = self._api(
+            "POST",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create",
+            json_body={"records": records},
+        )
+        return data.get("data") or {}
+
+    def bitable_batch_update(
+        self,
+        app_token: str,
+        table_id: str,
+        records: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        data = self._api(
+            "POST",
+            f"/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update",
+            json_body={"records": records},
+        )
+        return data.get("data") or {}
+
+    def upsert_by_text_key(
+        self,
+        app_token: str,
+        table_id: str,
+        records_fields: list[dict[str, Any]],
+        *,
+        key_field: str = "主键",
+        batch_size: int = 100,
+    ) -> dict[str, int]:
+        """按文本主键幂等写入：已存在则 update，否则 create。
+
+        records_fields: 每项为 fields 字典（必须含 key_field）。
+        """
+        existing: dict[str, str] = {}
+        for item in self.iter_records(app_token, table_id, page_size=100):
+            fields = item.get("fields") or {}
+            key = fields.get(key_field)
+            rid = item.get("record_id")
+            if key is not None and rid:
+                existing[str(key)] = rid
+
+        to_create: list[dict[str, Any]] = []
+        to_update: list[dict[str, Any]] = []
+        for fields in records_fields:
+            key = fields.get(key_field)
+            if key is None:
+                continue
+            key_s = str(key)
+            if key_s in existing:
+                to_update.append({"record_id": existing[key_s], "fields": fields})
+            else:
+                to_create.append({"fields": fields})
+
+        created = updated = 0
+        for i in range(0, len(to_create), batch_size):
+            chunk = to_create[i : i + batch_size]
+            self.bitable_batch_create(app_token, table_id, chunk)
+            created += len(chunk)
+            time.sleep(0.2)
+        for i in range(0, len(to_update), batch_size):
+            chunk = to_update[i : i + batch_size]
+            self.bitable_batch_update(app_token, table_id, chunk)
+            updated += len(chunk)
+            time.sleep(0.2)
+
+        logger.info(
+            "Feishu upsert table=%s create=%s update=%s", table_id, created, updated
+        )
+        return {"created": created, "updated": updated, "total": created + updated}
+
+    def _post_webhook(self, body: dict[str, Any], webhook: str | None = None) -> dict[str, Any]:
+        """发送 webhook 消息的底层方法，返回响应 data。"""
+        url = webhook or self.settings.feishu_bot_webhook
+        if not url:
+            logger.warning("FEISHU_BOT_WEBHOOK 未配置，跳过消息")
+            return {}
+        resp = self._http.post(url, json=body)
+        resp.raise_for_status()
+        data = resp.json() if resp.content else {}
+        if data.get("code") not in (None, 0) and data.get("StatusCode") not in (
+            None,
+            0,
+        ):
+            raise FeishuError(
+                data.get("code") or data.get("StatusCode"), str(data), data
+            )
+        return data
+
+    def send_webhook_text(self, text: str, webhook: str | None = None) -> None:
+        self._post_webhook({"msg_type": "text", "content": {"text": text}}, webhook=webhook)
+
+    def send_webhook_text_with_at(
+        self,
+        text: str,
+        *,
+        at_open_ids: list[str] | None = None,
+        webhook: str | None = None,
+    ) -> None:
+        """群自定义机器人文本；text 内可含 <at user_id=\"ou_xxx\"></at> 实现 @。"""
+        body_text = text
+        if at_open_ids:
+            tags = "".join(f'<at user_id="{oid}"></at>' for oid in at_open_ids if oid)
+            if tags and tags not in body_text:
+                body_text = f"{tags}\n{body_text}"
+        self.send_webhook_text(body_text, webhook=webhook)
+
+    def send_webhook_card(self, card: dict[str, Any], webhook: str | None = None) -> dict[str, Any]:
+        """发送飞书交互式卡片消息（msg_type: interactive）。"""
+        body: dict[str, Any] = {"msg_type": "interactive", "card": card}
+        return self._post_webhook(body, webhook=webhook)
+
+    def create_records_if_absent(
+        self,
+        app_token: str,
+        table_id: str,
+        records_fields: list[dict[str, Any]],
+        *,
+        key_field: str = "主键",
+        batch_size: int = 100,
+    ) -> dict[str, int]:
+        """仅创建尚不存在主键的记录；已存在则跳过（永不 update，保护人工填写）。"""
+        existing: set[str] = set()
+        for item in self.iter_records(app_token, table_id, page_size=100):
+            fields = item.get("fields") or {}
+            key = fields.get(key_field)
+            if key is not None:
+                existing.add(str(key))
+
+        to_create: list[dict[str, Any]] = []
+        for fields in records_fields:
+            key = fields.get(key_field)
+            if key is None:
+                continue
+            if str(key) in existing:
+                continue
+            to_create.append({"fields": fields})
+
+        created = 0
+        for i in range(0, len(to_create), batch_size):
+            chunk = to_create[i : i + batch_size]
+            self.bitable_batch_create(app_token, table_id, chunk)
+            created += len(chunk)
+            time.sleep(0.2)
+
+        skipped = len(records_fields) - created
+        logger.info(
+            "Feishu create-if-absent table=%s create=%s skip=%s",
+            table_id,
+            created,
+            skipped,
+        )
+        return {
+            "created": created,
+            "skipped": skipped,
+            "total": len(records_fields),
+        }
+
+    def ensure_text_fields(
+        self,
+        app_token: str,
+        table_id: str,
+        field_names: list[str],
+        *,
+        field_type: int = 1,
+    ) -> list[str]:
+        """确保文本字段存在，返回新建的字段名列表。"""
+        existing = {
+            f.get("field_name")
+            for f in self.list_fields(app_token, table_id)
+            if f.get("field_name")
+        }
+        created: list[str] = []
+        for name in field_names:
+            if name in existing:
+                continue
+            self.create_field(app_token, table_id, name, field_type)
+            created.append(name)
+            existing.add(name)
+            time.sleep(0.15)
+        return created
+
+
+# ---------------------------------------------------------------------------
+# 交互式卡片构建辅助（纯函数，不依赖 FeishuClient）
+# ---------------------------------------------------------------------------
+
+# 飞书卡片 header 颜色：red | blue | green | orange | yellow | purple | grey
+_CARD_COLORS: dict[str, str] = {
+    "red": "red",
+    "orange": "orange",
+    "yellow": "yellow",
+    "green": "green",
+    "blue": "blue",
+    "purple": "purple",
+    "grey": "grey",
+}
+
+
+def card_header(title: str, color: str = "blue") -> dict[str, Any]:
+    """构建卡片头部。color: red/orange/yellow/green/blue/purple/grey。"""
+    return {
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": _CARD_COLORS.get(color, "blue"),
+        }
+    }
+
+
+def card_md(content: str) -> dict[str, Any]:
+    """构建 lark_md 文本块元素。"""
+    return {"tag": "div", "text": {"tag": "lark_md", "content": content}}
+
+
+def card_hr() -> dict[str, Any]:
+    """构建分割线元素。"""
+    return {"tag": "hr"}
+
+
+def card_button(text: str, url: str, *, primary: bool = False) -> dict[str, Any]:
+    """构建跳转按钮。primary=True 时为主要按钮样式。"""
+    btn: dict[str, Any] = {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": text},
+        "url": url,
+    }
+    if primary:
+        btn["type"] = "primary"
+    return btn
+
+
+def card_action(*buttons: dict[str, Any]) -> dict[str, Any]:
+    """构建按钮行元素。"""
+    return {"tag": "action", "actions": list(buttons)}
+
+
+def card_note(content: str) -> dict[str, Any]:
+    """构建 note 元素（提示文字）。"""
+    return {"tag": "note", "elements": [{"tag": "plain_text", "content": content}]}
+
+
+def build_level_color(level: str) -> str:
+    """red→red, orange→orange, yellow→yellow，其余用 blue。"""
+    return level if level in _CARD_COLORS else "blue"
+
+
+def build_level_icon(level: str) -> str:
+    """异常等级 → emoji 前缀。"""
+    return {"red": "🔴", "orange": "🟠", "yellow": "🟡"}.get(level, "🔵")

@@ -1,0 +1,91 @@
+# -*- coding: utf-8 -*-
+"""只读：清掉『订单状态』筛选，查 5 单在【全部状态】下的行，看快递方/是否偏远/跟踪单号，
+坐实它们到底发出去没有。绝不发货。"""
+import sys, os, time, re
+sys.path.insert(0, r"E:\project\海外仓\automation")
+import config, secrets
+from playwright.sync_api import sync_playwright
+
+LOGIN_URL = "http://193.112.93.60:9999/login.html"
+ORDERINFO = "http://193.112.93.60:9999/orderInfo/page/orderInfo.html"
+ACC = next(a for a in secrets.WMS_ACCOUNTS if a["login"] == "JMSM")
+ORDERS = ['P2AL6TCD62970','P2AK6TCD62906','P2AK6TCD62888','P2AK6TCD62896','P2AK6TCD62890']
+OUTDIR = os.path.dirname(os.path.abspath(__file__))
+lines = []
+def w(s=""): print(s); lines.append(str(s))
+
+
+def read_rows(page):
+    return page.evaluate(r"""() => {
+        const hw = document.querySelector('.el-table__header-wrapper');
+        const heads = hw ? [...hw.querySelectorAll('thead th')].map(t=>t.innerText.trim()).filter(Boolean) : [];
+        const bw = document.querySelector('.el-table__body-wrapper');
+        const seen=new Set(); const rows=[];
+        if(bw){ [...bw.querySelectorAll('tr.el-table__row')].forEach(tr=>{
+            const o={}; [...tr.querySelectorAll('td')].forEach((td,i)=>{o[heads[i]||('c'+i)]=td.innerText.replace(/\s+/g,' ').trim();});
+            const key=JSON.stringify(o); if(seen.has(key))return; seen.add(key); rows.push(o);
+        }); }
+        return {heads, rows};
+    }""")
+
+
+def clear_status(page):
+    """清『订单状态』筛选：定位 el-select，hover 出叉点掉；不行就打开下拉选『全部』。"""
+    box = page.query_selector("xpath=//input[@placeholder='订单状态']/ancestor::div[contains(@class,'el-select')][1]")
+    if not box:
+        w("  未定位到 订单状态 select"); return
+    try:
+        box.hover(); time.sleep(0.5)
+        x = box.query_selector("i.el-icon-circle-close")
+        if x and x.is_visible():
+            x.click(); time.sleep(0.6); w("  已点叉清空 订单状态"); return
+    except Exception as e:
+        w(f"  hover/叉异常: {e}")
+    # 退而选『全部』
+    try:
+        box.click(); time.sleep(0.6)
+        items = [el for el in page.query_selector_all(".el-select-dropdown__item") if el.is_visible()]
+        w(f"  订单状态下拉选项={[ (el.inner_text() or '').strip() for el in items]}")
+        for el in items:
+            t = (el.inner_text() or "").strip()
+            if t in ("全部", "全部状态", ""):
+                el.click(); w(f"  下拉选 {t!r}"); return
+    except Exception as e:
+        w(f"  选全部异常: {e}")
+
+
+def main():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+        ctx = browser.new_context(ignore_https_errors=True); page = ctx.new_page()
+        for _ in range(5):
+            try: page.goto(LOGIN_URL, wait_until="domcontentloaded", timeout=30000); break
+            except Exception: time.sleep(2)
+        time.sleep(1.5)
+        page.fill("#loginName", ACC["login"]); page.fill("#loginPwd", ACC["password"]); page.click("#loginSubmit")
+        time.sleep(5)
+        page.goto(ORDERINFO, wait_until="domcontentloaded", timeout=40000); time.sleep(5)
+
+        w("[清筛选]")
+        clear_status(page)
+        time.sleep(1)
+
+        for od in ORDERS:
+            w(f"\n==== {od} ====")
+            inp = page.query_selector("input[placeholder='平台订单号']")
+            inp.fill(""); inp.fill(od); time.sleep(0.3)
+            page.click("button:has-text('查询')"); time.sleep(2.5)
+            rows = read_rows(page)["rows"]
+            if not rows:
+                w("  (全状态下仍查无此单)"); continue
+            for r in rows:
+                w(f"  快递方={r.get('快递方','')} | 是否偏远={r.get('是否偏远地区','')} | "
+                  f"跟踪单号={r.get('跟踪单号','')} | 运费={r.get('运费','')}")
+        page.screenshot(path=os.path.join(OUTDIR, "wms_check5b.png"))
+        with open(os.path.join(OUTDIR, "wms_check5b.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        browser.close()
+
+
+if __name__ == "__main__":
+    main()

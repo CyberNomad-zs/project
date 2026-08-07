@@ -1,0 +1,16 @@
+# -*- coding: utf-8 -*-
+"""快速自检：能否启动有头浏览器并截图。"""
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+with sync_playwright() as p:
+    browser = p.chromium.launch(headless=False, args=["--no-sandbox"])
+    page = browser.new_page()
+    page.goto("about:blank")
+    page.set_content("<h1 style='font-size:60px'>Playwright OK</h1>")
+    out = os.path.join(config.DUMP_DIR, "smoke.png")
+    page.screenshot(path=out)
+    print("SMOKE_OK ->", out)
+    browser.close()

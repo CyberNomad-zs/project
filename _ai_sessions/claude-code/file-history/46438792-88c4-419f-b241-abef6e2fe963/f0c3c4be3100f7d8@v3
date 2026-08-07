@@ -1,0 +1,556 @@
+from __future__ import annotations
+
+import logging
+import time
+from typing import Any, Callable
+
+from app.config import Settings, get_settings
+from app.store.db import Database
+from app.sync.feishu_schema import (
+    action_shell_from_task,
+    row_to_asin_fields,
+    task_to_fields,
+)
+from app.sync.shops import (
+    ShopTableRegistry,
+    dual_write_enabled,
+)
+
+logger = logging.getLogger(__name__)
+
+# Columns that belong to system sync (never "human" fields in local schema)
+SYSTEM_COLUMNS = {
+    "biz_date",
+    "marketplace",
+    "shop_name",
+    "shop_id",
+    "asin",
+    "parent_asin",
+    "sku",
+    "msku",
+    "title",
+    "title_cn",
+    "brand",
+    "open_date",
+    "product_grade",
+    "owner",
+    "sale_price",
+    "sale_num",
+    "order_num",
+    "avg_sale_price",
+    "sale_price_change_pct",
+    "order_num_change_pct",
+    "sessions",
+    "sessions_change_pct",
+    "page_view",
+    "conversion_rate",
+    "conversion_rate_change_pp",
+    "buy_box_percent",
+    "ad_impression",
+    "ad_clicks",
+    "ad_ctr",
+    "ad_cost",
+    "ad_cost_change_pct",
+    "cpc",
+    "acos",
+    "ad_sales",
+    "available",
+    "in_transit",
+    "available_days",
+    "inv_age_365_plus",
+    "rating",
+    "rating_change",
+    "rating_count",
+    "low_review_num",
+    "review_num",
+    "raw_json",
+}
+
+
+def write_rows(
+    rows: list[dict[str, Any]],
+    *,
+    db: Database,
+    sync_run_id: int,
+    sink: str = "sqlite",
+    settings: Settings | None = None,
+) -> int:
+    """Write mapped ASIN daily rows to configured sinks.
+
+    sink: sqlite | feishu | both
+    """
+    settings = settings or get_settings()
+    db_rows = []
+    for r in rows:
+        db_rows.append(
+            {k: v for k, v in r.items() if k in SYSTEM_COLUMNS or k == "raw_json"}
+        )
+
+    n = 0
+    if sink in ("sqlite", "both"):
+        n = db.upsert_asin_rows(db_rows, sync_run_id)
+        logger.info("SQLite upserted %s asin_daily rows", n)
+
+    if sink in ("feishu", "both"):
+        if not settings.has_feishu:
+            logger.warning("sink 需要飞书但凭证未配置，已跳过飞书写入")
+        elif not settings.feishu_bitable_app_token or not settings.feishu_table_asin_daily:
+            logger.warning(
+                "FEISHU_BITABLE_APP_TOKEN / FEISHU_TABLE_ASIN_DAILY 未配置，跳过"
+            )
+        else:
+            n_feishu = write_asin_to_feishu(
+                db_rows, settings=settings, sync_run_id=sync_run_id
+            )
+            logger.info("Feishu asin_daily upserted %s rows", n_feishu)
+            n = max(n, n_feishu)
+
+    return n
+
+
+_LEGACY_TEXT_DATE_FIELDS = (
+    "日期",
+    "截止时间",
+    "执行日期",
+    "复查日期",
+    "最近复盘日期",
+)
+
+
+def _ms_to_date_str(ms: float | int) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def _fields_for_legacy_mother(fields: dict[str, Any]) -> dict[str, Any]:
+    """母表日期列常为文本 type=1，毫秒时间戳会触发 TextFieldConvFail。"""
+    out = dict(fields)
+    for key in _LEGACY_TEXT_DATE_FIELDS:
+        d = out.get(key)
+        if isinstance(d, (int, float)) and d > 10_000_000_000:
+            out[key] = _ms_to_date_str(d)
+    return out
+
+
+def _upsert_payload(
+    settings: Settings,
+    table_id: str,
+    payload: list[dict[str, Any]],
+    *,
+    key_field: str = "主键",
+) -> int:
+    if not payload or not table_id:
+        return 0
+    from app.clients.feishu import FeishuClient
+
+    app_token = settings.feishu_bitable_app_token
+    with FeishuClient(settings) as client:
+        stats = client.upsert_by_text_key(
+            app_token, table_id, payload, key_field=key_field
+        )
+    return int(stats.get("total") or 0)
+
+
+def _create_if_absent_payload(
+    settings: Settings,
+    table_id: str,
+    payload: list[dict[str, Any]],
+    *,
+    key_field: str = "主键",
+) -> dict[str, int]:
+    if not payload or not table_id:
+        return {"created": 0, "skipped": 0, "total": 0}
+    from app.clients.feishu import FeishuClient
+
+    app_token = settings.feishu_bitable_app_token
+    with FeishuClient(settings) as client:
+        return client.create_records_if_absent(
+            app_token, table_id, payload, key_field=key_field
+        )
+
+
+def dual_write_fields(
+    settings: Settings,
+    *,
+    mother_table_id: str,
+    kind: str,
+    rows: list[dict[str, Any]],
+    to_fields: Callable[[dict[str, Any]], dict[str, Any] | None],
+    shop_key: str = "shop_name",
+    mode: str = "upsert",
+    key_field: str = "主键",
+) -> dict[str, int]:
+    """母表全量写入 + 按规范店名写入子表。
+
+    to_fields: 原始 row → 飞书 fields（可返回 None 跳过）
+    mode: upsert | create_if_absent
+    返回 {"mother": n, "children": n, "unknown_shop": n}
+    """
+    result = {"mother": 0, "children": 0, "unknown_shop": 0}
+    if not settings.has_feishu or not settings.feishu_bitable_app_token:
+        return result
+    if not mother_table_id:
+        return result
+
+    # 构建 (row, fields) 对
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for r in rows:
+        fields = to_fields(r)
+        if not fields:
+            continue
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if not fields.get(key_field):
+            continue
+        pairs.append((r, fields))
+    if not pairs:
+        return result
+
+    # 母表历史字段「日期」多为文本；子表为 DATE(ms)。母表写入时转回 YYYY-MM-DD 字符串
+    mother_payload = [_fields_for_legacy_mother(f) for _, f in pairs]
+    if mode == "create_if_absent":
+        st = _create_if_absent_payload(
+            settings, mother_table_id, mother_payload, key_field=key_field
+        )
+        result["mother"] = int(st.get("total") or 0)
+    else:
+        result["mother"] = _upsert_payload(
+            settings, mother_table_id, mother_payload, key_field=key_field
+        )
+
+    if not dual_write_enabled():
+        return result
+
+    registry = ShopTableRegistry.load(settings.shop_tables_path)
+    if not registry.data:
+        logger.debug("无 shop table registry，跳过子表双写")
+        return result
+
+    # 按规范店分组
+    from app.sync.shops import canonicalize_shop, load_alias_map
+
+    aliases = load_alias_map()
+    shop_groups: dict[str, list[dict[str, Any]]] = {}
+    for r, fields in pairs:
+        raw = r.get(shop_key) or r.get("店铺") or ""
+        can = canonicalize_shop(str(raw) if raw else "", aliases)
+        shop_groups.setdefault(can, []).append(fields)
+
+    for can, payload in shop_groups.items():
+        if not can:
+            result["unknown_shop"] += len(payload)
+            logger.warning("无法规范店名的记录 %d 条，仅已写母表", len(payload))
+            continue
+        child_id = registry.get(can, kind)
+        if not child_id:
+            result["unknown_shop"] += len(payload)
+            logger.warning("店铺 [%s] 无 %s 子表，仅已写母表", can, kind)
+            continue
+        if mode == "create_if_absent":
+            st = _create_if_absent_payload(
+                settings, child_id, payload, key_field=key_field
+            )
+            result["children"] += int(st.get("total") or 0)
+        else:
+            result["children"] += _upsert_payload(
+                settings, child_id, payload, key_field=key_field
+            )
+        time.sleep(0.15)
+
+    logger.info(
+        "dual_write kind=%s mother=%s children=%s unknown=%s",
+        kind,
+        result["mother"],
+        result["children"],
+        result["unknown_shop"],
+    )
+    return result
+
+
+def write_asin_to_feishu(
+    rows: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    sync_run_id: int | None = None,
+) -> int:
+    settings = settings or get_settings()
+    table_id = settings.feishu_table_asin_daily
+    if not settings.feishu_bitable_app_token or not table_id:
+        return 0
+
+    def to_fields(r: dict[str, Any]) -> dict[str, Any] | None:
+        if not r.get("asin"):
+            return None
+        return row_to_asin_fields(r, sync_run_id=sync_run_id)
+
+    stats = dual_write_fields(
+        settings,
+        mother_table_id=table_id,
+        kind="asin_daily",
+        rows=rows,
+        to_fields=to_fields,
+        shop_key="shop_name",
+        mode="upsert",
+    )
+    return int(stats.get("mother") or 0)
+
+
+def write_tasks_to_feishu(
+    tasks: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+) -> int:
+    settings = settings or get_settings()
+    table_id = settings.feishu_table_tasks
+    if not settings.has_feishu or not settings.feishu_bitable_app_token or not table_id:
+        logger.warning("飞书任务表未配置，跳过任务同步")
+        return 0
+
+    def to_fields(t: dict[str, Any]) -> dict[str, Any] | None:
+        fields = task_to_fields(t)
+        fields = {k: v for k, v in fields.items() if v is not None}
+        # 不向 upsert 写 type=18 关联字段（由 backfill 维护）
+        fields.pop("关联运营动作", None)
+        if not fields.get("主键"):
+            return None
+        return fields
+
+    stats = dual_write_fields(
+        settings,
+        mother_table_id=table_id,
+        kind="tasks",
+        rows=tasks,
+        to_fields=to_fields,
+        shop_key="shop_name",
+        mode="upsert",
+    )
+    return int(stats.get("mother") or 0)
+
+
+# 动作表系统可写定位字段；原因/采取动作/是否有效等绝不由系统回写
+ACTION_SYSTEM_FIELD_NAMES = [
+    "主键",
+    "关联异常编号",
+    "店铺",
+    "ASIN",
+    "中文名称",
+    "异常类型",
+    "等级",
+]
+
+
+def ensure_action_table_columns(
+    *,
+    settings: Settings | None = None,
+    table_id: str | None = None,
+) -> list[str]:
+    """给运营动作表补定位列（幂等）。table_id 默认母表。"""
+    from app.clients.feishu import FeishuClient
+
+    settings = settings or get_settings()
+    app_token = settings.feishu_bitable_app_token
+    tid = table_id or settings.feishu_table_actions
+    if not settings.has_feishu or not app_token or not tid:
+        return []
+    with FeishuClient(settings) as client:
+        return client.ensure_text_fields(app_token, tid, ACTION_SYSTEM_FIELD_NAMES)
+
+
+def write_action_shells_to_feishu(
+    tasks: list[dict[str, Any]],
+    *,
+    settings: Settings | None = None,
+    ensure_columns: bool = True,
+) -> dict[str, int]:
+    """为 open 任务预建运营动作空壳：create-only，已存在不覆盖（保护负责人填写）。"""
+    settings = settings or get_settings()
+    app_token = settings.feishu_bitable_app_token
+    table_id = settings.feishu_table_actions
+    if not settings.has_feishu or not app_token or not table_id:
+        logger.warning("飞书运营动作表未配置，跳过动作空壳")
+        return {"created": 0, "skipped": 0, "total": 0, "children": 0}
+
+    if ensure_columns:
+        try:
+            created_cols = ensure_action_table_columns(settings=settings)
+            if created_cols:
+                logger.info("动作母表新建字段: %s", created_cols)
+        except Exception:
+            logger.exception("动作表补字段失败，继续尝试写空壳")
+
+    open_tasks = [
+        t
+        for t in tasks
+        if t.get("task_id") and t.get("status") not in ("closed", "resolved")
+    ]
+
+    def to_fields(t: dict[str, Any]) -> dict[str, Any] | None:
+        fields = action_shell_from_task(t)
+        fields = {k: v for k, v in fields.items() if v is not None}
+        if not fields.get("主键"):
+            return None
+        return fields
+
+    stats = dual_write_fields(
+        settings,
+        mother_table_id=table_id,
+        kind="actions",
+        rows=open_tasks,
+        to_fields=to_fields,
+        shop_key="shop_name",
+        mode="create_if_absent",
+    )
+
+    # 子表也补定位列
+    if dual_write_enabled() and ensure_columns:
+        registry = ShopTableRegistry.load(settings.shop_tables_path)
+        for shop, tid in registry.all_table_ids("actions"):
+            try:
+                ensure_action_table_columns(settings=settings, table_id=tid)
+            except Exception:
+                logger.exception("动作子表补字段失败 shop=%s", shop)
+
+    return {
+        "created": int(stats.get("mother") or 0),
+        "skipped": 0,
+        "total": int(stats.get("mother") or 0),
+        "children": int(stats.get("children") or 0),
+    }
+
+
+# 从运营动作记录表同步到异常任务表的字段映射
+ACTION_COPY_COLUMNS: dict[str, str] = {
+    "动作-闭环状态": "闭环状态",
+    "动作-原因": "原因",
+    "动作-采取动作": "采取动作",
+    "动作-是否有效": "是否有效",
+    "动作-复查日期": "复查日期",
+}
+
+
+def _backfill_pair(
+    settings: Settings,
+    task_table_id: str,
+    action_table_id: str,
+    *,
+    label: str = "mother",
+) -> dict[str, int]:
+    """单对 任务表↔动作表 回填关联与动作文本列。"""
+    from app.clients.feishu import FeishuClient
+
+    app_token = settings.feishu_bitable_app_token
+    LINK_FIELD = "关联运营动作"
+    linked = 0
+    synced = 0
+
+    with FeishuClient(settings) as client:
+        task_fields = client.list_fields(app_token, task_table_id)
+        task_field_names = {f.get("field_name") for f in task_fields}
+
+        action_info: dict[str, dict[str, Any]] = {}
+        for item in client.iter_records(app_token, action_table_id, page_size=100):
+            rid = item.get("record_id")
+            fields = item.get("fields") or {}
+            key = str(fields.get("关联异常编号") or "").strip()
+            if key and rid:
+                action_info[key] = {"record_id": rid, "fields": fields}
+
+        to_link: list[dict[str, Any]] = []
+        to_sync_action: list[dict[str, Any]] = []
+
+        for item in client.iter_records(app_token, task_table_id, page_size=100):
+            rid = item.get("record_id")
+            fields = item.get("fields") or {}
+            task_no = str(fields.get("异常编号") or "").strip()
+            if not task_no or not rid:
+                continue
+            action = action_info.get(task_no)
+            if not action:
+                continue
+
+            if LINK_FIELD in task_field_names:
+                link_val = fields.get(LINK_FIELD)
+                has_real_link = False
+                if link_val and isinstance(link_val, list):
+                    for lv in link_val:
+                        if isinstance(lv, dict) and lv.get("record_ids"):
+                            has_real_link = True
+                            break
+                if not has_real_link:
+                    to_link.append(
+                        {
+                            "record_id": rid,
+                            "fields": {LINK_FIELD: [action["record_id"]]},
+                        }
+                    )
+
+            action_updates = {}
+            for task_col, action_col in ACTION_COPY_COLUMNS.items():
+                if task_col not in task_field_names:
+                    continue
+                action_val = action["fields"].get(action_col)
+                if action_val is not None and str(action_val).strip():
+                    existing = fields.get(task_col)
+                    if not existing or str(existing).strip() != str(action_val).strip():
+                        action_updates[task_col] = action_val
+            if action_updates:
+                to_sync_action.append({"record_id": rid, "fields": action_updates})
+
+        for i in range(0, len(to_link), 100):
+            chunk = to_link[i : i + 100]
+            try:
+                client.bitable_batch_update(app_token, task_table_id, chunk)
+                linked += len(chunk)
+            except Exception:
+                logger.exception("关联回填批次失败 label=%s i=%s", label, i)
+            time.sleep(0.2)
+
+        for i in range(0, len(to_sync_action), 100):
+            chunk = to_sync_action[i : i + 100]
+            try:
+                client.bitable_batch_update(app_token, task_table_id, chunk)
+                synced += len(chunk)
+            except Exception:
+                logger.exception("动作数据同步批次失败 label=%s i=%s", label, i)
+            time.sleep(0.2)
+
+    logger.info("关联回填[%s]: linked=%d action_synced=%d", label, linked, synced)
+    return {"linked": linked, "action_synced": synced}
+
+
+def backfill_task_action_links(
+    *,
+    settings: Settings | None = None,
+) -> dict[str, int]:
+    """回填异常任务↔运营动作：母表一对 + 各店子表各自一对。"""
+    settings = settings or get_settings()
+    app_token = settings.feishu_bitable_app_token
+    task_table_id = settings.feishu_table_tasks
+    action_table_id = settings.feishu_table_actions
+
+    if not settings.has_feishu or not app_token or not task_table_id or not action_table_id:
+        logger.warning("飞书未配置，跳过关联回填")
+        return {"linked": 0, "action_synced": 0}
+
+    total = _backfill_pair(
+        settings, task_table_id, action_table_id, label="mother"
+    )
+
+    if dual_write_enabled():
+        registry = ShopTableRegistry.load(settings.shop_tables_path)
+        task_map = dict(registry.all_table_ids("tasks"))
+        action_map = dict(registry.all_table_ids("actions"))
+        for shop in sorted(set(task_map) & set(action_map)):
+            try:
+                part = _backfill_pair(
+                    settings,
+                    task_map[shop],
+                    action_map[shop],
+                    label=f"shop:{shop}",
+                )
+                total["linked"] += part["linked"]
+                total["action_synced"] += part["action_synced"]
+            except Exception:
+                logger.exception("子表关联回填失败 shop=%s", shop)
+
+    return total

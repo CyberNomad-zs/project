@@ -1,0 +1,21 @@
+---
+name: ai-competition-project
+description: Ongoing — building a single-person entry for the company AI automation competition (compete 2026-07-31)
+metadata: 
+  node_type: memory
+  type: project
+  originSessionId: fa9673d6-883e-4c6f-9bcf-bb28b222107c
+---
+
+公司"AI 自动化场景创意比赛"：报名截止 2026-07-29（联系 李瑾），2026-07-31 周五下午四楼会议室现场演示。限单人、独立完成、原创、"简单好用=高分"。奖金 一等1000/二等500/三等200/参与50。用户是技术/开发/产品岗；演示环境有稳定网络、装了 Python/Node、有大模型 API Key。项目目录 E:\project\AIc。
+
+已用多智能体工作流评估 10 个候选方案（报告：E:\project\AIc\AI比赛方案评估报告.html，线上 artifact 已发布），加权均分推荐冠军 **图秒成表**（图片→可编辑 Excel，8.1 分）；备选 纪要快手、小跑腿（浏览器自动化 Agent，#3）。
+
+**已定方向**：作品 = **「发货哨兵」**（FulfillSentinel）——**只读**聚合 Temu/赛狐ERP/海外仓WMS 的统一发货看板 + 履约异常预警（超时/卡仓/未回填运单/未同步/库存不一致）。演示约束：只有生产账号、WMS 仅公司网络可达 → 取数以「各系统导出 xlsx/csv」为主，打包成自包含 HTML 可离线演示，不做写操作。见 [[company-work-systems]]。
+
+**工程**：E:\project\AIc\ship-sentinel（README + samples/{temu,sellfox,wms} + frontend/index.html 原型看板 + backend/ingest 待补）。前端看板原型已完成（仿真数据、控制台雷达风、可交互，已发 artifact）。
+
+**当前卡点/下一步**：等用户导出三份**脱敏**订单样例放进 samples/（说明见 samples/导出与脱敏说明.md）。拿到后：按真实表头写 ingest 适配器 + LLM 列名映射/跨平台匹配 + 异常引擎，再打包演示 HTML。仍需用户确认：跨系统匹配用哪个字段、真正在意哪些异常类型。
+
+**Why:** 贴合真实业务场景的作品原创性和现场说服力更高，评委共鸣更强；只读聚合规避生产系统翻车风险。
+**How to apply:** 收到样例前无法写 ingest 适配器（列名未知）；避免在生产 ERP/Temu/WMS 上做现场写操作。

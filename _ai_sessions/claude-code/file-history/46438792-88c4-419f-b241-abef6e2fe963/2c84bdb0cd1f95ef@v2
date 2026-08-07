@@ -1,0 +1,72 @@
+# 本地默认配置（可按环境修改；密钥放 .env）
+
+sellfox:
+  min_interval_seconds: 1.1
+  page_size: 100
+  field_modules:
+    - PRODUCT_INFO
+    - SALE_INFO
+    - SESSION_PERFORMANCE_INFO
+    - PERFORMANCE_INFO
+    - AD_INFO
+    - FBA_INVENTORY_INFO
+    - REVIEW_PERFORMANCE_INFO
+  # 驾驶舱默认全店；若只同步部分店铺可填 shopId
+  shop_id_list: []
+  is_new_or_moving_or_in_stock: "0"
+  dim_type: "1"
+  compare_type_list:
+    - "1"
+
+sync:
+  save_raw_snapshot: false
+  sink: both
+
+# 店铺名称变体 → 规范名（视图合并 / 展示用）
+# 同一实体店在赛狐可能有 LEDVIE / Ledvia / Ledvia-UK 等写法，合并为一个逻辑店
+shop_aliases:
+  LEDVIE: Ledvia-UK
+  Ledvia: Ledvia-UK
+  Ledvia-UK: Ledvia-UK
+  NOTTAC: Nottac-UK
+  Nottac: Nottac-UK
+  Nottac-UK: Nottac-UK
+  特米: 特米-UK
+  特米-UK: 特米-UK
+  昇新: 昇新-UK
+  昇新-UK: 昇新-UK
+  SHENGXIN: 昇新-UK
+  起的快: 起的快-UK
+  起的快-UK: 起的快-UK
+  字同: 字同道合
+  字同道合: 字同道合
+
+owners:
+  # 按赛狐真实店铺名（可用前缀匹配，如「特米」匹配「特米-UK」）
+  # 别名也写上，避免赛狐返回不同写法时负责人落空
+  特米: 潘启豪
+  特米-UK: 潘启豪
+  Ledvia: 潘启豪
+  Ledvia-UK: 潘启豪
+  LEDVIE: 潘启豪
+  昇新: 马文静
+  昇新-UK: 马文静
+  SHENGXIN: 马文静
+  起的快: 马文静
+  起的快-UK: 马文静
+  Nottac: 梦晴
+  Nottac-UK: 梦晴
+  NOTTAC: 梦晴
+  字同: 梦晴
+  字同道合: 梦晴
+
+reviewers:
+  default: 唐丹
+
+notify:
+  # 与 .env 中 FEISHU_BITABLE_APP_TOKEN 一致；按店视图见 scripts/setup_asin_shop_views.py
+  view_base_url: "https://dcnkj1up67d5.feishu.cn/base/TkW0bXEAAa3Fo3sdKagcL9fTn2b"
+  it_receivers: []
+  # 可选：负责人中文名 -> 飞书 open_id，用于群机器人 @（不配则只按姓名分段推送）
+  # 例: 马文静: ou_xxxxxxxx
+  owner_open_ids: {}

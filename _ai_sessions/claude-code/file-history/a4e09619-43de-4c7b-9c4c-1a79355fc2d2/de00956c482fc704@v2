@@ -1,0 +1,194 @@
+/**
+ * 全量一轮：插件全部能力，不依赖 Chrome 扩展
+ *
+ *  1) 赛狐 OpenAPI → 下架点名（selectStatus 离开 12）
+ *  2) Playwright  → 多店会话切店 + 待关注/近期下降点名 + 在售数字
+ *  3) 飞书汇总
+ */
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { launchBrowser, isLoggedIn } from './browser.js';
+import { closePopups } from './popups.js';
+import { scanStore } from './monitor.js';
+import { loadState, saveState, diffStore, mergeSnapshot } from './state.js';
+import { sendFeishu } from './feishu.js';
+import { switchSessionStore, readCurrentStoreName } from './sessionStores.js';
+import { loadSellfoxConfig, sellfoxConfigReady } from './sellfox/config.js';
+import { runSellfoxOnce } from './sellfox/monitor.js';
+import { ROOT } from './config.js';
+import { log } from './logger.js';
+
+function resolveStoreList(cfg) {
+  // 优先 config.storeList；否则用赛狐配置店名
+  if (Array.isArray(cfg.storeList) && cfg.storeList.length) {
+    return cfg.storeList.map(String);
+  }
+  try {
+    const sf = loadSellfoxConfig();
+    const names = (sf.stores || [])
+      .filter((s) => s.enabled !== false)
+      .map((s) => s.name)
+      .filter(Boolean);
+    if (names.length) return names;
+  } catch {
+    /* ignore */
+  }
+  return [];
+}
+
+function sellfoxAvailable() {
+  const p = resolve(ROOT, 'sellfox.config.json');
+  if (!existsSync(p) && !process.env.SELLFOX_CLIENT_ID) return false;
+  try {
+    const c = loadSellfoxConfig();
+    return sellfoxConfigReady(c).ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @param {object} cfg loadConfig()
+ * @param {{ skipSellfox?: boolean, skipBrowser?: boolean, dryRun?: boolean }} [opts]
+ */
+export async function runFullOnce(cfg, opts = {}) {
+  const report = {
+    sellfox: null,
+    browser: null,
+    events: [],
+  };
+  const allLines = [];
+
+  // ---------- 1) 赛狐下架 ----------
+  if (!opts.skipSellfox && sellfoxAvailable() && cfg.alerts?.delist !== false) {
+    try {
+      log.info('=== [1/2] 赛狐下架监测 ===');
+      const sfCfg = loadSellfoxConfig();
+      // 飞书：dry 时不发；正式时 sellfox 模块自己发，避免 double——这里 dryRun 控制
+      const r = await runSellfoxOnce(sfCfg, { dryRun: !!opts.dryRun });
+      report.sellfox = r;
+      // 已在 runSellfoxOnce 内发飞书；汇总记一条
+      for (const s of r.summary || []) {
+        if (s.events?.includes('delist')) {
+          report.events.push({ store: s.store, type: 'delist', via: 'sellfox' });
+        }
+      }
+    } catch (e) {
+      log.error('赛狐下架失败：', e.message);
+      report.sellfox = { error: e.message };
+      if (!opts.dryRun) {
+        await sendFeishu(cfg, {
+          title: '⚠️ 赛狐下架监测失败',
+          template: 'orange',
+          lines: [String(e.message), `_时间：${new Date().toLocaleString('zh-CN')}_`],
+        }).catch(() => {});
+      }
+    }
+  } else {
+    log.info('跳过赛狐下架（未配置或 skipSellfox）');
+  }
+
+  // ---------- 2) 浏览器：流量 + 在售数字 ----------
+  if (opts.skipBrowser) {
+    log.info('跳过浏览器扫描');
+    return report;
+  }
+
+  log.info('=== [2/2] 浏览器流量/在售监测 ===');
+  const { context, page } = await launchBrowser(cfg);
+  try {
+    if (!(await isLoggedIn(page, cfg))) {
+      const err = new Error('未登录。请先运行 `npm run login`。');
+      err.code = 'NOT_LOGGED_IN';
+      throw err;
+    }
+    await closePopups(page);
+
+    let stores = resolveStoreList(cfg);
+    if (!stores.length) {
+      const cur = await readCurrentStoreName(page);
+      stores = [cur || '(当前店铺)'];
+      log.info('未配置 storeList，监测当前店：', stores[0]);
+    } else {
+      log.info('店铺清单：', stores.join(', '));
+    }
+
+    const state = loadState();
+    state.stores = state.stores || {};
+    const browserEvents = [];
+    const summaries = [];
+    // 有赛狐时浏览器侧跳过「纯数字在售下降」，避免与下架点名重复刷屏
+    const skipOnSaleDrop = sellfoxAvailable() && cfg.alerts?.delist !== false;
+
+    for (const store of stores) {
+      const label = store || '(当前店铺)';
+      try {
+        if (stores.length > 1 && store && store !== '(当前店铺)') {
+          const sw = await switchSessionStore(page, store);
+          if (!sw.ok) {
+            log.warn(`切到「${store}」失败，仍尝试扫描当前页`);
+          }
+          await closePopups(page);
+          await page.waitForTimeout(1000);
+        }
+
+        const prev = state.stores[label];
+        const result = await scanStore(page, label, cfg, {
+          prevWatch: prev?.trafficWatchCount,
+        });
+        log.info('扫描结果：', {
+          store: result.store,
+          onSale: result.onSaleCount,
+          watch: result.trafficWatchCount,
+          decline: result.trafficDeclineCount,
+          watchItems: (result.watchItems || []).length,
+          declineItems: (result.declineItems || []).length,
+        });
+        summaries.push(result);
+
+        const events = diffStore(prev, result, cfg.alerts, {
+          editBaseUrl: cfg.goodsListUrl?.replace(/\/goods\/list.*/, '') || 'https://agentseller.temu.com',
+          skipOnSaleDrop,
+        });
+        for (const ev of events) {
+          browserEvents.push({ store: label, ...ev });
+          report.events.push({ store: label, type: ev.type, via: 'browser' });
+        }
+
+        state.stores[label] = mergeSnapshot(prev, result);
+      } catch (e) {
+        log.error(`店铺「${label}」监测出错：`, e.message);
+      }
+    }
+
+    saveState(state);
+    report.browser = { summaries, events: browserEvents };
+
+    if (browserEvents.length > 0 && !opts.dryRun) {
+      const lines = [];
+      const byStore = {};
+      for (const ev of browserEvents) (byStore[ev.store] ||= []).push(ev);
+      for (const [store, evs] of Object.entries(byStore)) {
+        lines.push(`**🏬 ${store}**`);
+        for (const ev of evs) {
+          const icon =
+            ev.type === 'onSaleDrop' ? '📉' : ev.type === 'trafficDecline' ? '🔴' : '⚠️';
+          lines.push(`${icon} ${ev.text}`);
+        }
+        lines.push('');
+      }
+      lines.push(`_扫描时间：${new Date().toLocaleString('zh-CN')}_`);
+      await sendFeishu(cfg, {
+        title: '🔔 Temu 店铺监测告警',
+        template: 'red',
+        lines,
+      });
+    } else if (!browserEvents.length) {
+      log.info('浏览器侧本轮无流量/在售数字异常');
+    }
+
+    return report;
+  } finally {
+    await context.close().catch(() => {});
+  }
+}

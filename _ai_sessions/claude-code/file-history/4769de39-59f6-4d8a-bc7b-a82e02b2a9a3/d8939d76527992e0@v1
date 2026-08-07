@@ -1,0 +1,30 @@
+# Temu monitor daemon. Started by scheduled task 'TemuMonitor' at logon (hidden window).
+# Runs 'node src/cli.js start' (15-min polling). Auto-restarts 30s after any crash.
+# Logs: logs\daemon-YYYYMMDD.log (daemon marks) + monitor-*.out/err.log (node output).
+$ErrorActionPreference = 'Continue'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+
+$root = $PSScriptRoot
+$node = (Get-Command node -ErrorAction SilentlyContinue).Source
+if (-not $node) { $node = 'node.exe' }
+Set-Location $root
+$logDir = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force $logDir | Out-Null
+
+while ($true) {
+  $day = Get-Date -Format 'yyyyMMdd'
+  $log = Join-Path $logDir "daemon-$day.log"
+  $out = Join-Path $logDir "monitor-$day.out.log"
+  $err = Join-Path $logDir "monitor-$day.err.log"
+
+  ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] === start: node src/cli.js start ===') | Out-File -Append -Encoding utf8 $log
+
+  # clear stale Chrome single-instance locks from any previous abnormal exit
+  Remove-Item (Join-Path $root '.userdata\SingletonLock'), (Join-Path $root '.userdata\SingletonCookie'), (Join-Path $root '.userdata\lockfile') -Force -ErrorAction SilentlyContinue
+
+  $proc = Start-Process -FilePath $node -ArgumentList 'src\cli.js', 'start' -WorkingDirectory $root -NoNewWindow -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+  $code = if ($proc) { $proc.ExitCode } else { 'null' }
+
+  ('[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "] === node exited (code=$code), restart in 30s ===") | Out-File -Append -Encoding utf8 $log
+  Start-Sleep -Seconds 30
+}

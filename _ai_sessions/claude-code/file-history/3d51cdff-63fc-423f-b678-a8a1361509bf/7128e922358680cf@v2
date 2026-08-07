@@ -1,0 +1,350 @@
+﻿# One-click install: Node.js LTS + ziniao-cli (+ optional API Key init)
+# Usage:
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -ApiKey "YOUR_KEY"
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -SkipNode
+#   powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -DoctorOnly
+#
+# Does NOT install the Ziniao desktop browser.
+
+param(
+  [string]$ApiKey = '',
+  [string]$Profile = 'default',
+  [switch]$SkipNode,
+  [switch]$SkipCli,
+  [switch]$DoctorOnly,
+  [switch]$NoKeychain
+)
+
+$ErrorActionPreference = 'Continue'
+$root = Split-Path $PSScriptRoot -Parent
+
+function Write-Step([string]$msg) {
+  Write-Host ("[{0}] {1}" -f (Get-Date -Format 'HH:mm:ss'), $msg)
+}
+function Write-Ok([string]$msg) { Write-Host ("  OK  {0}" -f $msg) -ForegroundColor Green }
+function Write-Warn([string]$msg) { Write-Host ("  WARN {0}" -f $msg) -ForegroundColor Yellow }
+function Write-Fail([string]$msg) { Write-Host ("  FAIL {0}" -f $msg) -ForegroundColor Red }
+
+function Update-SessionPath {
+  $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+  $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+  $env:Path = @($machine, $user) -join ';'
+  $npmGlobal = Join-Path $env:APPDATA 'npm'
+  if ((Test-Path $npmGlobal) -and ($env:Path -notlike "*$npmGlobal*")) {
+    $env:Path = "$npmGlobal;$env:Path"
+  }
+  $nodeDir = 'C:\Program Files\nodejs'
+  if ((Test-Path $nodeDir) -and ($env:Path -notlike "*$nodeDir*")) {
+    $env:Path = "$nodeDir;$env:Path"
+  }
+}
+
+function Test-Cmd([string]$name) {
+  return [bool](Get-Command $name -ErrorAction SilentlyContinue)
+}
+
+function Get-CmdVersion([string]$name, [string[]]$verArgs = @('--version')) {
+  try {
+    $c = Get-Command $name -ErrorAction Stop
+    $out = & $c.Source @verArgs 2>&1 | Out-String
+    return ($out -replace '\r?\n', ' ').Trim()
+  } catch {
+    return $null
+  }
+}
+
+function ConvertTo-ArgLine([string[]]$argList) {
+  ($argList | ForEach-Object {
+    $a = [string]$_
+    if ($a -match '[\s"]') {
+      '"' + ($a.Replace('"', '\"')) + '"'
+    } else {
+      $a
+    }
+  }) -join ' '
+}
+
+function Invoke-Native {
+  param(
+    [string]$File,
+    [string[]]$Args,
+    [int]$TimeoutSec = 600
+  )
+  Write-Step ("run: {0} {1}" -f $File, (ConvertTo-ArgLine $Args))
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $File
+  $psi.Arguments = ConvertTo-ArgLine $Args
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $stdout = $p.StandardOutput.ReadToEnd()
+  $stderr = $p.StandardError.ReadToEnd()
+  if (-not $p.WaitForExit($TimeoutSec * 1000)) {
+    try { $p.Kill() } catch {}
+    throw "timeout after ${TimeoutSec}s: $File"
+  }
+  if ($stdout) { Write-Host $stdout }
+  if ($stderr) { Write-Host $stderr }
+  return $p.ExitCode
+}
+
+function Install-NodeLts {
+  Update-SessionPath
+  if (Test-Cmd 'node') {
+    Write-Ok ("Node already installed: {0}" -f (Get-CmdVersion 'node'))
+    return $true
+  }
+
+  if (-not (Test-Cmd 'winget')) {
+    Write-Fail 'winget not found. Install Node.js LTS manually: https://nodejs.org/'
+    Write-Host '  Or install App Installer from Microsoft Store, then re-run this script.'
+    return $false
+  }
+
+  Write-Step 'install Node.js LTS via winget (may prompt UAC)...'
+  $code = 1
+  try {
+    $code = Invoke-Native -File 'winget' -Args @(
+      'install', '-e', '--id', 'OpenJS.NodeJS.LTS',
+      '--accept-package-agreements', '--accept-source-agreements',
+      '--disable-interactivity'
+    ) -TimeoutSec 900
+  } catch {
+    Write-Fail "$_"
+  }
+
+  Update-SessionPath
+  Start-Sleep -Seconds 2
+  Update-SessionPath
+
+  if (Test-Cmd 'node') {
+    Write-Ok ("Node installed: {0}" -f (Get-CmdVersion 'node'))
+    return $true
+  }
+
+  $candidates = @(
+    'C:\Program Files\nodejs\node.exe',
+    (Join-Path ${env:ProgramFiles} 'nodejs\node.exe')
+  )
+  foreach ($c in $candidates) {
+    if (Test-Path $c) {
+      $dir = Split-Path $c -Parent
+      $env:Path = "$dir;$env:Path"
+      Write-Ok ("Node found at {0}" -f $c)
+      return $true
+    }
+  }
+
+  Write-Fail "Node install finished (exit=$code) but node.exe not on PATH. Open a NEW PowerShell and re-run."
+  return $false
+}
+
+function Install-ZiniaoCli {
+  Update-SessionPath
+  if (-not (Test-Cmd 'node') -or -not (Test-Cmd 'npm')) {
+    Write-Fail 'node/npm missing; cannot install ziniao-cli'
+    return $false
+  }
+
+  Write-Step 'npm install -g @ziniao-open/cli ...'
+  $npmCmd = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $npmCmd) { $npmCmd = Get-Command npm -ErrorAction SilentlyContinue }
+  if (-not $npmCmd) {
+    Write-Fail 'npm not found'
+    return $false
+  }
+
+  $exe = if ($npmCmd.Source -like '*.cmd') {
+    $npmCmd.Source
+  } else {
+    $cmdBeside = Join-Path (Split-Path $npmCmd.Source -Parent) 'npm.cmd'
+    if (Test-Path $cmdBeside) { $cmdBeside } else { $npmCmd.Source }
+  }
+
+  $code = Invoke-Native -File $exe -Args @('install', '-g', '@ziniao-open/cli') -TimeoutSec 600
+  Update-SessionPath
+
+  if (Test-Cmd 'ziniao-cli') {
+    Write-Ok ("ziniao-cli installed: {0}" -f (Get-CmdVersion 'ziniao-cli' @('-v')))
+    return $true
+  }
+
+  try {
+    $prefix = (& $exe @('prefix', '-g') 2>$null | Out-String).Trim()
+    $runJs = Join-Path $prefix 'node_modules\@ziniao-open\cli\scripts\run.js'
+    if (Test-Path $runJs) {
+      Write-Ok ("ziniao-cli package present: {0}" -f $runJs)
+      Write-Warn 'ziniao-cli not on PATH yet; multi-store script can still call node+run.js'
+      return $true
+    }
+  } catch {}
+
+  Write-Fail "npm install exit=$code but ziniao-cli not found"
+  return $false
+}
+
+function Initialize-ZiniaoApiKey([string]$key, [string]$profileName, [bool]$plain) {
+  if ([string]::IsNullOrWhiteSpace($key)) { return $true }
+  Update-SessionPath
+
+  $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+  if (-not (Test-Path $runJs)) { $runJs = $null }
+
+  Write-Step ("init ziniao profile '{0}' with provided API Key..." -f $profileName)
+  $initArgs = @('config', 'init', '--api-key-stdin', '--member', '--profile', $profileName)
+  if ($plain) { $initArgs += '--no-keychain' }
+
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  if ($runJs) {
+    $psi.FileName = (Get-Command node).Source
+    $psi.Arguments = ConvertTo-ArgLine (@($runJs) + $initArgs)
+  } else {
+    $psi.FileName = (Get-Command ziniao-cli).Source
+    $psi.Arguments = ConvertTo-ArgLine $initArgs
+  }
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardInput = $true
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $p = New-Object System.Diagnostics.Process
+  $p.StartInfo = $psi
+  [void]$p.Start()
+  $p.StandardInput.WriteLine($key.Trim())
+  $p.StandardInput.Close()
+  $out = $p.StandardOutput.ReadToEnd()
+  $err = $p.StandardError.ReadToEnd()
+  $p.WaitForExit()
+  if ($out) { Write-Host $out }
+  if ($err) { Write-Host $err }
+  if ($p.ExitCode -eq 0) {
+    Write-Ok 'API Key configured'
+    return $true
+  }
+  Write-Fail ("config init exit={0}. Manual: ziniao-cli config init --member" -f $p.ExitCode)
+  return $false
+}
+
+function Invoke-Doctor {
+  Update-SessionPath
+  Write-Step 'environment check'
+  $ok = $true
+
+  if (Test-Cmd 'node') {
+    Write-Ok ("node  {0}" -f (Get-CmdVersion 'node'))
+  } else {
+    Write-Fail 'node missing'
+    $ok = $false
+  }
+  if (Test-Cmd 'npm') {
+    Write-Ok ("npm   {0}" -f (Get-CmdVersion 'npm'))
+  } else {
+    Write-Fail 'npm missing'
+    $ok = $false
+  }
+
+  $cliOk = $false
+  if (Test-Cmd 'ziniao-cli') {
+    Write-Ok ("ziniao-cli {0}" -f (Get-CmdVersion 'ziniao-cli' @('-v')))
+    $cliOk = $true
+  } else {
+    $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+    if (Test-Path $runJs) {
+      Write-Ok ("ziniao package: {0}" -f $runJs)
+      $cliOk = $true
+    } else {
+      Write-Fail 'ziniao-cli missing'
+      $ok = $false
+    }
+  }
+
+  if ($cliOk) {
+    Write-Step 'ziniao-cli doctor...'
+    try {
+      $doc = ''
+      if (Test-Cmd 'ziniao-cli') {
+        $doc = & ziniao-cli doctor 2>&1 | Out-String
+      } else {
+        $runJs = Join-Path $env:APPDATA 'npm\node_modules\@ziniao-open\cli\scripts\run.js'
+        $doc = & node $runJs doctor 2>&1 | Out-String
+      }
+      Write-Host $doc
+      Write-Ok 'doctor finished (see output above)'
+    } catch {
+      Write-Warn "doctor: $_"
+    }
+  }
+
+  Write-Step 'manual dependency: Ziniao desktop browser'
+  Write-Host '  Ziniao desktop client must be installed and logged in separately.'
+  Write-Host '  Download/login, keep client online, then run scrape.'
+  Write-Host '  Open platform: https://open.ziniao.com/'
+
+  $cfg = Join-Path $root 'config\stores.config.json'
+  if (Test-Path $cfg) {
+    Write-Ok "project config present: $cfg"
+  } else {
+    Write-Warn 'config\stores.config.json missing - copy from stores.config.example.json'
+  }
+
+  return $ok
+}
+
+Write-Host ''
+Write-Host '======== TK Ad Monitor - install deps ========' -ForegroundColor Cyan
+Write-Host "root: $root"
+Write-Host ''
+
+Update-SessionPath
+
+if ($DoctorOnly) {
+  $d = Invoke-Doctor
+  if ($d) { exit 0 } else { exit 1 }
+}
+
+$allOk = $true
+
+if (-not $SkipNode) {
+  if (-not (Install-NodeLts)) { $allOk = $false }
+} else {
+  Write-Step 'SkipNode: skip Node install'
+}
+
+if ($allOk -or (Test-Cmd 'node')) {
+  if (-not $SkipCli) {
+    if (-not (Install-ZiniaoCli)) { $allOk = $false }
+  } else {
+    Write-Step 'SkipCli: skip ziniao-cli install'
+  }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($ApiKey)) {
+  if (-not (Initialize-ZiniaoApiKey -key $ApiKey -profileName $Profile -plain:([bool]$NoKeychain))) {
+    $allOk = $false
+  }
+} else {
+  Write-Step 'API Key: not provided (optional)'
+  Write-Host '  If ziniao-cli not configured yet, either:'
+  Write-Host '    1) Interactive: ziniao-cli config init --member'
+  Write-Host '    2) This script: -ApiKey YOUR_KEY'
+  Write-Host '  Get the key from Ziniao Open Platform after creating an app.'
+}
+
+Write-Host ''
+$docOk = Invoke-Doctor
+if (-not $docOk) { $allOk = $false }
+
+Write-Host ''
+if ($allOk) {
+  Write-Host '======== DONE: core deps ready ========' -ForegroundColor Green
+  Write-Host 'Next: open Ziniao client and login, then launcher ListOnly / DryRun'
+  exit 0
+} else {
+  Write-Host '======== DONE with FAIL items above ========' -ForegroundColor Yellow
+  exit 1
+}

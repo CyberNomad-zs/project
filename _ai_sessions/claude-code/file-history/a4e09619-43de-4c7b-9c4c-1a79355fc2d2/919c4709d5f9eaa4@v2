@@ -1,0 +1,107 @@
+/**
+ * 兼容入口：默认跑「全量一轮」（赛狐下架 + 浏览器流量，对齐插件能力）
+ * 仅浏览器旧逻辑：FULL_RUN=0 或 cfg.fullRun === false
+ */
+import { runFullOnce } from './fullRun.js';
+import { launchBrowser, isLoggedIn } from './browser.js';
+import { listStores, switchStore } from './stores.js';
+import { scanStore } from './monitor.js';
+import { closePopups } from './popups.js';
+import { loadState, saveState, diffStore, mergeSnapshot } from './state.js';
+import { sendFeishu } from './feishu.js';
+import { log } from './logger.js';
+
+export async function runOnce(cfg) {
+  const useFull =
+    process.env.FULL_RUN !== '0' &&
+    process.env.FULL_RUN !== 'false' &&
+    cfg.fullRun !== false;
+
+  if (useFull) {
+    log.info('全量监测（赛狐下架 + 浏览器流量，无需插件）');
+    return runFullOnce(cfg);
+  }
+
+  log.info('仅浏览器监测（FULL_RUN=0）');
+  return runBrowserOnly(cfg);
+}
+
+/** 旧版：只跑 Playwright，不调用赛狐 */
+export async function runBrowserOnly(cfg) {
+  const { context, page } = await launchBrowser(cfg);
+  try {
+    if (!(await isLoggedIn(page, cfg))) {
+      const err = new Error('未登录。请先运行 `npm run login` 完成一次人工登录。');
+      err.code = 'NOT_LOGGED_IN';
+      throw err;
+    }
+    await closePopups(page);
+
+    const storeNames =
+      cfg.stores === 'all' && cfg.storeList.length === 0
+        ? await listStores(page)
+        : cfg.storeList;
+    const singleStore = !storeNames || storeNames.length <= 1;
+    const stores = singleStore ? [(storeNames && storeNames[0]) || null] : storeNames;
+    if (singleStore) {
+      log.info('按单店铺监测聚合视图，店铺：', (storeNames && storeNames[0]) || '(当前)');
+    }
+
+    const state = loadState();
+    state.stores = state.stores || {};
+    const allEvents = [];
+    const summaries = [];
+
+    for (const store of stores) {
+      const label = store || '(当前店铺)';
+      try {
+        if (store && !singleStore) {
+          const ok = await switchStore(page, store, cfg);
+          if (!ok) {
+            log.warn(`切换到「${store}」失败，跳过`);
+            continue;
+          }
+        }
+        const prev = state.stores[label];
+        const result = await scanStore(page, label, cfg, {
+          prevWatch: prev?.trafficWatchCount,
+        });
+        log.info('扫描结果：', result);
+        summaries.push(result);
+        const events = diffStore(prev, result, cfg.alerts);
+        for (const ev of events) allEvents.push({ store: label, ...ev });
+        state.stores[label] = mergeSnapshot(prev, result);
+      } catch (e) {
+        log.error(`店铺「${label}」监测出错：`, e.message);
+      }
+    }
+
+    saveState(state);
+
+    if (allEvents.length > 0) {
+      const lines = [];
+      const byStore = {};
+      for (const ev of allEvents) (byStore[ev.store] ||= []).push(ev);
+      for (const [store, evs] of Object.entries(byStore)) {
+        lines.push(`**🏬 ${store}**`);
+        for (const ev of evs) {
+          const icon = ev.type === 'onSaleDrop' ? '📉' : '⚠️';
+          lines.push(`${icon} ${ev.text}`);
+        }
+        lines.push('');
+      }
+      lines.push(`_扫描时间：${new Date().toLocaleString('zh-CN')}_`);
+      await sendFeishu(cfg, {
+        title: '🔔 Temu 店铺监测告警',
+        template: 'red',
+        lines,
+      });
+    } else {
+      log.info('本轮无异常，未发送告警。');
+    }
+
+    return { summaries, events: allEvents };
+  } finally {
+    await context.close().catch(() => {});
+  }
+}

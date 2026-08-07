@@ -1,0 +1,47 @@
+# 海外仓订单发货 · 自动化
+
+基于 **Playwright + Python** 的浏览器自动化，覆盖 ERP + WMS 全流程。
+
+## 目录结构
+```
+automation/
+  config.py            # 地址、DRY_RUN 开关、数量上限、HEADLESS 等
+  secrets.py           # 账号密码（敏感，勿泄露/勿提交）
+  rules.py             # 快递方规则（金猫JMSM RM>DPD；黑猫JMCAT RM>DPD>EH）
+  core.py              # 浏览器/会话管理 + 日志（WMS自动登录、ERP会话校验）
+  notify.py            # 每次运行汇总推送飞书（企业自建应用；容错，不影响主流程，见 部署说明.md §8.1）
+  wms.py               # WMS：改快递方 + 批量发货（核心，已实现）
+  erp.py               # ERP：阶段统计 / 获取跟踪单号 / 确认发货（DRY_RUN 保护）
+  run_shipping.py      # 主流程编排（顶部有各环节开关）；run_full_once=完整一条龙(下单→发货→拉跟踪号→确认发货)
+  full_loop.py         # 全流程循环常驻：每5分钟跑一遍 run_full_once（启动器 [A]，真跑；DRY_RUN 保护 + 飞书汇总）
+  capture/             # 一次性侦察脚本 + dumps（DOM/截图），可保留参考
+  erp_state.json       # ERP 登录态（敏感）
+  logs/                # 运行日志
+  .browser_profile/    # 持久化登录（勿提交/勿泄露）
+```
+
+## 使用步骤
+1. **ERP 手动登录一次**（因 ERP 有图形验证码+腾讯滑块，需人工过一次；会话可长期复用）：
+   ```
+   python capture/erp_manual_login.py
+   ```
+   浏览器弹出后登录赛狐ERP（账号/密码/图形验证码/滑块），脚本自动检测并保存登录态。
+2. **空跑演练**（`config.DRY_RUN=True`，不真正发货/不改快递方）：
+   ```
+   python run_shipping.py
+   ```
+   核对日志：ERP 会话有效、各阶段数量、WMS 双账号登录、未发货订单数。
+3. 有真实未发货订单时，先在 DRY_RUN 下确认"将设置快递方/将批量发货"的动作对象无误。
+4. 确认无误后，将 `config.py` 的 `DRY_RUN` 改为 `False` 开启真实发货；
+   `run_shipping.py` 顶部开关控制启用哪些环节（WMS发货 / ERP获取单号 / ERP确认发货）。
+
+## 当前状态
+- ✅ ERP 会话复用、WMS 双账号自动登录、阶段统计：**已实测通过**。
+- ⏳ WMS 改快递方+批量发货、ERP 确认发货/获取跟踪单号：**逻辑已写，待有真实未发货订单时联调选择器**（写这版时两账号均 0 条未发货）。
+- ❓ ERP 要自动化到哪一步（审核通过 / 确认发货 / 仅获取单号）需与业务确认，见 `run_shipping.py` 顶部开关。
+
+## 安全
+- 首次务必 `DRY_RUN=True` 空跑，人工核对日志。
+- `MAX_ORDERS_PER_RUN` 限制单次处理量，防止误操作放大。
+- ERP 变更类动作（确认发货）默认关闭 + DRY_RUN 双重保护。
+- `secrets.py` / `erp_state.json` / `.browser_profile/` 含敏感信息，勿泄露。

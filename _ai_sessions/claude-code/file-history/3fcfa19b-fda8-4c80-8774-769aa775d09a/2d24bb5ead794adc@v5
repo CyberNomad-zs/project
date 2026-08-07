@@ -1,0 +1,279 @@
+"""包裹处理流水线：每轮做四步，均幂等（本地状态 + 赛狐包裹状态双确认）。
+
+step1_discover : 拉赛狐 to_process 包裹 → 本地 NEW
+step2_assign   : NEW → 选渠道 → updatePackageDetail → CHANNEL_ASSIGNED
+step3_order    : CHANNEL_ASSIGNED → applyTrackNo（推 WMS）→ ORDERED
+step4_close    : ORDERED → 查 WMS 出库状态 → 称重发货/快速出库 → CLOSED
+"""
+import datetime
+import logging
+
+from . import store as st
+from .selector import NoChannelError
+
+log = logging.getLogger(__name__)
+
+# WMS orderStatus（Constants.java 实测确认）：0待发货 1预发货 2已发货 4平台已发货
+# 注意：状态=2 但运单未生成的情况存在，闭环需同时满足"状态已发货 + 运单号存在"
+WMS_SHIPPED_STATUSES = {"2", "4"}
+
+
+class Pipeline:
+    def __init__(self, cfg, sellfox, wms, selector, store, notifier, dry_run=False):
+        self.cfg = cfg
+        self.sf = sellfox
+        # wms: WmsClient 或 {profile_name: WmsClient}（双客户：jinmao/blackcat）
+        if isinstance(wms, dict):
+            self.wms_clients = wms
+            self.wms = next(iter(wms.values()))  # 兼容旧代码引用 self.wms
+        else:
+            self.wms_clients = {"default": wms}
+            self.wms = wms
+        self.selector = selector
+        self.store = store
+        self.notify = notifier
+        self.dry_run = dry_run
+
+    def _wms_for_channel(self, channel_name):
+        """按渠道配置的 wms_profile 选 WMS 客户端；未配置时按名称猜 BLACKCAT→blackcat。"""
+        ch = self._match_existing_channel(channel_name) or {}
+        profile = ch.get("wms_profile")
+        if not profile:
+            # 兜底：渠道名含 BLACKCAT → blackcat，否则 default_profile / 唯一客户端
+            if channel_name and "BLACKCAT" in str(channel_name).upper():
+                profile = "blackcat"
+            else:
+                profile = (self.cfg.get("wms") or {}).get("default_profile")
+        if profile and profile in self.wms_clients:
+            return self.wms_clients[profile], profile
+        # 再退：default_profile 或任意一个
+        default = (self.cfg.get("wms") or {}).get("default_profile")
+        if default and default in self.wms_clients:
+            return self.wms_clients[default], default
+        name = next(iter(self.wms_clients))
+        return self.wms_clients[name], name
+
+    def _shop_allowed(self, shop_id):
+        """灰度白名单：run.shop_whitelist 非空时只处理列表内店铺（step2/3/4 均过滤）。"""
+        wl = self.cfg.get("run", {}).get("shop_whitelist") or []
+        if not wl:
+            return True
+        return str(shop_id or "") in {str(x) for x in wl}
+
+    def _rows_for_step(self, state):
+        """by_state + 店铺白名单过滤（单店灰度安全网）。"""
+        rows = []
+        skipped = 0
+        for row in self.store.by_state(state):
+            if self._shop_allowed(row["shop_id"] if "shop_id" in row.keys() else None):
+                rows.append(row)
+            else:
+                skipped += 1
+        if skipped:
+            log.info(
+                "白名单过滤: state=%s 跳过其它店铺 %d 条，本批处理 %d 条",
+                state, skipped, len(rows),
+            )
+        return rows
+
+    # ---- step 1: 发现新包裹 ----
+
+    def step1_discover(self):
+        days = self.cfg["run"]["purchase_date_days"]
+        end = datetime.datetime.now()
+        start = end - datetime.timedelta(days=days)
+        page_no, found, seen = 1, 0, 0
+        # 每轮重建缓存：已入库的单也要带明细，否则 step2 会因 cache miss 永久跳过
+        self._package_cache = {}
+        while True:
+            data = self.sf.get_package_page(
+                "to_process",
+                start.strftime("%Y-%m-%d %H:%M:%S"),
+                end.strftime("%Y-%m-%d %H:%M:%S"),
+                page_no=page_no,
+                shop_ids=self.cfg["run"]["shop_whitelist"] or None,
+            )
+            rows = (data or {}).get("rows", [])
+            for p in rows:
+                seen += 1
+                order_id = (p.get("orders") or [{}])[0].get("amazonOrderId", "")
+                country = (p.get("address") or {}).get("countryCode", "")
+                # 无论是否新单，都缓存明细供本轮 step2 使用
+                self._package_cache[p["packageSn"]] = p
+                if self.store.upsert_new(
+                    p["packageSn"], p.get("shopId"), order_id, country
+                ):
+                    found += 1
+            if page_no >= (data or {}).get("totalPage", 1):
+                break
+            page_no += 1
+        log.info("step1: 赛狐待处理 %d 条，其中新入库 %d 条", seen, found)
+        return found
+
+    # ---- step 2: 选渠道 + 指派 ----
+
+    def _match_existing_channel(self, channel_name):
+        """包裹已带渠道时（channelName 形如 昇新海外仓-BLACKCAT-RM，
+        取后缀匹配 config 渠道名），返回配置项或 None"""
+        for ch in self.cfg["channels"]:
+            if channel_name and channel_name.endswith(ch["name"]):
+                return ch
+        return None
+
+    def step2_assign(self):
+        keep = self.cfg["run"].get("keep_existing_channel", True)
+        for row in self._rows_for_step(st.NEW):
+            sn = row["package_sn"]
+            pkg = self._package_cache.get(sn)
+            if pkg is None:
+                # 本地有 NEW 但本轮 step1 未拉到该单（已不在 to_process / 他店残留等）
+                log.info(
+                    "%s 跳过：本轮未拉到包裹明细（不在待处理或已处理），保留 NEW 待下轮",
+                    sn,
+                )
+                continue
+            try:
+                weight = self.selector.estimate_weight_g(pkg.get("items", []))
+                existing = self._match_existing_channel(
+                    (pkg.get("logistics") or {}).get("channelName")
+                )
+                if keep and existing and existing.get("enabled"):
+                    # 赛狐已配好渠道且可用：不动，直接进入待下单
+                    if self.dry_run:
+                        wms_p = existing.get("wms_profile") or "?"
+                        log.info(
+                            "[dry-run] %s 保留已有渠道 %s (wms_profile=%s)",
+                            sn, existing["name"], wms_p,
+                        )
+                        continue
+                    # G1：有渠道时只推进本地状态，不调赛狐写接口
+                    self.store.set_state(
+                        sn, st.CHANNEL_ASSIGNED,
+                        channel_name=existing["name"], weight_g=weight,
+                    )
+                    log.info(
+                        "%s 保留已有渠道 %s → CHANNEL_ASSIGNED (未调写接口)",
+                        sn, existing["name"],
+                    )
+                    continue
+                # 无渠道/渠道停用：业务已定人工指派，不自动 selector（缺重量则 FAILED）
+                if weight is None:
+                    raise NoChannelError("SKU 缺重量档案（无渠道请人工在赛狐指派）")
+                country = row["country"] or self.cfg["run"].get("default_country", "")
+                ch = self.selector.select(country, weight)
+                if self.dry_run:
+                    log.info("[dry-run] %s → 渠道 %s (%dg)", sn, ch["name"], weight)
+                    continue
+                self.sf.update_package_detail(
+                    [sn],
+                    ch["warehouse_id"],  # 仓库跟渠道所属物流商走
+                    self.cfg["warehouse"]["is_oversea"],
+                    ch["sellfox_provider_auth_detail_id"],
+                )
+                self.store.set_state(
+                    sn, st.CHANNEL_ASSIGNED, channel_name=ch["name"], weight_g=weight
+                )
+                log.info("%s 已指派渠道 %s (updatePackageDetail)", sn, ch["name"])
+            except NoChannelError as e:
+                self.store.mark_failed(sn, e)
+                self.notify.warn(f"包裹 {sn} 无法选渠道: {e}，请人工处理")
+            except Exception as e:
+                log.exception("step2 %s 失败", sn)
+                self.store.mark_failed(sn, e)
+                self.notify.warn(f"包裹 {sn} 指派渠道失败: {e}")
+
+    # ---- step 3: 物流下单（推送 WMS）----
+
+    def step3_order(self):
+        if not self.cfg["run"]["auto_apply_track_no"]:
+            return
+        rows = self._rows_for_step(st.CHANNEL_ASSIGNED)
+        if not rows:
+            return
+        sns = [r["package_sn"] for r in rows][:200]  # 接口单次上限200
+        if self.dry_run:
+            log.info("[dry-run] 物流下单: %s", sns)
+            return
+        result = self.sf.apply_track_no(sns) or {}
+        for item in result.get("successData", []) if isinstance(result, dict) else []:
+            self.store.set_state(item.get("packageSn"), st.ORDERED)
+        for item in result.get("failData", []) if isinstance(result, dict) else []:
+            sn, msg = item.get("packageSn"), item.get("msg")
+            self.store.mark_failed(sn, msg)
+            self.notify.warn(f"包裹 {sn} 物流下单失败: {msg}")
+        # 返回结构若与预期不符（如整体成功无明细），保守地全部置为 ORDERED，
+        # step4 之前会再用赛狐包裹状态核对
+        if isinstance(result, dict) and not result.get("successData") and not result.get("failData"):
+            for sn in sns:
+                self.store.set_state(sn, st.ORDERED)
+
+    # ---- step 4: WMS 出库确认 + 回传闭环 ----
+
+    def step4_close(self):
+        for row in self._rows_for_step(st.ORDERED):
+            sn = row["package_sn"]
+            try:
+                # 按渠道选 WMS 账本：昇新→jinmao，BLACKCAT→blackcat
+                wms, wms_profile = self._wms_for_channel(row["channel_name"] or "")
+                status = wms.query_order_status(sn) or {}
+                value = str(status.get("orderStatus", ""))
+                if value not in WMS_SHIPPED_STATUSES:
+                    continue  # 未出库，下一轮再查
+                # 双条件：状态已发货 且 运单号已生成（存在状态=2但运单未生成的情况）
+                try:
+                    tn = wms.query_tracking_number(sn) or {}
+                except Exception:
+                    continue  # 运单未生成，下一轮再查
+                if not tn.get("trackingNumber"):
+                    continue
+                # 渠道一致性校验：赛狐为基准。WMS 实际承运渠道（express）
+                # 与赛狐指派渠道不符时暂停闭环并告警，人工调整后自动恢复
+                ch = self._match_existing_channel(row["channel_name"]) or {}
+                expected = str(ch.get("expected_carrier", "")).upper()
+                actual = str(tn.get("express", "")).upper()
+                if (self.cfg["run"].get("hold_on_channel_mismatch", True)
+                        and expected and actual and expected not in actual):
+                    self.notify.warn(
+                        f"包裹 {sn} 渠道不一致：赛狐指派 {row['channel_name']}"
+                        f"（应走 {expected}），WMS[{wms_profile}] 实际渠道 {tn.get('express')}"
+                        f"（运单 {tn.get('trackingNumber')}）。已暂停回传，"
+                        f"请在 WMS 调整为赛狐渠道后自动恢复"
+                    )
+                    continue
+                if self.dry_run:
+                    log.info(
+                        "[dry-run] %s WMS[%s] 已出库(运单%s)，应回传赛狐",
+                        sn, wms_profile, tn.get("trackingNumber"),
+                    )
+                    continue
+                if self.cfg["run"]["ship_confirm_mode"] == "quick":
+                    self.sf.quick_outbound([{
+                        "packageSn": sn,
+                        "carrier": tn.get("express", ""),
+                        "trackNo": tn.get("trackingNumber", ""),
+                        "warehouseId": ch.get("warehouse_id"),
+                        "isOversea": 3,
+                        "shipmentType": 1,
+                    }])
+                else:
+                    self.sf.weighing_shipment([{
+                        "originalNum": sn,
+                        "weight": (row["weight_g"] or 0) / 1000,
+                        "weightUnit": "kg",
+                    }])
+                self.store.set_state(sn, st.CLOSED)
+                log.info("包裹 %s 发货闭环完成 (wms=%s)", sn, wms_profile)
+            except Exception as e:
+                log.exception("step4 %s 失败", sn)
+                self.notify.warn(f"包裹 {sn} 发货回传失败: {e}")
+                # 不置 FAILED，回传失败可下一轮重试；连续失败靠告警人工介入
+
+    # ---- 主入口 ----
+
+    _package_cache = {}
+
+    def run_once(self):
+        self.step1_discover()
+        self.step2_assign()
+        self.step3_order()
+        self.step4_close()

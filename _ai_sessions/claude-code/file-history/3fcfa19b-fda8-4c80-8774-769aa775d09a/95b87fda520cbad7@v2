@@ -1,0 +1,127 @@
+# 业务语义对齐记录（第 2 步）
+
+> 生成时间：2026-07-21 11:29  
+> 样本：赛狐 to_process 白名单三店，近 7 天，共 **15** 单  
+> 方法：开放 API（与网页同源）+ 金猫 WMS 只读查询 + 对照 automation/rules.py
+
+## 1. 渠道映射表（已验证）
+
+| 赛狐 channelName（网页/API） | config.name | providerAuthDetailId | warehouse_id | expected_carrier | automation WMS 账号 |
+|---|---|---|---|---|---|
+| 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | 591 | 187323 | RM | JMCAT 黑猫 |
+| 昇新海外仓-BLACKCAT-DPD | BLACKCAT-DPD | 590 | 187323 | DPD | JMCAT 黑猫 |
+| 昇新海外仓-BLACKCAT-EH | BLACKCAT-EH | 1303 | 187323 | EH | JMCAT 黑猫 |
+| 昇新海外仓-昇新海外仓-RM | 昇新海外仓-RM | 480 | 180617 | RM | JMSM 金猫 |
+| 昇新海外仓-昇新海外仓-DPD | 昇新海外仓-DPD | 481 | 180617 | DPD | JMSM 金猫 |
+
+匹配方式：`channelName.endswith(config.name)`（pipeline 已实现）。
+
+## 2. 本轮真实单结论
+
+- 渠道可保留（与 config 一致）：**14/15**
+- 无渠道需人工：**1**
+- 渠道不在 config：**0**
+- 承运商末段 = expected_carrier：**15/15**
+
+### 渠道分布
+
+- `昇新海外仓-BLACKCAT-RM` × 11
+- `昇新海外仓-昇新海外仓-RM` × 2
+- `(空)` × 1
+- `昇新海外仓-昇新海外仓-DPD` × 1
+
+### 明细
+
+| 包裹号 | 店铺 | 赛狐渠道 | config | 承运 | 决策 |
+|---|---|---|---|---|---|
+| P2AS6TCD63968 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63970 | HomeCove | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63969 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63872 | Agnis | (空) | - | - | 无渠道→需重量/人工 |
+| P2AS6TCD63972 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63973 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63974 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63975 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63976 | Twilight Cove | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63979 | HomeCove | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63982 | Agnis | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63963 | HomeCove | 昇新海外仓-昇新海外仓-RM | 昇新海外仓-RM | RM | 保留 昇新海外仓-RM |
+| P2AS6TCD63960 | HomeCove | 昇新海外仓-昇新海外仓-RM | 昇新海外仓-RM | RM | 保留 昇新海外仓-RM |
+| P2AS6TCD63962 | HomeCove | 昇新海外仓-BLACKCAT-RM | BLACKCAT-RM | RM | 保留 BLACKCAT-RM |
+| P2AS6TCD63984 | Agnis | 昇新海外仓-昇新海外仓-DPD | 昇新海外仓-DPD | DPD | 保留 昇新海外仓-DPD |
+
+## 3. 与 automation 的语义差
+
+| 语义 | automation | bridge | 对齐状态 |
+|---|---|---|---|
+| 渠道范围 | CHANNEL_ORDER 5 条全名 | config 5 条短名后缀 | ✅ 可映射 |
+| 快递方 | 渠道末段唯一，不轮转 | expected_carrier | ✅ |
+| WMS 双账号 | JMSM+JMCAT 网页发货 | 仅金猫 API key | ⚠️ BLACKCAT 闭环不能靠金猫 key |
+| 推仓 | 点物流下单 | applyTrackNo（关） | ⏳ 灰度后 |
+| 仓内发货 | 改快递方+批量发货 | 无 | ⬜ 不在 bridge 一期 |
+| 回传平台 | 成功标签确认发货 | weighingShipment | ⏳ 灰度后 |
+| 筛选模板 | 单品单数未取消 | 无 | ⬜ 缺口 |
+| 偏远单 | 偏远=否 | 无 | ⬜ 仓内/后期 |
+| 无渠道 | 人工/已有渠道为主 | 需 sku_weights 才能选 | ⚠️ 当前只能 FAILED |
+| 国家脱敏 | 页面可见 | default_country=GB | ✅ |
+
+## 4. 金猫 WMS 探测
+
+### 4.1 待处理单（未推仓 → 查无是预期）
+
+to_process 样本 BLACKCAT/昇新/无渠道 **全部** 在金猫 API 下「未查询到订单」——尚未物流下单，不能用来判断渠道归属。
+
+### 4.2 已发货历史单（`has_shipped`，近 7 天白名单，关键结论）
+
+从赛狐已发货拉取样本后查 **金猫 WMS API（当前 bridge 唯一 key）**：
+
+| 渠道族 | 抽样 | 金猫 WMS 查到 | 备注 |
+|---|---|---|---|
+| **BLACKCAT**（-RM/-DPD/-EH） | 6 | **0** | 全部 systemCode=999 未查询到 |
+| **昇新海外仓-昇新海外仓-*** | 6 | **6** | status=2，express 与渠道末段一致（如 RM），有运单号 |
+
+**业务语义（已坐实，与项目说明 §6 一致）：**
+
+- 昇新渠道：进 **金猫** WMS → bridge 用现有 key 可做 step4 闭环。
+- BLACKCAT 渠道：**不进金猫账**（至少不以 platformOrderNo=packageSn 进当前 key）→  
+  step4 若对 BLACKCAT 查金猫 WMS 会永远失败；应标 `wms_managed: false` 或换黑猫 API。  
+- automation 侧 BLACKCAT 走 **JMCAT 网页发货**，与上述一致。
+
+承运商一致性样例（昇新已发货）：
+
+- `P2AJ6TCD62639` 昇新-RM → WMS express=RM track=GV634782912GB ✅
+
+## 5. 建议的配置语义（确认后改 config；观察期可先只文档化）
+
+```yaml
+channels:
+  - name: BLACKCAT-RM   # 以及 -DPD -EH
+    wms_managed: false  # 金猫 API 查不到；step4 跳过
+    wms_account: JMCAT  # 文档：黑猫仓/网页
+  - name: 昇新海外仓-RM  # 以及 -DPD
+    wms_managed: true   # 金猫 API 可闭环
+    wms_account: JMSM
+```
+
+一期灰度建议：**只对 `wms_managed: true` 的昇新渠道做自动下单 + 称重回传**；BLACKCAT 继续 automation 黑猫段或人工。
+
+## 6. 待业务确认清单
+
+1. ~~BLACKCAT 是否进金猫 WMS？~~ → **实测：否（已发货 0/6）**。是否进黑猫仓/第三方，请业务一句话确认。
+2. 无渠道单：人工在赛狐指派 vs 补 sku_weights 自动选？
+3. 价卡与 SKU 克重何时提供？（当前 10 个活跃 SKU 全无克重）
+4. 是否接受「bridge 一期只闭环昇新、BLACKCAT 仍走网页」？
+
+## 7. 第 2 步验收
+
+| 项 | 结果 |
+|---|---|
+| 渠道后缀匹配 | ✅ 14/15（1 无渠道） |
+| 承运商 = 渠道末段 = expected_carrier | ✅ |
+| providerAuthDetailId ×5 与赛狐 status=1 | ✅ |
+| 与 automation 五渠道 / 账号映射 | ✅ |
+| 无渠道处理 | ⚠️ 暴露为人工/补重量 |
+| 国家脱敏 → default_country=GB | ✅ 本批 15 单 country 全空 |
+| **昇新 → 金猫 WMS 闭环语义** | ✅ 已发货 6/6 可查、承运一致 |
+| **BLACKCAT → 金猫 WMS** | ❌ 已发货 0/6 → 不可用金猫 key 闭环 |
+| 价卡/克重 | ⬜ 未补 |

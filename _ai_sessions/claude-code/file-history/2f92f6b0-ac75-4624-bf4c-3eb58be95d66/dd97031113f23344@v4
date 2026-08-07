@@ -1,0 +1,255 @@
+from __future__ import annotations
+
+from app.notify.owner_push import build_owner_messages
+from app.sync.feishu_schema import task_to_fields
+from app.sync.writer import (
+    ACTION_FIELD,
+    EXEC_DATE_FIELD,
+    HUMAN_ACTION_FIELD_NAMES,
+    _field_nonempty,
+    _exec_date_value_for_table,
+)
+
+
+def test_task_to_fields_includes_action_fields():
+    """合并后 task_to_fields 应包含运营动作字段（映射层可见）。"""
+    task = {
+        "task_id": "T20260721-abc",
+        "biz_date": "2026-07-21",
+        "shop_name": "特米-UK",
+        "asin": "B0TEST",
+        "product_title": "English Title",
+        "product_title_cn": "G4 20W",
+        "anomaly_type": "sales_drop",
+        "level": "red",
+        "owner": "潘启豪",
+        "status": "open",
+        "closure_status": "处理中",
+        "reason": "人为补货延迟",
+    }
+    fields = task_to_fields(task)
+    assert fields["主键"] == "T20260721-abc"
+    assert fields["店铺"] == "特米-UK"
+    assert fields["ASIN"] == "B0TEST"
+    assert fields["中文名称"] == "G4 20W"
+    assert fields["负责人"] == "潘启豪"
+    # 运营动作字段存在
+    assert "是否属实" in fields
+    assert "原因" in fields
+    assert fields["原因"] == "人为补货延迟"
+    assert "采取动作" in fields
+    assert fields["闭环状态"] == "处理中"
+    assert fields["执行人"] == "潘启豪"  # 默认回落到 owner
+    assert "复查日期" in fields
+    assert "执行日期" in fields
+    # 系统日批写入必须剥离人工动作列；执行日期由系统回填，不在人工保护集
+    assert "闭环状态" in HUMAN_ACTION_FIELD_NAMES
+    assert "原因" in HUMAN_ACTION_FIELD_NAMES
+    assert "采取动作" in HUMAN_ACTION_FIELD_NAMES
+    assert EXEC_DATE_FIELD not in HUMAN_ACTION_FIELD_NAMES
+    assert ACTION_FIELD == "采取动作"
+
+
+def test_exec_date_fill_helpers():
+    from app.sync.writer import _day_to_ms, _parse_feishu_day
+
+    assert _field_nonempty("补货") is True
+    assert _field_nonempty("  ") is False
+    assert _field_nonempty(None) is False
+    assert _field_nonempty(0) is True  # 数字 0 视为有值
+    # DATE 类型写毫秒；文本日期写 YYYY-MM-DD
+    assert _exec_date_value_for_table(
+        field_type=5, when_ms=1_700_000_000_000, when_day="2026-07-25"
+    ) == 1_700_000_000_000
+    assert (
+        _exec_date_value_for_table(
+            field_type=1, when_ms=1_700_000_000_000, when_day="2026-07-25"
+        )
+        == "2026-07-25"
+    )
+    assert _parse_feishu_day("2026-07-25") == "2026-07-25"
+    assert _parse_feishu_day(_day_to_ms("2026-07-25")) == "2026-07-25"
+    assert EXEC_DATE_FIELD == "执行日期_系统"
+    assert EXEC_DATE_FIELD not in HUMAN_ACTION_FIELD_NAMES
+
+
+def test_task_exec_date_lock(tmp_path):
+    from app.store.db import Database
+
+    db = Database(tmp_path / "e.db")
+    assert db.get_task_exec_date("T1") is None
+    db.set_task_exec_date("T1", "2026-07-20", source="first_action")
+    assert db.get_task_exec_date("T1") == "2026-07-20"
+    # 首填锁定，不覆盖
+    db.set_task_exec_date("T1", "2026-07-21", source="manual")
+    assert db.get_task_exec_date("T1") == "2026-07-20"
+
+
+def test_owner_push_notifies_new_tasks_only(tmp_path):
+    """小时批：新异常 task_id 及时通知；已通知过的不重复。"""
+    from app.notify.daily_digest import send_digest
+    from app.notify.owner_push import (
+        list_notified_owner_task_ids,
+        push_tasks_to_owners,
+    )
+    from app.store.db import Database
+
+    db = Database(tmp_path / "n.db")
+    day = "2026-07-26"
+
+    # 群摘要仍按业务日去重
+    send_digest(db, day, dry_run=True)
+    assert db.has_notify_for("daily_digest", day) is False
+    db.log_notify("daily_digest", {"biz_date": day, "dry_run": False, "text": "x"})
+    assert db.has_notify_for("daily_digest", day) is True
+    send_digest(db, day, dry_run=False)
+
+    db.upsert_task(
+        {
+            "task_id": "T-DEDUP-1",
+            "biz_date": day,
+            "shop_name": "特米-UK",
+            "asin": "B0DEDUP",
+            "anomaly_type": "sales_drop",
+            "level": "red",
+            "owner": "潘启豪",
+            "status": "open",
+            "streak": 1,
+        }
+    )
+    r1 = push_tasks_to_owners(db, day, dry_run=True)
+    assert r1["tasks"] == 1
+    assert r1["owners"] == 1
+    # dry-run 不占用去重
+    assert "T-DEDUP-1" not in list_notified_owner_task_ids(db)
+
+    db.log_notify(
+        "owner_push",
+        {
+            "biz_date": day,
+            "owner": "潘启豪",
+            "dry_run": False,
+            "task_ids": ["T-DEDUP-1"],
+            "task_count": 1,
+        },
+    )
+    assert "T-DEDUP-1" in list_notified_owner_task_ids(db)
+    r2 = push_tasks_to_owners(db, day, dry_run=False)
+    assert r2["tasks"] == 0
+    assert r2["tasks_skipped_notified"] == 1
+    assert r2["sent"] == 0
+
+    # 新任务应再次通知
+    db.upsert_task(
+        {
+            "task_id": "T-DEDUP-2",
+            "biz_date": day,
+            "shop_name": "特米-UK",
+            "asin": "B0NEW",
+            "anomaly_type": "inventory_low",
+            "level": "orange",
+            "owner": "潘启豪",
+            "status": "open",
+            "streak": 1,
+        }
+    )
+    r3 = push_tasks_to_owners(db, day, dry_run=True)
+    assert r3["tasks"] == 1
+    assert r3["task_ids"] == ["T-DEDUP-2"]
+    assert r3["owners"] == 1
+
+
+def test_boss_decision_dedupe_and_card(tmp_path):
+    from app.notify.boss_decision import (
+        build_boss_decision_card,
+        list_notified_boss_task_ids,
+        notify_boss_decisions,
+    )
+    from app.store.db import Database
+
+    db = Database(tmp_path / "b.db")
+    task = {
+        "task_id": "T-BOSS-1",
+        "biz_date": "2026-07-21",
+        "shop_name": "特米-UK",
+        "asin": "B0BOSS",
+        "anomaly_type": "inventory_low",
+        "level": "red",
+        "need_boss": 1,
+        "owner": "潘启豪",
+        "status": "open",
+        "value_summary": "FBA可售件数 0件",
+        "current_value": 0,
+        "baseline_value": None,
+        "change_value": None,
+        "streak": 1,
+        "reviewer": None,
+        "due_at": "2026-07-21T23:59:00Z",
+        "payload_json": {},
+    }
+    db.upsert_task(task)
+    card = build_boss_decision_card([task])
+    assert "elements" in card
+    # dry-run 不计入已通知
+    r1 = notify_boss_decisions(
+        db, dry_run=True, sync_from_feishu=False, force=False
+    )
+    assert r1["new"] == 1
+    assert "T-BOSS-1" in r1["task_ids"]
+    assert "T-BOSS-1" not in list_notified_boss_task_ids(db)
+    # 模拟正式发送已写 log（非 dry_run）
+    db.log_notify(
+        "boss_decision",
+        {"task_ids": ["T-BOSS-1"], "count": 1, "dry_run": False},
+    )
+    assert "T-BOSS-1" in list_notified_boss_task_ids(db)
+    r2 = notify_boss_decisions(
+        db, dry_run=True, sync_from_feishu=False, force=False
+    )
+    assert r2["new"] == 0
+    r3 = notify_boss_decisions(
+        db, dry_run=True, sync_from_feishu=False, force=True
+    )
+    assert r3["new"] == 1
+
+
+def test_build_owner_messages_groups_by_owner():
+    tasks = [
+        {
+            "task_id": "T1",
+            "shop_name": "特米-UK",
+            "asin": "A1",
+            "level": "red",
+            "anomaly_type": "sales_drop",
+            "owner": "潘启豪",
+            "status": "open",
+            "product_title_cn": "灯珠",
+            "value_summary": "当日销售额 7000 · 销售额环比 -30%",
+        },
+        {
+            "task_id": "T2",
+            "shop_name": "字同道合",
+            "asin": "A2",
+            "level": "orange",
+            "anomaly_type": "inventory_low",
+            "owner": "梦晴",
+            "status": "open",
+        },
+        {
+            "task_id": "T3",
+            "shop_name": "x",
+            "asin": "A3",
+            "level": "yellow",
+            "anomaly_type": "sales_drop",
+            "owner": "梦晴",
+            "status": "open",
+        },
+    ]
+    msgs = build_owner_messages(tasks, biz_date="2026-07-21")
+    owners = {m["owner"] for m in msgs}
+    assert owners == {"潘启豪", "梦晴"}
+    pan = next(m for m in msgs if m["owner"] == "潘启豪")
+    assert pan["red"] == 1 and pan["orange"] == 0
+    assert "T1" in pan["text"]
+    assert "任务表" in pan["text"]
+    assert "当日销售额" in pan["text"]

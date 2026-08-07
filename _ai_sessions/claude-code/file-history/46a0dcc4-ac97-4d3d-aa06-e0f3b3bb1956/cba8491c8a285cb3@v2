@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+"""测量：SKU 归一化能多命中多少；零库存货号的订单动销(超卖回溯)。"""
+import os, sys, re
+sys.path.insert(0, r"E:\project\AIc\ship-sentinel\backend")
+from xlsx_reader import read_records
+import build as B
+from collections import Counter, defaultdict
+
+SAMPLES = r"E:\project\AIc\ship-sentinel\samples"
+SELLFOX = os.path.join(SAMPLES, "sellfox", "Package2026_07_16(0).xlsx")
+
+inv = B.build_inventory()
+codes = set(inv.keys())
+
+def norm(c):
+    c = str(c or "").strip().upper()
+    c = re.sub(r"\s+", "", c)          # 去内部空格 UK-NVL-WB 90X60CM
+    c = re.sub(r"[*×X]\d+$", "", c)     # 去数量后缀 *3 ×2
+    return c
+
+norm_index = {}
+for c in codes:
+    norm_index.setdefault(norm(c), c)
+
+hdr, recs = read_records(SELLFOX)
+
+def match_exact(r):
+    for k in ("SKU","MSKU","订单商品编码"):
+        v = str(r.get(k,"")).strip()
+        if v and v in codes:
+            return v
+    return None
+
+def match_norm(r):
+    for k in ("SKU","MSKU","订单商品编码"):
+        v = str(r.get(k,"")).strip()
+        if not v: continue
+        if v in codes: return v
+        nv = norm(v)
+        if nv in norm_index: return norm_index[nv]
+    return None
+
+cur = Counter(); new = Counter(); plat_cur=Counter(); plat_new=Counter()
+gained=[]
+for r in recs:
+    plat = str(r.get("平台","")).strip()
+    e = match_exact(r); n = match_norm(r)
+    if e: cur[True]+=1; plat_cur[plat]+=1
+    if n: new[True]+=1; plat_new[plat]+=1
+    if n and not e and len(gained)<12:
+        gained.append((plat, str(r.get('SKU','')).strip(), str(r.get('MSKU','')).strip(), '->', n))
+
+print("精确命中(去重后货号数无关，这里是订单数):", cur[True])
+print("归一化命中:", new[True], " 净增:", new[True]-cur[True])
+print("精确 各平台:", dict(plat_cur))
+print("归一化 各平台:", dict(plat_new))
+print("归一化新增样例:")
+for g in gained: print("  ", g)
+
+# 零库存货号的订单动销(超卖/断货回溯)
+zero = [c for c,e in inv.items() if e["temu_stock"] is not None and e["temu_stock"]<=0]
+print("\n零库存货号:", zero)
+for zc in zero:
+    hit=[]
+    for r in recs:
+        m = match_norm(r)
+        if m==zc:
+            hit.append((str(r.get('包裹状态','')).strip(), str(r.get('订单状态','')).strip()))
+    st = Counter(x[0] for x in hit)
+    print("  %-10s 命中订单 %d 单, 包裹状态分布=%s" % (zc, len(hit), dict(st)))

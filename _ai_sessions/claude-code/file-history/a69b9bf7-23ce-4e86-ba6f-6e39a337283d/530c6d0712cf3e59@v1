@@ -1,0 +1,186 @@
+"""按负责人推送异常任务（群 webhook；可选 open_id @）。"""
+
+from __future__ import annotations
+
+import logging
+from collections import defaultdict
+from typing import Any
+
+from app.config import Settings, get_app_config, get_settings
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def _owner_open_ids(cfg: dict[str, Any]) -> dict[str, str]:
+    notify = cfg.get("notify") or {}
+    raw = notify.get("owner_open_ids") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(k): str(v) for k, v in raw.items() if k and v}
+
+
+def _view_urls(cfg: dict[str, Any], settings: Settings) -> tuple[str, str]:
+    notify = cfg.get("notify") or {}
+    base = (notify.get("view_base_url") or "").rstrip("?&")
+    if not base and settings.feishu_bitable_app_token:
+        base = f"https://dcnkj1up67d5.feishu.cn/base/{settings.feishu_bitable_app_token}"
+    tasks_url = base
+    actions_url = base
+    if settings.feishu_table_tasks:
+        sep = "&" if "?" in base else "?"
+        tasks_url = f"{base}{sep}table={settings.feishu_table_tasks}"
+    if settings.feishu_table_actions:
+        sep = "&" if "?" in base else "?"
+        actions_url = f"{base}{sep}table={settings.feishu_table_actions}"
+    return tasks_url, actions_url
+
+
+def build_owner_messages(
+    tasks: list[dict[str, Any]],
+    *,
+    biz_date: str,
+    settings: Settings | None = None,
+) -> list[dict[str, Any]]:
+    """返回 [{owner, text, open_id, red, orange, count}, ...]。"""
+    settings = settings or get_settings()
+    cfg = get_app_config()
+    open_ids = _owner_open_ids(cfg)
+    tasks_url, actions_url = _view_urls(cfg, settings)
+
+    by_owner: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for t in tasks:
+        if t.get("status") in ("closed", "resolved"):
+            continue
+        if t.get("level") not in ("red", "orange"):
+            continue
+        owner = str(t.get("owner") or "未分配")
+        by_owner[owner].append(t)
+
+    messages: list[dict[str, Any]] = []
+    for owner, items in sorted(by_owner.items()):
+        red = [t for t in items if t.get("level") == "red"]
+        orange = [t for t in items if t.get("level") == "orange"]
+        # 红优先
+        ordered = sorted(
+            items,
+            key=lambda x: (0 if x.get("level") == "red" else 1, x.get("shop_name") or ""),
+        )
+        lines = [
+            f"【ASIN健康度】{biz_date} 待你处理",
+            f"负责人: {owner} | 红 {len(red)} | 橙 {len(orange)}",
+            "",
+            "请打开「运营动作记录」补全：是否属实 / 原因 / 采取动作 / 复查日期",
+            f"动作表: {actions_url}",
+            f"任务表: {tasks_url}",
+            "",
+        ]
+        for t in ordered[:12]:
+            cn = t.get("product_title_cn") or t.get("product_title") or ""
+            cn_s = f" {cn}" if cn else ""
+            lines.append(
+                f"· [{t.get('level')}] {t.get('shop_name')} {t.get('asin')}{cn_s} "
+                f"| {t.get('anomaly_type')} | 编号 {t.get('task_id')}"
+            )
+        if len(ordered) > 12:
+            lines.append(f"· …另有 {len(ordered) - 12} 条，见任务表")
+        messages.append(
+            {
+                "owner": owner,
+                "text": "\n".join(lines),
+                "open_id": open_ids.get(owner),
+                "red": len(red),
+                "orange": len(orange),
+                "count": len(items),
+            }
+        )
+    return messages
+
+
+def push_tasks_to_owners(
+    db: Database,
+    biz_date: str,
+    *,
+    settings: Settings | None = None,
+    dry_run: bool = False,
+    only_new: bool = False,
+) -> dict[str, Any]:
+    """按负责人拆分推送。only_new=True 时仅推当日新建（streak==1）任务。"""
+    settings = settings or get_settings()
+    tasks = [
+        t
+        for t in db.list_tasks(biz_date=biz_date)
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange")
+    ]
+    if only_new:
+        tasks = [t for t in tasks if int(t.get("streak") or 1) <= 1]
+
+    messages = build_owner_messages(tasks, biz_date=biz_date, settings=settings)
+    result: dict[str, Any] = {
+        "owners": len(messages),
+        "tasks": len(tasks),
+        "sent": 0,
+        "dry_run": dry_run,
+        "details": [],
+    }
+
+    webhook = (settings.feishu_bot_webhook or "").strip()
+    for msg in messages:
+        detail = {
+            "owner": msg["owner"],
+            "count": msg["count"],
+            "red": msg["red"],
+            "orange": msg["orange"],
+            "at": bool(msg.get("open_id")),
+        }
+        db.log_notify(
+            "owner_push",
+            {
+                "biz_date": biz_date,
+                "owner": msg["owner"],
+                "text": msg["text"],
+                "task_count": msg["count"],
+            },
+        )
+        if dry_run:
+            logger.info("owner_push dry-run %s:\n%s", msg["owner"], msg["text"])
+            detail["status"] = "dry_run"
+            result["details"].append(detail)
+            continue
+        if not webhook:
+            logger.warning("未配置 FEISHU_BOT_WEBHOOK，负责人推送仅写 notify_log")
+            detail["status"] = "logged_only"
+            result["details"].append(detail)
+            continue
+        try:
+            from app.clients.feishu import FeishuClient
+
+            # 自定义机器人不需要 app 凭证；若 has_feishu 为 false 则直接 httpx
+            if settings.has_feishu:
+                with FeishuClient(settings) as client:
+                    client.send_webhook_text_with_at(
+                        msg["text"],
+                        at_open_ids=[msg["open_id"]] if msg.get("open_id") else None,
+                        webhook=webhook,
+                    )
+            else:
+                import httpx
+
+                text = msg["text"]
+                if msg.get("open_id"):
+                    text = f'<at user_id="{msg["open_id"]}"></at>\n{text}'
+                resp = httpx.post(
+                    webhook,
+                    json={"msg_type": "text", "content": {"text": text}},
+                    timeout=30,
+                )
+                resp.raise_for_status()
+            detail["status"] = "sent"
+            result["sent"] += 1
+        except Exception as e:
+            logger.exception("负责人推送失败 owner=%s", msg["owner"])
+            detail["status"] = f"error:{e}"
+        result["details"].append(detail)
+
+    return result

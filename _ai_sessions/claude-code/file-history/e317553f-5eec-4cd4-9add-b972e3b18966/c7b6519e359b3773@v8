@@ -1,0 +1,175 @@
+// 隔离世界：① 注入 inject.js；② 转发接口响应(带当前店名)；③ 读流量待关注 chip；
+// ④ 接收后台指令自动切店(轮巡用)。
+(function () {
+  const LOG = (...a) => { try { console.log('[TemuMon]', ...a); } catch (e) {} };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 注入 MAIN world hook
+  try {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL('inject.js');
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).appendChild(s);
+  } catch (e) { /* ignore */ }
+
+  // ---------- 读当前店铺名（右上角英文店名） ----------
+  function findStoreNameEl() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (t.length < 2 || t.length > 30) continue;
+      if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue;
+      if (r.left < W * 0.5) continue;
+      if (!best || r.left > best.left) best = { el, left: r.left };
+    }
+    return best ? best.el : null;
+  }
+  function readStoreName() { const el = findStoreNameEl(); return el ? (el.textContent || '').trim() : null; }
+
+  // ---------- 转发接口响应 ----------
+  window.addEventListener('message', (e) => {
+    if (e.source !== window) return;
+    const d = e.data;
+    if (!d || d.__temuMon !== true) return;
+    try { chrome.runtime.sendMessage({ type: 'capture', kind: d.kind, url: d.url, body: d.body, store: readStoreName() }); } catch (err) {}
+  });
+
+  // ---------- 读流量待关注 chip ----------
+  function readTrafficWatch() {
+    const nodes = [];
+    for (const el of document.querySelectorAll('*')) {
+      const t = el.textContent || '';
+      if (/商品流量待关注/.test(t) && t.length < 30) nodes.push(el);
+    }
+    nodes.sort((a, b) => (a.textContent || '').length - (b.textContent || '').length);
+    for (const el of nodes) {
+      for (const cand of [el, el.parentElement, el.parentElement && el.parentElement.parentElement]) {
+        if (!cand) continue;
+        const m = (cand.textContent || '').match(/商品流量待关注\s*([\d,]+)/);
+        if (m) return Number(m[1].replace(/,/g, ''));
+      }
+    }
+    return null;
+  }
+  let tries = 0;
+  const iv = setInterval(() => {
+    tries++;
+    const n = readTrafficWatch();
+    if (n != null) {
+      try { chrome.runtime.sendMessage({ type: 'chipStats', trafficWatch: n, store: readStoreName() }); } catch (e) {}
+      clearInterval(iv);
+    } else if (tries > 20) clearInterval(iv);
+  }, 2000);
+
+  // ---------- 切店自动化（轮巡用，由后台指令驱动） ----------
+  async function waitFor(fn, timeout, step) {
+    const t0 = Date.now();
+    for (;;) { let r; try { r = fn(); } catch (e) { r = null; } if (r) return r; if (Date.now() - t0 > (timeout || 6000)) return null; await sleep(step || 200); }
+  }
+  function textEls(re, maxLen) {
+    return [...document.querySelectorAll('*')].filter((e) => { const t = (e.textContent || '').trim(); return re.test(t) && t.length <= (maxLen || 40); });
+  }
+  function innermost(els) { return els.slice().sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0] || null; }
+  function clickableAncestor(el) { let n = el; for (let i = 0; i < 5 && n; i++) { if (n.tagName === 'BUTTON' || n.tagName === 'A' || n.getAttribute('role') === 'button') return n; n = n.parentElement; } return el; }
+  // 完整鼠标事件序列（很多组件要 mousedown/up 才触发，单纯 click 不生效）
+  function realClick(el) {
+    if (!el) return false;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (e) {}
+    }
+    try { el.click(); } catch (e) {}
+    return true;
+  }
+  function modalOpen() { return textEls(/切换店铺/, 10).length > 0; }
+  function closeModal() {
+    const x = document.querySelector('[aria-label="Close"],[aria-label="关闭"],.beast-core-modal-close,.semi-modal-close,.SnowModal_closeIcon');
+    if (x) { realClick(x); return; }
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', keyCode: 27, bubbles: true }));
+  }
+
+  // 压缩输出某元素的 HTML 骨架（去 style/data 属性），便于回传诊断
+  function domSkel(el, maxLen) {
+    if (!el) return 'null';
+    let h = (el.outerHTML || '');
+    h = h.replace(/\s(style|data-[\w-]+|aria-[\w-]+)="[^"]*"/g, '').replace(/>\s+</g, '><').replace(/\s{2,}/g, ' ');
+    return h.slice(0, maxLen || 2200);
+  }
+
+  async function openStoreModal(diag) {
+    diag = diag || [];
+    if (modalOpen()) { diag.push('弹窗已开'); return true; }
+    const nameEl = findStoreNameEl();
+    diag.push('店名=' + (nameEl ? (nameEl.textContent || '').trim() : 'null'));
+    if (nameEl) {
+      const r = nameEl.getBoundingClientRect();
+      let n = nameEl; for (let i = 0; i < 5 && n; i++) { realClick(n); n = n.parentElement; }
+      for (const dx of [10, 20, 30, -50]) {
+        const x = Math.min(window.innerWidth - 3, Math.max(2, r.right + dx));
+        const el = document.elementFromPoint(x, r.top + r.height / 2);
+        if (el) realClick(el);
+      }
+    }
+    const sw = await waitFor(() => { const b = textEls(/切换/, 6).map(clickableAncestor)[0]; return b || null; }, 3500);
+    diag.push('下拉切换按钮=' + !!sw);
+    if (sw) realClick(sw);
+    const ok = !!(await waitFor(() => (modalOpen() ? true : null), 4000));
+    diag.push('弹窗打开=' + ok);
+    // 打不开时，把顶栏店铺区的 HTML 结构抓回去分析（找不到再往上取祖先）
+    if (!ok && nameEl) {
+      let anc = nameEl; for (let i = 0; i < 3 && anc.parentElement; i++) anc = anc.parentElement;
+      diag.push('DOM=' + domSkel(anc));
+    }
+    return ok;
+  }
+
+  async function listStores() {
+    if (!(await openStoreModal())) return [];
+    await sleep(400);
+    const names = [...new Set(
+      textEls(/^[A-Za-z][A-Za-z0-9]*(?:\s[A-Za-z0-9]+){0,3}$/, 30)
+        .map((e) => (e.textContent || '').trim())
+        .filter((t) => t.length >= 2 && !/^(切换|Close|Beta|NEW)$/i.test(t))
+    )];
+    closeModal();
+    LOG('listStores =>', names);
+    return names;
+  }
+
+  async function switchTo(target) {
+    const diag = [];
+    if (!(await openStoreModal(diag))) return { ok: false, msg: '打不开弹窗 | ' + diag.join(' ; ') };
+    await sleep(300);
+    const esc = String(target).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rows = textEls(new RegExp(esc), 120).filter((e) => /切换/.test(e.textContent || ''));
+    const row = innermost(rows);
+    if (!row) { closeModal(); return { ok: false, msg: '弹窗里没找到店铺 ' + target }; }
+    let btn = [...row.querySelectorAll('button,[role=button]')].find((b) => /切换/.test(b.textContent || '') && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+    if (!btn) {
+      const cands = textEls(/^切换$/, 6).map(clickableAncestor).filter((b) => b && !b.disabled);
+      btn = cands.find((b) => row.contains(b) || (b.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_CONTAINED_BY)) || null;
+    }
+    if (!btn) { closeModal(); return { ok: false, msg: '没找到可点的切换按钮(' + target + ')，可能已是当前店' }; }
+    LOG('switchTo click', target);
+    realClick(btn); // 触发切店（SPA 更新或整页重载）
+    return { ok: true, msg: '已点击切换到 ' + target };
+  }
+
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (!msg || !msg.cmd) return;
+    (async () => {
+      try {
+        if (msg.cmd === 'ping') { sendResponse({ store: readStoreName() }); return; }
+        if (msg.cmd === 'listStores') { sendResponse({ names: await listStores() }); return; }
+        if (msg.cmd === 'switchTo') { sendResponse(await switchTo(msg.target)); return; }
+      } catch (e) { sendResponse({ ok: false, msg: String((e && e.message) || e) }); }
+    })();
+    return true;
+  });
+})();

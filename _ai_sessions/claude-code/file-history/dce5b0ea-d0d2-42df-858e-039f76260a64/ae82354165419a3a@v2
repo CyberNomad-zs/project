@@ -1,0 +1,23 @@
+import os, subprocess, imageio_ffmpeg
+
+exe = imageio_ffmpeg.get_ffmpeg_exe()
+print("FFMPEG:", exe)
+
+video = r"E:\project\海外仓\2026-07-08 09-47-00.mp4"
+outdir = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\dce5b0ea-d0d2-42df-858e-039f76260a64\scratchpad\frames"
+os.makedirs(outdir, exist_ok=True)
+
+# probe duration
+p = subprocess.run([exe, "-i", video], capture_output=True, text=True, encoding="utf-8", errors="replace")
+print("---INFO---")
+for line in p.stderr.splitlines():
+    if "Duration" in line or "Stream" in line:
+        print(line.strip())
+
+# extract 1 frame every 2 seconds, scaled down to width 1280
+cmd = [exe, "-i", video, "-vf", "fps=1/2,scale=1280:-1", "-q:v", "3",
+       os.path.join(outdir, "f_%03d.jpg"), "-y"]
+r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+print("RC:", r.returncode)
+print(r.stderr.splitlines()[-3:] if r.stderr else "")
+print("FILES:", len(os.listdir(outdir)))

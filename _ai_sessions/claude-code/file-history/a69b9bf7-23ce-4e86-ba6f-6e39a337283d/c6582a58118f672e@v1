@@ -1,0 +1,34 @@
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+from app.store.db import Database
+
+logger = logging.getLogger(__name__)
+
+
+def find_overdue_tasks(db: Database) -> list[dict[str, Any]]:
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    open_tasks = [t for t in db.list_tasks() if t.get("status") not in ("closed", "resolved")]
+    overdue = []
+    for t in open_tasks:
+        due = t.get("due_at")
+        if due and due < now:
+            overdue.append(t)
+    return overdue
+
+
+def build_overdue_message(tasks: list[dict[str, Any]]) -> str:
+    if not tasks:
+        return "当前无逾期未关闭任务。"
+    lines = [f"【ASIN健康度】逾期任务 {len(tasks)} 条"]
+    for t in tasks[:30]:
+        lines.append(
+            f"- [{t.get('level')}] {t.get('owner')} {t.get('shop_name')} "
+            f"{t.get('asin')} {t.get('anomaly_type')} due={t.get('due_at')}"
+        )
+    if len(tasks) > 30:
+        lines.append(f"…另有 {len(tasks) - 30} 条")
+    return "\n".join(lines)

@@ -1,0 +1,65 @@
+# -*- coding: utf-8 -*-
+"""
+step1：打开浏览器，请你手动登录两个系统。登录态会保存在持久化 profile 里，供后续脚本复用。
+用法：python capture/step1_login.py
+登录完两个系统后，直接【关闭整个浏览器窗口】即可。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def safe_goto(page, url, tries=4):
+    """带重试的导航；服务器偶发 502 等也不抛异常，尽量把页面打开。"""
+    last = None
+    for i in range(tries):
+        for wait in ("commit", "domcontentloaded"):
+            try:
+                page.goto(url, wait_until=wait, timeout=30000)
+                print(f"  [OK] 打开 {url} (wait={wait})")
+                return True
+            except Exception as e:
+                last = e
+        try:
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+    print(f"  [WARN] 打开 {url} 多次失败：{last}\n         浏览器已就绪，可手动在地址栏输入并回车重试。")
+    return False
+
+
+def main():
+    print(">>> 正在打开浏览器 ...")
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE,
+            headless=False,
+            no_viewport=True,
+            args=["--start-maximized"],
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        safe_goto(page, config.WMS_URL)
+        page2 = ctx.new_page()
+        safe_goto(page2, config.ERP_HOME)
+
+        print("=" * 60)
+        print(" 请在浏览器里分别登录：")
+        print("   1) 海外仓WMS ：", config.WMS_URL)
+        print("   2) Sellfox ERP：", config.ERP_HOME)
+        print(" 登录完成后 —— 直接【关闭整个浏览器窗口】，登录态自动保存。")
+        print("=" * 60)
+
+        # 等待用户关闭浏览器
+        while True:
+            try:
+                if len(ctx.pages) == 0:
+                    break
+                time.sleep(1)
+            except Exception:
+                break
+        print("SESSION_SAVED :", config.BROWSER_PROFILE)
+
+
+if __name__ == "__main__":
+    main()

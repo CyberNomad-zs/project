@@ -1,0 +1,89 @@
+/* TikTok shop analytics / home KPI daily snapshot (P2c).
+ * Heuristic DOM scrape — labels vary by region/locale; unmatched values go raw.
+ * Returns JSON string for ziniao page exec.
+ */
+(function () {
+  function clean(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+  function detectCurrency(text) {
+    var s = String(text || '');
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '');
+    s = s.replace(/USD|GBP|EUR|CNY|RMB/gi, '').replace(/%/g, '');
+    var n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+  function walkTexts(limit) {
+    var out = [];
+    var nodes = document.querySelectorAll('div,span,p,li,td,th,h1,h2,h3,h4,strong,label');
+    for (var i = 0; i < nodes.length && out.length < limit; i++) {
+      var el = nodes[i];
+      if (el.children && el.children.length > 3) continue;
+      var t = clean(el.textContent);
+      if (!t || t.length < 2 || t.length > 80) continue;
+      out.push(t);
+    }
+    return out;
+  }
+  function findNearNumber(labels) {
+    var texts = walkTexts(400);
+    for (var i = 0; i < texts.length; i++) {
+      var low = texts[i].toLowerCase();
+      var hit = false;
+      for (var j = 0; j < labels.length; j++) {
+        if (low.indexOf(labels[j].toLowerCase()) >= 0) { hit = true; break; }
+      }
+      if (!hit) continue;
+      // same string may be "GMV £1,234"
+      var n = parseNumber(texts[i]);
+      if (n != null) return { value: n, label: texts[i] };
+      for (var k = 1; k <= 3 && i + k < texts.length; k++) {
+        n = parseNumber(texts[i + k]);
+        if (n != null) return { value: n, label: texts[i] + ' → ' + texts[i + k] };
+      }
+    }
+    return null;
+  }
+  try {
+    var gmv = findNearNumber(['GMV', '成交额', '销售额', '销售金额', 'Total sales', 'Gross sales']);
+    var orders = findNearNumber(['订单数', '订单量', 'Orders', 'Order count', '下单数']);
+    var buyers = findNearNumber(['买家数', '客户数', 'Buyers', 'Customers', '购买人数']);
+    var refund = findNearNumber(['退款', 'Refund', '退货金额']);
+    var bodyCur = detectCurrency(document.body ? document.body.innerText.slice(0, 2000) : '');
+    var raw = {};
+    if (gmv) raw.gmvHit = gmv.label;
+    if (orders) raw.ordersHit = orders.label;
+    if (buyers) raw.buyersHit = buyers.label;
+    if (refund) raw.refundHit = refund.label;
+    var ok = !!(gmv || orders || buyers);
+    return JSON.stringify({
+      ok: ok,
+      module: 'shop_daily',
+      source: 'dom-labels',
+      url: location.href || '',
+      title: document.title || '',
+      currency: bodyCur || 'GBP',
+      gmv: gmv ? gmv.value : null,
+      ordersCnt: orders ? orders.value : null,
+      buyersCnt: buyers ? buyers.value : null,
+      refundAmount: refund ? refund.value : null,
+      raw: raw,
+      error: ok ? null : 'no KPI labels found. url=' + (location.href || '')
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false, module: 'shop_daily', url: location.href || '', error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

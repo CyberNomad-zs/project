@@ -1,0 +1,27 @@
+{
+  "info": {
+    "id": "019fb1d4-0444-7ec0-877e-42d04faf8ad7",
+    "cwd": "E:\\project\\清泉跨境系统（企业级）"
+  },
+  "session_summary": "浏览器关闭捕获自动恢复飞书提醒",
+  "created_at": "2026-07-30T07:01:29.803536600Z",
+  "updated_at": "2026-07-30T07:01:38.882387200Z",
+  "num_messages": 18,
+  "num_chat_messages": 15,
+  "current_model_id": "grok-4.5",
+  "next_trace_turn": 1,
+  "chat_format_version": 1,
+  "git_root_dir": "E:/project/清泉跨境系统（企业级）/",
+  "git_remotes": [
+    "https://github.com/JMZLAI/qingquan-kuajing.git"
+  ],
+  "head_commit": "f785fdfd17c283e06404f34b3ce250506a7ea2cb",
+  "head_branch": "main",
+  "request_id": "60d93c77-9b54-4dca-9aeb-29a04cc5f2d9",
+  "grok_home": "C:\\Users\\Administrator\\.grok",
+  "last_active_at": "2026-07-30T07:01:38.882387200Z",
+  "generated_title": "浏览器关闭捕获自动恢复飞书提醒",
+  "agent_name": "grok-build-plan",
+  "sandbox_profile": "off",
+  "reasoning_effort": "high"
+}

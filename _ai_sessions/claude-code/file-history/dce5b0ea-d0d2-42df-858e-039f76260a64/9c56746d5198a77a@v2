@@ -1,0 +1,39 @@
+# 海外仓订单发货 · 自动化
+
+基于 **Playwright + Python** 的浏览器自动化，覆盖 ERP + WMS 全流程。
+
+## 目录结构
+```
+automation/
+  config.py            # 地址、DRY_RUN 开关、数量上限等
+  rules.py             # 快递方规则（金猫 RM>DPD；黑猫 RM>DPD>EH）
+  capture/
+    step1_login.py     # 手动登录一次，保存登录态到 .browser_profile
+    step2_capture.py   # 复用登录态，导出真实页面 DOM+截图（用于写选择器）
+    smoke_test.py      # 环境自检
+    dumps/             # 导出的 HTML / 截图
+  run_shipping.py      # 主流程（编写中，先跑 DRY_RUN 空跑）
+  logs/                # 运行日志
+  .browser_profile/    # 持久化登录（勿提交/勿泄露）
+```
+
+## 使用步骤
+1. **登录一次**（保存登录态）：
+   ```
+   python capture/step1_login.py
+   ```
+   在弹出的浏览器里登录 海外仓WMS 和 Sellfox ERP，然后关闭浏览器窗口。
+2. **导出页面结构**（供编写/校验选择器）：
+   ```
+   python capture/step2_capture.py
+   ```
+3. **空跑演练**（DRY_RUN=True，不真正发货）：
+   ```
+   python run_shipping.py
+   ```
+4. 确认无误后，将 `config.py` 的 `DRY_RUN` 改为 `False` 开启真实发货。
+
+## 安全
+- 首次务必 `DRY_RUN=True` 空跑，人工核对日志与截图。
+- `MAX_ORDERS_PER_RUN` 限制单次处理量，防止误操作放大。
+- 登录态用持久化 profile 保存，脚本不接触明文密码。

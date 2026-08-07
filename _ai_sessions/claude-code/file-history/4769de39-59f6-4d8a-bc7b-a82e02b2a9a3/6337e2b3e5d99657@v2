@@ -1,0 +1,5 @@
+- [流量主路径插件](traffic-plugin-primary.md) — 2026-07-31 起：插件 v14 仅流量 + 服务器赛狐上下架；本机 Playwright 流量退役日常
+- [Temu 监测项目](temu-monitor-project.md) — 多店铺在售数量+流量异常监测，Node+Playwright+飞书，关键约束与校准/登录注意点
+- [Temu 插件版本](temu-plugin-versions.md) — Chrome 插件各版本修复的 bug 与版本号对照（含 v14）
+- [赛狐下架监测](sellfox-delist-monitor.md) — temu-monitor 内赛狐 OpenAPI 下架（selectStatus=12）
+- [赛狐服务器部署](sellfox-server-deploy.md) — Linux 固定 IP + systemd 只跑赛狐下架，解决白名单

@@ -1,0 +1,57 @@
+# systemd unit — Temu 赛狐上下架监测（纯 API，无需 Chrome）
+#
+# 安装（root）:
+#   cp deploy/sellfox.service /etc/systemd/system/temu-sellfox.service
+#   # 按实际路径改 WorkingDirectory / User / ExecStart 里的 node
+#   systemctl daemon-reload
+#   systemctl enable --now temu-sellfox
+#
+# 日志: journalctl -u temu-sellfox -f
+# 业务日志文件: <WorkingDirectory>/data/monitor.log
+
+[Unit]
+Description=Temu Sellfox on-sale change monitor (delist + onshelf via OpenAPI)
+Documentation=file:///opt/temu-monitor/SELLFOX.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=temu
+Group=temu
+WorkingDirectory=/opt/temu-monitor
+
+# 仅赛狐模块：零 npm 依赖（Node 18+ 自带 fetch）
+ExecStart=/usr/bin/node src/sellfox/cli.js start
+Restart=always
+RestartSec=30
+
+# 给 SIGTERM 一点时间跑完当前一轮 / 打断 sleep
+TimeoutStopSec=60
+KillMode=mixed
+KillSignal=SIGTERM
+
+# 环境（密钥也可放这里，优先于 sellfox.config.json 里同名字段）
+# Environment=SELLFOX_CLIENT_ID=
+# Environment=SELLFOX_CLIENT_SECRET=
+# Environment=SELLFOX_DEBUG=0
+Environment=NODE_ENV=production
+Environment=TZ=Asia/Shanghai
+
+# 安全加固（纯出站 HTTP，不需要写系统目录）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/temu-monitor/data /opt/temu-monitor/logs
+
+# 资源：API 轮询很轻
+MemoryMax=256M
+CPUQuota=50%
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=temu-sellfox
+
+[Install]
+WantedBy=multi-user.target

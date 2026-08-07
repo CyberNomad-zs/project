@@ -1,0 +1,175 @@
+// 纯逻辑单测：限流基线 / productId 冷却 / 切店不应重复告警
+// 运行：node test_traffic_dedupe.js
+
+const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
+function pruneAlertedMap(map, now) {
+  const out = {};
+  const keepFor = ALERT_COOLDOWN_MS * 4;
+  for (const id of Object.keys(map || {})) {
+    const ts = map[id];
+    if (typeof ts === 'number' && now - ts < keepFor) out[id] = ts;
+  }
+  return out;
+}
+function pickFreshItems(items, alertedMap, now) {
+  const fresh = [];
+  const seen = {};
+  for (const it of items || []) {
+    if (!it || !it.productId) continue;
+    const pid = String(it.productId);
+    if (seen[pid]) continue;
+    seen[pid] = true;
+    const last = alertedMap && alertedMap[pid];
+    if (typeof last === 'number' && now - last < ALERT_COOLDOWN_MS) continue;
+    fresh.push(it);
+  }
+  return fresh;
+}
+function markAlerted(alertedMap, items, now) {
+  const out = Object.assign({}, alertedMap || {});
+  for (const it of items || []) {
+    if (it && it.productId) out[String(it.productId)] = now;
+  }
+  return out;
+}
+function alertedMapSize(map) {
+  return map && typeof map === 'object' ? Object.keys(map).length : 0;
+}
+function hasTrafficBaseline(snap) {
+  if (!snap || typeof snap !== 'object') return false;
+  const n = alertedMapSize(snap.alertedTrafficIds)
+    + alertedMapSize(snap.alertedWatchIds)
+    + alertedMapSize(snap.alertedDeclineIds);
+  return n > 0;
+}
+
+// v18：chip 相对高水位未升高 → 静默吸收
+function decideAlert(pool, alerted, snap, now) {
+  const prevHigh = Math.max(
+    typeof snap.trafficWatchHigh === 'number' ? snap.trafficWatchHigh : 0,
+    typeof snap.trafficWatch === 'number' ? snap.trafficWatch : 0
+  );
+  const curWatch = typeof snap._curWatch === 'number' ? snap._curWatch : prevHigh;
+  const chipReallyUp = curWatch > prevHigh;
+  const baselineReady = hasTrafficBaseline(snap);
+  let nextAlerted = Object.assign({}, alerted);
+  let fresh = [];
+  let silenced = 0;
+  let seeded = false;
+
+  if (!baselineReady) {
+    if (pool.length > 0) {
+      nextAlerted = markAlerted(nextAlerted, pool, now);
+      seeded = true;
+    }
+    return { fresh, nextAlerted, silenced, seeded, chipReallyUp, high: Math.max(prevHigh, curWatch || 0) };
+  }
+
+  fresh = pickFreshItems(pool, nextAlerted, now);
+  if (fresh.length && !chipReallyUp) {
+    silenced = fresh.length;
+    nextAlerted = markAlerted(nextAlerted, fresh, now);
+    fresh = [];
+  }
+  if (fresh.length) nextAlerted = markAlerted(nextAlerted, fresh, now);
+  // 见过的都记入
+  nextAlerted = markAlerted(nextAlerted, pool, now);
+  return { fresh, nextAlerted, silenced, seeded, chipReallyUp, high: Math.max(prevHigh, curWatch || 0) };
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error('FAIL: ' + msg);
+  console.log('OK  ' + msg);
+}
+
+const now = Date.now();
+const items = [
+  { productId: '111', name: 'A', severity: 'general' },
+  { productId: '222', name: 'B', severity: 'general' },
+  { productId: '333', name: 'C', severity: 'severe' },
+];
+
+// 1) 空 snapshot / 空 {} 不算基线
+assert(!hasTrafficBaseline({}), 'empty snap no baseline');
+assert(!hasTrafficBaseline({ alertedTrafficIds: {} }), 'empty alerted map no baseline');
+assert(!hasTrafficBaseline({ trafficBaselineAt: now }), 'baselineAt alone no longer enough');
+assert(hasTrafficBaseline({ alertedTrafficIds: { '111': now } }), 'nonempty alerted counts');
+
+// 2) 首次 seed 后，同批再扫 → fresh 为空
+let alerted = markAlerted({}, items, now);
+assert(Object.keys(alerted).length === 3, 'seed marks 3 ids');
+let fresh = pickFreshItems(items, alerted, now + 1000);
+assert(fresh.length === 0, 'same items within cooldown → no fresh');
+
+// 3) 冷却过期后可再报
+fresh = pickFreshItems(items, alerted, now + ALERT_COOLDOWN_MS + 1);
+assert(fresh.length === 3, 'after cooldown all fresh again');
+
+// 4) 新 productId 可报
+fresh = pickFreshItems(
+  items.concat([{ productId: '999', name: 'New' }]),
+  alerted,
+  now + 60 * 1000
+);
+assert(fresh.length === 1 && fresh[0].productId === '999', 'only brand-new id is fresh');
+
+// 5) 竞态盖掉 alerted 后，空 map 不算 ready → reseed 不告警
+{
+  const wiped = { alertedTrafficIds: {} };
+  assert(!hasTrafficBaseline(wiped), 'wiped empty map must NOT be baseline-ready');
+  const reseed = markAlerted({}, items, now);
+  const f2 = pickFreshItems(items, reseed, now + 1);
+  assert(f2.length === 0, 'after reseed no alert on same pool');
+}
+
+// 6) v18：切店场景——baseline 在，但本页 ID 不在 alerted，chip 未升高 → 静默
+{
+  const snap = {
+    alertedTrafficIds: { 'old': now },
+    trafficWatch: 4,
+    trafficWatchHigh: 4,
+    _curWatch: 4, // chip 没变
+  };
+  // 模拟 alerted 丢了部分 ID（只剩 old），pool 仍是 3 个限流
+  const partial = { old: now };
+  const r = decideAlert(items, partial, snap, now + 1000);
+  assert(r.fresh.length === 0, 'switch-store same chip → no feishu');
+  assert(r.silenced === 3, 'three ids silently absorbed');
+  assert(r.nextAlerted['111'] && r.nextAlerted['222'] && r.nextAlerted['333'], 'ids recorded after silent');
+}
+
+// 7) v18：chip 真升高 + 新 ID → 告警
+{
+  const snap = {
+    alertedTrafficIds: { '111': now },
+    trafficWatch: 4,
+    trafficWatchHigh: 4,
+    _curWatch: 5,
+  };
+  const pool = items.concat([{ productId: '999', name: 'New', severity: 'general' }]);
+  const r = decideAlert(pool, { '111': now }, snap, now + 1000);
+  assert(r.chipReallyUp === true, 'chip 4→5 is real rise');
+  assert(r.fresh.some((x) => x.productId === '999'), 'new id alerts when chip rises');
+  // 已在 alerted 的 111 不在 fresh；222/333 若从未报过且 chip 升高也会在 fresh
+}
+
+// 8) v18：chip 瞬时掉 0 再恢复 4 → 高水位仍 4，不告警
+{
+  const snap = {
+    alertedTrafficIds: { '111': now, '222': now, '333': now },
+    trafficWatch: 4, // 我们禁止写成 0
+    trafficWatchHigh: 4,
+    _curWatch: 4,
+  };
+  const r = decideAlert(items, snap.alertedTrafficIds, snap, now + 2000);
+  assert(r.fresh.length === 0, 'after chip 0→4 recover no alert');
+  assert(r.chipReallyUp === false, '4 not greater than high 4');
+}
+
+// 9) prune 保留 24h 内
+const old = markAlerted({}, items, now - ALERT_COOLDOWN_MS * 5);
+const pruned = pruneAlertedMap(old, now);
+assert(Object.keys(pruned).length === 0, 'very old alerted entries pruned');
+
+console.log('\nAll traffic dedupe tests passed.');

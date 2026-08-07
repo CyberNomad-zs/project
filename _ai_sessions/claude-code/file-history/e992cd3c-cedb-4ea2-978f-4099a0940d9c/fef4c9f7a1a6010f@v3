@@ -1,0 +1,280 @@
+# -*- coding: utf-8 -*-
+"""
+WMS 发货编排自测（新规则，2026-07-09）：验证 process_shop「单一快递方一次发货」逻辑。
+
+新规则：一个渠道对应唯一快递方（渠道末段 -RM/-DPD/-EH），WMS 这批单只改成那一个快递方、
+发一次；能发的发出，发不出的留在'未发货'即留存提醒——**不换别的快递方、不轮转**。
+
+这里用 mock 把 wms 模块里所有和浏览器交互的函数替换成纯内存假实现，只保留 process_shop 的
+**编排逻辑**（全选/改快递方/发货一次、留存），从而不依赖真实系统验证正确性。
+
+运行：  python capture/wms_rotation_selftest.py
+不连任何系统、不需要登录，纯逻辑自测。
+"""
+import os, sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import config, core, wms
+
+
+class FakePage:
+    """占位 page，mock 里不真正用它。"""
+    pass
+
+
+class Scenario:
+    """模拟 WMS 未发货列表状态：
+    orders = {订单号: 该单能成功发货的快递方集合}
+    batch_ship 时，当前设置的快递方若在某单的可发集合里，则该单发出（离开列表）。
+    """
+    def __init__(self, orders, remote=None):
+        self.orders = dict(orders)          # 剩余未发货：{订单号: 能成功发货的快递方集合}
+        self.remote = set(remote or [])     # 偏远地区(Y)订单号集合（需求2：应被排除、留存）
+        self.non_remote_only = False        # 是否已设「是否偏远地区=否」筛选
+        self.current_courier = None
+        self.selected_ids = set()           # 当前勾选的订单号（全选/精确勾选都写这里）
+        self.courier_of = {}                # 每单【被设置】的快递方（set_courier 只作用于已勾选的单）
+        self.courier_history = []           # 依次设置过的快递方（新规则下应至多 1 个）
+        self.ship_rounds = 0
+
+    def _visible(self):
+        # 真实 DOM 只反映当前筛选：设了「偏远=否」时列表只剩非偏远单
+        return [o for o in self.orders if not (self.non_remote_only and o in self.remote)]
+
+    # ---- 下面这些替换 wms.* 与 core.wms_login ----
+    def wms_login(self, page, account):
+        return True
+
+    def open_platform_orders(self, page):
+        self.selected_ids = set()
+        self.non_remote_only = False        # 页面重载会清掉偏远筛选（回到全部未发货）
+
+    def ensure_unshipped_filter(self, page):
+        return True   # mock 环境查询总成功（真实实现新增返回值：True=查询点成功、读到的 0 可信）
+
+    def count_rows(self, page):
+        return len(self.orders)
+
+    def read_order_numbers(self, page):
+        return list(self._visible())
+
+    def select_all(self, page):
+        vis = self._visible()
+        if not vis:
+            return False
+        self.selected_ids = set(vis)        # 全选=勾选当前可见的全部
+        return True
+
+    def select_orders(self, page, order_set):
+        # 精确勾选：只勾 order_set ∩ 当前可见的单（其它渠道遗留单不在 order_set，绝不会被勾）
+        vis = set(self._visible())
+        self.selected_ids = set(order_set) & vis
+        return list(self.selected_ids)
+
+    def set_courier(self, page, courier):
+        if not self.selected_ids:
+            return False
+        self.current_courier = courier
+        self.courier_history.append(courier)
+        for o in self.selected_ids:         # 关键：只改【已勾选】的单的快递方；未勾选的（如其它渠道遗留单）不动
+            self.courier_of[o] = courier
+        return True
+
+    def set_remote_filter(self, page, value="否"):
+        # 需求2：设「是否偏远地区=否」，之后全选/发货只作用于非偏远单
+        self.non_remote_only = (value == "否")
+        self.selected_ids = set()           # 查询刷新会丢勾选（真实行为）
+        return True
+
+    def batch_ship(self, page):
+        self.ship_rounds += 1
+        vis = set(self._visible())
+        # 只发【已勾选且可见】且其被设置的快递方能发的单
+        shipped = [o for o in self.selected_ids
+                   if o in vis and self.courier_of.get(o) in self.orders[o]]
+        for o in shipped:
+            del self.orders[o]
+        self.selected_ids = set()
+        return True
+
+
+def install(scn):
+    """把 scenario 的方法装到 wms / core 上，返回还原函数。"""
+    saved = {
+        "wms.open_platform_orders": wms.open_platform_orders,
+        "wms.ensure_unshipped_filter": wms.ensure_unshipped_filter,
+        "wms.count_rows": wms.count_rows,
+        "wms.read_order_numbers": wms.read_order_numbers,
+        "wms.select_all": wms.select_all,
+        "wms.select_orders": wms.select_orders,
+        "wms.set_courier": wms.set_courier,
+        "wms.set_remote_filter": wms.set_remote_filter,
+        "wms.batch_ship": wms.batch_ship,
+        "core.wms_login": core.wms_login,
+    }
+    wms.open_platform_orders = scn.open_platform_orders
+    wms.ensure_unshipped_filter = scn.ensure_unshipped_filter
+    wms.count_rows = scn.count_rows
+    wms.read_order_numbers = scn.read_order_numbers
+    wms.select_all = scn.select_all
+    wms.select_orders = scn.select_orders
+    wms.set_courier = scn.set_courier
+    wms.set_remote_filter = scn.set_remote_filter
+    wms.batch_ship = scn.batch_ship
+    core.wms_login = scn.wms_login
+
+    def restore():
+        wms.open_platform_orders = saved["wms.open_platform_orders"]
+        wms.ensure_unshipped_filter = saved["wms.ensure_unshipped_filter"]
+        wms.count_rows = saved["wms.count_rows"]
+        wms.read_order_numbers = saved["wms.read_order_numbers"]
+        wms.select_all = saved["wms.select_all"]
+        wms.select_orders = saved["wms.select_orders"]
+        wms.set_courier = saved["wms.set_courier"]
+        wms.set_remote_filter = saved["wms.set_remote_filter"]
+        wms.batch_ship = saved["wms.batch_ship"]
+        core.wms_login = saved["core.wms_login"]
+    return restore
+
+
+def run_case(name, account, courier, orders, expect_history, expect_left_orders, remote=None,
+             expect_remote=None, expect_fail=None, target_orders=None, expect_untouched=None):
+    scn = Scenario(orders, remote=remote)
+    restore = install(scn)
+    try:
+        res = wms.process_shop(FakePage(), account, courier, target_orders=target_orders)
+    finally:
+        restore()
+
+    left = sorted(res.get("left_orders") or [])
+    ok_hist = scn.courier_history == expect_history
+    ok_left = left == sorted(expect_left_orders)
+    ok_rounds = scn.ship_rounds <= 1                      # 新规则：至多发一次
+    ok = ok_hist and ok_left and ok_rounds and res.get("left", -1) == len(expect_left_orders)
+    print(f"\n[用例] {name}")
+    print(f"  渠道快递方: {courier}" + (f"   精确发货: {target_orders}" if target_orders is not None else ""))
+    print(f"  快递方设置顺序: {scn.courier_history}   期望: {expect_history}   {'OK' if ok_hist else 'X'}")
+    print(f"  仍未发货订单:   {left}   期望: {sorted(expect_left_orders)}   {'OK' if ok_left else 'X'}")
+    print(f"  发货轮数: {scn.ship_rounds}(应<=1) {'OK' if ok_rounds else 'X'}   before={res.get('before')} left={res.get('left')}")
+    # 跨渠道漏洞核心校验：其它渠道遗留单必须【仍未发货】且【快递方未被改动】
+    if expect_untouched is not None:
+        still_unshipped = all(o in scn.orders for o in expect_untouched)
+        courier_untouched = all(o not in scn.courier_of for o in expect_untouched)
+        ok_untouched = still_unshipped and courier_untouched
+        ok = ok and ok_untouched
+        print(f"  跨渠道遗留单未被触碰: {sorted(expect_untouched)}  仍未发={still_unshipped} 快递方未改={courier_untouched}   {'OK' if ok_untouched else 'X'}")
+    # 需求2 拆分校验：偏远留存(remote_orders) vs 真发货失败(fail_orders)
+    if expect_remote is not None:
+        got_remote = sorted(res.get("remote_orders") or [])
+        ok_remote = got_remote == sorted(expect_remote)
+        ok = ok and ok_remote
+        print(f"  偏远留存:       {got_remote}   期望: {sorted(expect_remote)}   {'OK' if ok_remote else 'X'}")
+    if expect_fail is not None:
+        got_fail = sorted(res.get("fail_orders") or [])
+        ok_fail = got_fail == sorted(expect_fail)
+        ok = ok and ok_fail
+        print(f"  真发货失败:     {got_fail}   期望: {sorted(expect_fail)}   {'OK' if ok_fail else 'X'}")
+    print(f"  => {'通过' if ok else '失败'}")
+    return ok
+
+
+def main():
+    # 自测不碰真实系统；显式置 DRY_RUN 以防误触（mock 已接管交互函数，不受其影响）
+    config.DRY_RUN = True
+    黑猫 = {"login": "JMCAT", "shop": "黑猫"}
+    金猫 = {"login": "JMSM", "shop": "金猫"}
+
+    results = []
+
+    # 用例1：金猫-RM 渠道，只改 RM 发一次；能 RM 发的发出，不能的留存（不换 DPD）
+    results.append(run_case(
+        "金猫-RM渠道-非RM单留存(不换)",
+        金猫, "RM",
+        orders={"P0001": {"RM"}, "P0002": {"RM"}, "P0003": {"DPD"}},
+        expect_history=["RM"],
+        expect_left_orders=["P0003"],
+    ))
+
+    # 用例2：金猫-DPD 渠道，只改 DPD 发一次
+    results.append(run_case(
+        "金猫-DPD渠道-非DPD单留存",
+        金猫, "DPD",
+        orders={"P0101": {"DPD"}, "P0102": {"RM"}},
+        expect_history=["DPD"],
+        expect_left_orders=["P0102"],
+    ))
+
+    # 用例3：黑猫-EH 渠道，只改 EH 发一次
+    results.append(run_case(
+        "黑猫-EH渠道-非EH单留存",
+        黑猫, "EH",
+        orders={"P0201": {"EH"}, "P0202": {"RM"}},
+        expect_history=["EH"],
+        expect_left_orders=["P0202"],
+    ))
+
+    # 用例4：黑猫-RM 渠道，全部能 RM 发 -> 一轮全发出，只设一次 RM
+    results.append(run_case(
+        "黑猫-RM渠道-一轮全发完",
+        黑猫, "RM",
+        orders={f"P03{i:02d}": {"RM"} for i in range(6)},
+        expect_history=["RM"],
+        expect_left_orders=[],
+    ))
+
+    # 用例5：金猫-RM 渠道，无一单能 RM 发 -> 全留存，仍只设一次 RM（不降级）
+    results.append(run_case(
+        "金猫-RM渠道-全失败全留存(不降级)",
+        金猫, "RM",
+        orders={"P0501": set(), "P0502": {"DPD"}},
+        expect_history=["RM"],
+        expect_left_orders=["P0501", "P0502"],
+        expect_remote=[], expect_fail=["P0501", "P0502"],   # 无偏远，两单都是真失败
+    ))
+
+    # 用例6（需求2）：金猫-RM 渠道，有 1 个偏远(Y)单 -> 设「偏远=否」后偏远单被排除、留存，
+    # 非偏远的 RM 单正常发出。P0602 是偏远单，即便快递方匹配 RM 也不该发出（被过滤掉）。
+    results.append(run_case(
+        "金猫-RM渠道-偏远单留存(需求2)",
+        金猫, "RM",
+        orders={"P0601": {"RM"}, "P0602": {"RM"}},
+        remote=["P0602"],
+        expect_history=["RM"],
+        expect_left_orders=["P0602"],
+        expect_remote=["P0602"], expect_fail=[],   # P0602 是偏远留存、非真失败
+    ))
+
+    # 用例7（跨渠道漏洞修复，2026-07-17）：黑猫-EH 精确发货。未发货列表里混入上一渠道(DPD)发货失败
+    # 遗留的单 PF01/PF02（只能 DPD 发）。传入本渠道订单号 [PT01,PT02] => 只发这两单、DPD 遗留单绝不被
+    # 勾选/改快递方/发货。这是旧全选逻辑会踩的坑：全选会把 PF01/PF02 也改成 EH 并误发。
+    results.append(run_case(
+        "黑猫-EH精确发货-DPD遗留单不被误改(漏洞修复)",
+        黑猫, "EH",
+        orders={"PT01": {"EH"}, "PT02": {"EH"}, "PF01": {"DPD"}, "PF02": {"DPD"}},
+        target_orders=["PT01", "PT02"],
+        expect_history=["EH"],
+        expect_left_orders=[],                 # 本渠道两单都发出；遗留单不计入本渠道 left
+        expect_remote=[], expect_fail=[],
+        expect_untouched=["PF01", "PF02"],     # DPD 遗留单必须仍未发、快递方未改
+    ))
+
+    # 用例8（精确发货 + 本渠道内有发不出的单 + 跨渠道遗留）：本渠道 PT12 发不出(只能 RM)应留存为真失败，
+    # 遗留单 PF11 仍不被触碰，且 PF11 绝不能被算进本渠道的 fail_orders（旧逻辑会误把它当本渠道失败留存）。
+    results.append(run_case(
+        "黑猫-EH精确发货-本渠道真失败与遗留单区分",
+        黑猫, "EH",
+        orders={"PT11": {"EH"}, "PT12": {"RM"}, "PF11": {"DPD"}},
+        target_orders=["PT11", "PT12"],
+        expect_history=["EH"],
+        expect_left_orders=["PT12"],           # 只有本渠道发不出的 PT12 留存
+        expect_remote=[], expect_fail=["PT12"],
+        expect_untouched=["PF11"],
+    ))
+
+    print("\n" + "=" * 50)
+    print(f"总计 {len(results)} 个用例，通过 {sum(results)} 个，失败 {len(results) - sum(results)} 个")
+    sys.exit(0 if all(results) else 1)
+
+
+if __name__ == "__main__":
+    main()

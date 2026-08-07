@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd /opt/qingquan/deploy
+docker compose -f docker-compose.prod.yml --env-file ../.env up -d --build api worker
+for i in $(seq 1 30); do
+  curl -fsS --max-time 3 http://127.0.0.1:8000/health >/dev/null 2>&1 && break
+  sleep 2
+done
+curl -fsS http://127.0.0.1:8000/health || true
+echo
+
+docker exec -i qingquan-db-1 psql -U qingquan -d qingquan <<'SQL'
+UPDATE outbox_event
+SET status = 'pending', available_at = now(), attempts = LEAST(attempts, 3)
+WHERE status = 'failed';
+UPDATE sync_feishu_job
+SET status = 'pending', error_message = NULL, finished_at = NULL, started_at = NULL
+WHERE table_key = 'tasks' AND status = 'failed';
+SELECT status, count(*) FROM outbox_event GROUP BY 1 ORDER BY 1;
+SELECT left(id::text,8) AS id, table_key, status
+FROM sync_feishu_job
+WHERE table_key = 'tasks' OR status IN ('pending', 'failed')
+ORDER BY created_at DESC;
+SQL
+
+sleep 6
+echo "== worker logs =="
+docker logs --tail 30 qingquan-worker-1 2>&1 || true
+
+echo "== final status =="
+docker exec -i qingquan-db-1 psql -U qingquan -d qingquan <<'SQL'
+SELECT status, count(*) FROM outbox_event GROUP BY 1 ORDER BY 1;
+SELECT left(id::text,8) AS id, table_key, status, left(coalesce(error_message,''),100) AS err
+FROM sync_feishu_job
+ORDER BY created_at DESC
+LIMIT 8;
+SQL
+
+USER=$(grep -E '^ADMIN_USERNAME=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+PASS=$(grep -E '^ADMIN_PASSWORD=' /opt/qingquan/.env | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'" | tr -d '\r')
+code=$(curl -sS -o /tmp/login2.json -w '%{http_code}' -X POST http://127.0.0.1:8000/api/v1/auth/login \
+  -H 'Content-Type: application/json' \
+  -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" || true)
+echo "login_http=$code"
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('/tmp/login2.json')
+d=json.loads(p.read_text(encoding='utf-8')) if p.exists() else {}
+print('token_ok', bool(d.get('access_token')))
+if not d.get('access_token'):
+    print(d)
+PY
+rm -f /tmp/login2.json
+docker compose -f docker-compose.prod.yml --env-file ../.env ps
+echo DONE

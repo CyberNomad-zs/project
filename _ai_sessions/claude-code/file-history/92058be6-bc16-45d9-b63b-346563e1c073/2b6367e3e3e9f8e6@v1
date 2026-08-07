@@ -1,0 +1,28 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+export const ROOT = resolve(__dirname, '..');
+
+/** 读取并规范化 config.json */
+export function loadConfig() {
+  const raw = JSON.parse(readFileSync(resolve(ROOT, 'config.json'), 'utf8'));
+  return {
+    feishuWebhook: raw.feishuWebhook || '',
+    feishuSecret: raw.feishuSecret || '',
+    intervalMinutes: Number(raw.intervalMinutes) || 15,
+    stores: raw.stores || 'all',
+    storeList: Array.isArray(raw.storeList) ? raw.storeList : [],
+    alerts: {
+      onSaleDrop: raw.alerts?.onSaleDrop !== false,
+      trafficAnomaly: raw.alerts?.trafficAnomaly !== false,
+    },
+    headless: raw.headless === true,
+    loginUrl: raw.loginUrl || 'https://agentseller.temu.com/goods/list',
+    goodsListUrl: raw.goodsListUrl || 'https://agentseller.temu.com/goods/list',
+    userDataDir: resolve(ROOT, raw.userDataDir || './.userdata'),
+    perStoreTimeoutMs: Number(raw.perStoreTimeoutMs) || 60000,
+    navTimeoutMs: Number(raw.navTimeoutMs) || 60000,
+  };
+}

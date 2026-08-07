@@ -1,0 +1,22 @@
+from pathlib import Path
+
+src = Path(r"E:/project/清泉跨境系统（企业级）/collectors/tiktok-ads/scripts/run-shop-modules.ps1")
+text = src.read_text(encoding="utf-8")
+out = Path(r"C:/Users/Administrator/AppData/Local/Temp/run-shop-modules-check.ps1")
+out.write_text(text, encoding="utf-8-sig")
+chk = Path(r"C:/Users/Administrator/AppData/Local/Temp/parse_check.ps1")
+chk.write_text(
+    "\n".join(
+        [
+            r"$path = 'C:\Users\Administrator\AppData\Local\Temp\run-shop-modules-check.ps1'",
+            r"$errs = $null",
+            r"$tok = $null",
+            r"[void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tok, [ref]$errs)",
+            r"if ($errs -and $errs.Count) { $errs | ForEach-Object { $_.ToString() }; exit 1 }",
+            r"'parse ok'",
+            "",
+        ]
+    ),
+    encoding="utf-8-sig",
+)
+print("written")

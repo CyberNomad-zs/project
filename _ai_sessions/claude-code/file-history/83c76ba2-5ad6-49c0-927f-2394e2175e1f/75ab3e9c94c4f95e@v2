@@ -1,0 +1,59 @@
+# 本目录说明（副本）
+
+| 项 | 内容 |
+|----|------|
+| 来源 | `E:\project\海外TK店铺广告投流数据自动化监测` |
+| 复制日期 | 2026-07-29 |
+| 位置 | `清泉跨境系统（企业级）/collectors/tiktok-ads` |
+| 原则 | **只在本副本上改**；不要回写/覆盖源项目 |
+
+## 复制范围
+
+- 已包含：`extension/`、`scripts/`、`config/`、`docs/`、`gui.py`、启动器等  
+- 已排除：`__pycache__`、`.git`、`.playwright-mcp`、`node_modules`
+
+## 安全提示
+
+`dist/` 中若存在带 `with-secrets` 的压缩包，含密钥风险，**勿提交 Git、勿外传**。后续改进请用无密钥配置（`stores.config.example.json` + 本机 `stores.config.json`）。
+
+## 与清泉中心
+
+- 旁路上报：见 `scripts/qingquan-client.ps1`、`config/stores.config.example.json` 中 `qingquan`  
+- 中心 Ingest：`POST /api/v1/ingest/tiktok_ads`  
+- 改造方案文档：仓库根 `docs/TK中心化改造方案.md`
+
+## 后续改进
+
+### 已做
+
+1. **P0 dual**：`qingquan-client.ps1` + multi-store 旁路上报；`writeMode=dual`  
+2. **P1 同页扩列**：预算/目标ROI/净成本/CPA/状态 + 原有核心字段  
+3. **中心库**：`003_tiktok_ads_p1_fields.sql`  
+4. **API 常驻脚本**（仓库根）：  
+   - `scripts/start-api.ps1`  
+   - `scripts/stop-api.ps1`  
+   - `scripts/status-api.ps1`  
+5. **修复**：  
+   - 日预算误匹配「创意加热预算」→ 已收紧表头  
+   - PS 上报空 body（`Field required`）→ 改用 `HttpWebRequest` 显式写 body  
+   - **页面默认近 7 天**→ 抓前切「昨天」（对齐原项目 `set-date-range.js` + multi-store / 扩展）  
+6. **验证（2026-07-29 业务日）**：SHOP INOUT 10 条进 PG，`daily_budget=10` 已落库  
+
+### 已知阻塞
+
+- **欧盟店 Pop/Gardena**：`seller.eu...` + 代理 `45.132.166.157` 易 `ERR_CONNECTION_RESET` / `about:blank`，需换 IP 或紫鸟侧代理  
+- 部分英区店页加载慢/失败时需重试（已加强 reopenOnBlank + scrapeRetries=3）  
+
+### 2026-07-30 修复
+
+1. **Ingest 401**：本机 `qingquan.apiKey` 须等于服务器 `INGEST_DEFAULT_API_KEY`（勿用默认 `dev-ingest-key`）  
+2. **生产缺 003**：已在服务器补 `003_tiktok_ads_p1_fields.sql` + 同步 `ingest.py` P1 列  
+3. **客户端**：`qingquan-client.ps1` 改用 curl/`JavaScriptSerializer` 稳 body；错误提示含 401/空 body 诊断  
+4. **慢页**：`about:blank` / Bridge 断连时关店重开再 visit；默认 3 次重试  
+
+### 待做
+
+1. 欧盟代理修好后 dual 再跑 Pop  
+2. P2：订单/健康等换页抓取  
+3. `stores.config.json` 勿提交密钥（已在 `.gitignore`）  
+4. 扩展路径旁路上报清泉（Stage A 扩展侧）  

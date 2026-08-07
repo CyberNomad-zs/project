@@ -1,0 +1,427 @@
+"""飞书多维表字段定义（type 数值见飞书 bitable 文档）。
+
+常用 type:
+  1 文本
+  2 数字
+  3 单选
+  4 多选
+  5 日期
+  7 复选框
+  11 人员
+  13 附件
+  15 超链接
+  17 电话
+  18 单向关联 (SingleLink)
+  19 查找引用（不支持 API 创建/更新，需在飞书 UI 手动配置）
+  20 公式
+  21 双向关联 (DuplexLink)
+  22 群组
+  23 创建时间
+  1001 创建人
+  1002 最后更新时间
+  1003 修改人
+  1004 自动编号
+  1005 最后编辑人
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from app.rules.engine import anomaly_type_cn
+
+# 文本 / 数字 / 日期 / 单选
+T_TEXT = 1
+T_NUM = 2
+T_SINGLE = 3
+T_DATE = 5
+T_CHECK = 7
+
+
+def _f(name: str, type_: int, **extra: Any) -> dict[str, Any]:
+    d: dict[str, Any] = {"field_name": name, "type": type_}
+    if extra:
+        d["property"] = extra.get("property") if "property" in extra else extra
+        if d["property"] is None:
+            d.pop("property", None)
+    return d
+
+
+def _single(name: str, options: list[str]) -> dict[str, Any]:
+    return {
+        "field_name": name,
+        "type": T_SINGLE,
+        "property": {
+            "options": [{"name": o} for o in options],
+        },
+    }
+
+
+ASIN_DAILY_FIELDS: list[dict[str, Any]] = [
+    _f("主键", T_TEXT),  # date|site|shop|asin
+    _f("日期", T_DATE),
+    _f("站点", T_TEXT),
+    _f("店铺", T_TEXT),
+    _f("ASIN", T_TEXT),
+    _f("父ASIN", T_TEXT),
+    _f("SKU", T_TEXT),
+    _f("MSKU", T_TEXT),
+    _f("产品名称", T_TEXT),
+    _f("中文名称", T_TEXT),
+    _f("品牌", T_TEXT),
+    _f("上架时间", T_TEXT),
+    _f("产品等级", T_TEXT),
+    _f("负责人", T_TEXT),
+    _f("销售额", T_NUM),
+    _f("销量", T_NUM),
+    _f("订单量", T_NUM),
+    _f("平均售价", T_NUM),
+    _f("销售额变化", T_NUM),
+    _f("订单量变化", T_NUM),
+    _f("Sessions", T_NUM),
+    _f("Sessions变化", T_NUM),
+    _f("PageViews", T_NUM),
+    _f("转化率", T_NUM),
+    _f("转化率变化pp", T_NUM),
+    _f("BuyBox", T_NUM),
+    _f("广告曝光", T_NUM),
+    _f("广告点击", T_NUM),
+    _f("CTR", T_NUM),
+    _f("广告花费", T_NUM),
+    _f("广告花费变化", T_NUM),
+    _f("CPC", T_NUM),
+    _f("ACOS", T_NUM),
+    _f("广告销售额", T_NUM),
+    _f("FBA可售", T_NUM),
+    _f("在途库存", T_NUM),
+    _f("可售天数", T_NUM),
+    _f("365+库龄", T_NUM),
+    _f("星级", T_NUM),
+    _f("星级变化", T_NUM),
+    _f("评分数", T_NUM),
+    _f("中差评数", T_NUM),
+    _f("Review数", T_NUM),
+    _f("同步批次", T_NUM),
+]
+
+TASK_FIELDS: list[dict[str, Any]] = [
+    _f("主键", T_TEXT),  # task_id
+    _f("异常编号", T_TEXT),
+    _f("日期", T_DATE),
+    _f("店铺", T_TEXT),
+    _f("ASIN", T_TEXT),
+    _f("产品", T_TEXT),
+    _f("中文名称", T_TEXT),
+    _f("异常类型", T_TEXT),
+    _single("等级", ["yellow", "orange", "red"]),
+    # 数值列仍保留；不同异常类型含义不同，见「指标摘要」与标签列
+    _f("当前值", T_NUM),
+    _f("对比值", T_NUM),
+    _f("变化幅度", T_NUM),
+    _f("当前值含义", T_TEXT),  # 如：可售天数 / 当前ACOS / FBA可售件数
+    _f("对比值含义", T_TEXT),  # 如：目标ACOS / FBA可售件数 / 对比基线销售额
+    _f("变化幅度含义", T_TEXT),  # 如：高于目标 / 销售额环比
+    _f("指标摘要", T_TEXT),  # 一行可读：可售天数 1.6天 · FBA可售件数 12件
+    _f("负责人", T_TEXT),
+    _f("审核人", T_TEXT),
+    _single("状态", ["open", "processing", "review", "closed", "resolved"]),
+    _f("截止时间", T_DATE),
+    _f("连续异常次数", T_NUM),
+    _f("需要老板决策", T_CHECK),
+    _f("说明", T_TEXT),  # 规则引擎生成的判定说明
+    # 运营动作字段（直接编辑，原「运营动作记录」表已合并到此处）
+    _f("是否属实", T_TEXT),
+    _f("原因", T_TEXT),
+    _f("判断依据", T_TEXT),
+    _f("采取动作", T_TEXT),
+    _f("执行日期", T_DATE),
+    _f("执行人", T_TEXT),
+    _f("需审核事项", T_TEXT),
+    _f("复查日期", T_DATE),
+    _f("动作前数据", T_TEXT),
+    _f("动作后数据", T_TEXT),
+    _f("是否有效", T_TEXT),
+    _f("下一步动作", T_TEXT),
+    _f("闭环状态", T_TEXT),
+]
+
+CONFIG_FIELDS: list[dict[str, Any]] = [
+    _f("主键", T_TEXT),
+    _f("配置类型", T_TEXT),  # owner / threshold
+    _f("店铺", T_TEXT),
+    _f("负责人", T_TEXT),
+    _f("审核人", T_TEXT),
+    _f("指标", T_TEXT),
+    _f("黄色阈值", T_TEXT),
+    _f("橙色阈值", T_TEXT),
+    _f("红色阈值", T_TEXT),
+    _f("备注", T_TEXT),
+]
+
+PRODUCT_MASTER_FIELDS: list[dict[str, Any]] = [
+    _f("主键", T_TEXT),  # 店铺|ASIN
+    _f("产品名称", T_TEXT),
+    _f("SKU", T_TEXT),
+    _f("ASIN", T_TEXT),
+    _f("店铺", T_TEXT),
+    _f("第一负责人", T_TEXT),
+    _f("第二负责人", T_TEXT),
+    _single("产品等级", ["S", "A", "B", "C", "D"]),
+    _single("产品状态", ["增长中", "新品测试", "暂停补货", "清仓", "稳定维护", "衰退优化"]),
+    _f("上架日期", T_DATE),
+    _single("产品角色", ["供应链优势品", "利润品", "季节性产品", "新品测试品", "清仓品"]),
+    _f("当前目标", T_TEXT),
+    _f("当前售价", T_NUM),
+    _f("采购成本", T_NUM),
+    _f("头程成本", T_NUM),
+    _single("配送方式", ["FBA", "FBM", "FBA/FBM"]),
+    _f("毛利率", T_NUM),
+    _f("库存天数", T_NUM),
+    _f("补货预警线", T_NUM),
+    _f("供应商编号", T_TEXT),
+    _f("主要竞品ASIN", T_TEXT),
+    _f("竞品价格评分", T_TEXT),
+    _f("核心卖点", T_TEXT),
+    _f("差异化", T_TEXT),
+    _f("核心关键词", T_TEXT),
+    _f("高转化词", T_TEXT),
+    _f("亏损词否定词", T_TEXT),
+    _f("广告结构摘要", T_TEXT),
+    _f("ACOS红线", T_NUM),
+    _f("不能随意调整项", T_TEXT),
+    _f("历史坑点", T_TEXT),
+    _f("操作禁忌", T_TEXT),
+    _f("主要差评点", T_TEXT),
+    _f("当前主要风险", T_TEXT),
+    _f("下一步动作", T_TEXT),
+    _f("最近复盘日期", T_DATE),
+    _f("档案完整度", T_NUM),
+]
+
+DAILY_SUMMARY_FIELDS: list[dict[str, Any]] = [
+    _f("主键", T_TEXT),  # {biz_date}
+    _f("日期", T_DATE),
+    _f("店铺数", T_NUM),
+    _f("ASIN总数", T_NUM),
+    _f("红色任务", T_NUM),
+    _f("橙色任务", T_NUM),
+    _f("黄色观察", T_NUM),
+    _f("任务总计", T_NUM),
+    _f("逾期任务", T_NUM),
+    _f("库存预警_红", T_NUM),
+    _f("库存预警_橙", T_NUM),
+    _f("广告异常", T_NUM),
+    _f("销量异常", T_NUM),
+    _f("TOP异常类型", T_TEXT),
+    _f("负责人分布", T_TEXT),  # JSON 字符串
+    _f("同步批次", T_NUM),
+]
+
+TABLE_SPECS: list[dict[str, Any]] = [
+    {"env_key": "FEISHU_TABLE_ASIN_DAILY", "name": "ASIN每日数据", "fields": ASIN_DAILY_FIELDS},
+    {"env_key": "FEISHU_TABLE_TASKS", "name": "异常任务", "fields": TASK_FIELDS},
+    {"env_key": "FEISHU_TABLE_CONFIG", "name": "配置表", "fields": CONFIG_FIELDS},
+    {"env_key": "FEISHU_TABLE_DAILY_SUMMARY", "name": "每日汇总", "fields": DAILY_SUMMARY_FIELDS},
+    {"env_key": "FEISHU_TABLE_PRODUCT_MASTER", "name": "产品主档案", "fields": PRODUCT_MASTER_FIELDS},
+]
+
+# local key -> 飞书列名（ASIN 每日）
+ASIN_FIELD_MAP: dict[str, str] = {
+    "biz_date": "日期",
+    "marketplace": "站点",
+    "shop_name": "店铺",
+    "asin": "ASIN",
+    "parent_asin": "父ASIN",
+    "sku": "SKU",
+    "msku": "MSKU",
+    "title": "产品名称",
+    "title_cn": "中文名称",
+    "brand": "品牌",
+    "open_date": "上架时间",
+    "product_grade": "产品等级",
+    "owner": "负责人",
+    "sale_price": "销售额",
+    "sale_num": "销量",
+    "order_num": "订单量",
+    "avg_sale_price": "平均售价",
+    "sale_price_change_pct": "销售额变化",
+    "order_num_change_pct": "订单量变化",
+    "sessions": "Sessions",
+    "sessions_change_pct": "Sessions变化",
+    "page_view": "PageViews",
+    "conversion_rate": "转化率",
+    "conversion_rate_change_pp": "转化率变化pp",
+    "buy_box_percent": "BuyBox",
+    "ad_impression": "广告曝光",
+    "ad_clicks": "广告点击",
+    "ad_ctr": "CTR",
+    "ad_cost": "广告花费",
+    "ad_cost_change_pct": "广告花费变化",
+    "cpc": "CPC",
+    "acos": "ACOS",
+    "ad_sales": "广告销售额",
+    "available": "FBA可售",
+    "in_transit": "在途库存",
+    "available_days": "可售天数",
+    "inv_age_365_plus": "365+库龄",
+    "rating": "星级",
+    "rating_change": "星级变化",
+    "rating_count": "评分数",
+    "low_review_num": "中差评数",
+    "review_num": "Review数",
+}
+
+
+def make_asin_pk(row: dict[str, Any]) -> str:
+    return "|".join(
+        [
+            str(row.get("biz_date") or ""),
+            str(row.get("marketplace") or ""),
+            str(row.get("shop_name") or ""),
+            str(row.get("asin") or ""),
+        ]
+    )
+
+
+def row_to_asin_fields(row: dict[str, Any], *, sync_run_id: int | None = None) -> dict[str, Any]:
+    fields: dict[str, Any] = {"主键": make_asin_pk(row)}
+    for k, title in ASIN_FIELD_MAP.items():
+        if k in row and row[k] is not None:
+            fields[title] = row[k]
+    # 日期字段使用时间戳（兼容飞书 DATE 类型）
+    if row.get("biz_date"):
+        fields["日期"] = _biz_date_ts(str(row["biz_date"]))
+    if sync_run_id is not None:
+        fields["同步批次"] = sync_run_id
+    return fields
+
+
+def _iso_to_ts(iso_str: str | None) -> int | None:
+    """将 ISO 时间字符串转为毫秒 Unix 时间戳（飞书 DATE 字段格式）。"""
+    if not iso_str:
+        return None
+    from datetime import datetime, timezone
+
+    # 尝试 YYYY-MM-DD 或 YYYY-MM-DDTHH:MM:SSZ
+    for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(iso_str, fmt)
+            return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except ValueError:
+            continue
+    return None
+
+
+def _task_metric_fields(task: dict[str, Any]) -> dict[str, Any]:
+    """从任务列或 payload_json 取指标语义字段。"""
+    payload = task.get("payload_json")
+    if isinstance(payload, str) and payload:
+        import json
+
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def pick(key: str) -> Any:
+        v = task.get(key)
+        if v is not None and v != "":
+            return v
+        return payload.get(key)
+
+    message = pick("message")
+    summary = pick("value_summary")
+    # 说明优先：判定文案 + 指标摘要（便于负责人一眼看懂）
+    note_parts = [p for p in (message, summary) if p]
+    note = " | ".join(note_parts) if note_parts else None
+    return {
+        "当前值含义": pick("current_label"),
+        "对比值含义": pick("baseline_label"),
+        "变化幅度含义": pick("change_label"),
+        "指标摘要": summary,
+        "说明": note,
+    }
+
+
+def task_to_fields(task: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        "主键": str(task.get("task_id") or ""),
+        "异常编号": str(task.get("task_id") or ""),
+        "日期": _biz_date_ts(str(task.get("biz_date") or ""))
+        if task.get("biz_date")
+        else None,
+        "店铺": task.get("shop_name"),
+        "ASIN": task.get("asin"),
+        "产品": task.get("product_title"),
+        "中文名称": task.get("product_title_cn"),
+        "异常类型": anomaly_type_cn(task.get("anomaly_type")),
+        "等级": task.get("level"),
+        "当前值": task.get("current_value"),
+        "对比值": task.get("baseline_value"),
+        "变化幅度": task.get("change_value"),
+        "负责人": task.get("owner"),
+        "审核人": task.get("reviewer"),
+        "状态": task.get("status") or "open",
+        "截止时间": _iso_to_ts(task.get("due_at")),
+        "连续异常次数": task.get("streak"),
+        "需要老板决策": bool(task.get("need_boss")),
+    }
+    fields.update(_task_metric_fields(task))
+    # 运营动作字段仅作 schema/映射声明；write_tasks_to_feishu 会剥离，
+    # 避免日批 upsert 覆盖负责人在飞书手填的内容。
+    # 若本地显式带了值（例如手工回填脚本），仍可出现在 fields 中供其它调用方使用。
+    fields.update(
+        {
+            "是否属实": task.get("is_real"),
+            "原因": task.get("reason"),
+            "判断依据": task.get("judgement_basis"),
+            "采取动作": task.get("action_taken"),
+            "执行日期": _biz_date_ts(str(task.get("exec_date") or ""))
+            if task.get("exec_date")
+            else None,
+            "执行人": task.get("executor") or task.get("owner"),
+            "需审核事项": task.get("review_items"),
+            "复查日期": _biz_date_ts(str(task.get("review_date") or ""))
+            if task.get("review_date")
+            else None,
+            "动作前数据": task.get("data_before"),
+            "动作后数据": task.get("data_after"),
+            "是否有效": task.get("is_effective"),
+            "下一步动作": task.get("next_action"),
+            "闭环状态": task.get("closure_status"),
+        }
+    )
+    return fields
+
+
+# --- 每日汇总 ---
+def _biz_date_ts(biz_date: str) -> int:
+    """将 'YYYY-MM-DD' 转为毫秒 Unix 时间戳（飞书日期字段格式）。"""
+    from datetime import datetime, timezone
+
+    dt = datetime.strptime(biz_date, "%Y-%m-%d")
+    return int(dt.replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def summary_to_fields(agg: dict[str, Any]) -> dict[str, Any]:
+    """将 aggregate_daily_summary 结果转为飞书每日汇总表 fields。"""
+    return {
+        "主键": agg.get("biz_date"),
+        "日期": _biz_date_ts(agg.get("biz_date") or ""),
+        "店铺数": agg.get("shop_count"),
+        "ASIN总数": agg.get("asin_count"),
+        "红色任务": agg.get("red_count"),
+        "橙色任务": agg.get("orange_count"),
+        "黄色观察": agg.get("yellow_count"),
+        "任务总计": agg.get("total_tasks"),
+        "逾期任务": agg.get("overdue_count"),
+        "库存预警_红": agg.get("inv_red"),
+        "库存预警_橙": agg.get("inv_orange"),
+        "广告异常": agg.get("ad_count"),
+        "销量异常": agg.get("sales_count"),
+        "TOP异常类型": anomaly_type_cn(agg.get("top_anomaly_type")),
+        "负责人分布": agg.get("owner_dist_json"),
+        "同步批次": None,
+    }

@@ -1,0 +1,83 @@
+# 清泉服务器（2C4G）
+
+| 项 | 值 |
+|---|---|
+| SSH | `ssh qingquan-sg` |
+| IP | `43.156.50.38` |
+| 用户 | `ubuntu` |
+| 规格 | 2 核 / 4G · Ubuntu 24.04 · 腾讯云轻量新加坡 |
+| 密钥 | 仓库 `keys/qingquan_sg_ed25519`（密码登录已关闭） |
+| 代码目录 | `/opt/qingquan` |
+| Compose | `/opt/qingquan/deploy/docker-compose.prod.yml` · project `qingquan` |
+
+```bash
+ssh -i keys/qingquan_sg_ed25519 ubuntu@43.156.50.38
+# 或本机已配别名：
+ssh qingquan-sg
+```
+
+## 热修 / 发版（api 镜像内嵌代码）
+
+api/worker **不挂载** `backend/app`，改代码后必须：
+
+1. `scp` 到 `/opt/qingquan/backend/...`（或 `deploy/deploy.sh` 全量 rsync）
+2. 有新迁移先 `docker cp` + `psql -f`（见下）
+3. 在服务器：
+
+```bash
+set -a; . /opt/qingquan/.env; set +a
+cd /opt/qingquan/deploy
+docker compose -p qingquan -f docker-compose.prod.yml --env-file ../.env build api worker
+docker compose -p qingquan -f docker-compose.prod.yml --env-file ../.env up -d api worker
+curl -sS http://127.0.0.1:8000/health
+```
+
+仅 recreate **不会**带上宿主机新文件；`main.py` 漏注册路由时 OpenAPI 会缺 `/api/v1/tk/*`。
+
+### P2 收口热修记录（2026-08-05）
+
+- 同步：`tk_ops`（含 `/tk/content/anomaly-eval`）、`tk_anomaly`（AMZ 人维列）、`tk_*_rules`、`tk_feishu_sync`/`bitable`、`015_tk_anomaly_amz_ops_fields.sql`、`web/src/App.vue`
+- 迁移：生产已 apply **015**（`level_code` / `description` / `current_value` / `needs_boss_decision`…）
+- 前端：服务器 `web/` 下 `npm ci && npm run build`，dist 含 **内容分析** `tk-content`
+- `.env`：删除脏行 `nFEISHU_BITABLE_TABLE_TK_CONTENT_DAILY`；保留 `FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY`
+- 验收：OpenAPI 含 content / content anomaly-eval / product-traffic；未鉴权 401；health ok
+
+### 商品卡 traffic 指标回填（2026-08-05）
+
+英文站表头 `View-to-paid rate` / `Viewers` 曾未映射 → 行上只有 GMV。修复：
+
+1. 采集 `scrape-product-traffic-page.js` 英文表头 + 单元格形态回填  
+2. ingest `_enrich_traffic_from_raw_cells`（新上报与幂等刷新）  
+3. 存量：`python scripts/tk_backfill_product_traffic_metrics.py`（容器内 `PYTHONPATH=/app`）  
+4. 日更门禁：`python scripts/tk_daily_quality_check.py`（已挂 `tk-p0-post-collect.ps1` 末尾）
+
+生产回填后：`product_traffic` 各锚点日 `null_imp=0 null_cvr=0`；quality **OK**。
+
+### 任务台人维 + 新鲜度（2026-08-05）
+
+- `GET /api/v1/tk/shop-daily` 增加 `freshness`：`shop_daily_max` / `ads_max` / `content_max` / `traffic_max` / `stale[]` / `boss_decision_count`（阈值对齐 `tk_daily_quality_check.py`）
+- 任务台：总览新鲜度条；异常表列 **等级 / 待老板决策 / 当前值·对比值 / 说明**
+- 飞书异常表：`feishu-tk-upgrade-anomaly-amz-style.py` 列已齐（skip）；`feishu-tk-daily-sync.ps1 -AnomalyOnly` → created=4 updated=30 failed=0
+- 生产：scp `tk_ops.py` + `web/src` → rebuild api/worker + `npm run build`；冒烟 `SHOP_DAILY_SMOKE_OK` / `ANOMALY_SMOKE_OK` / dist 含 `数据新鲜度` `待老板决策`
+
+## 迁移（已有库）
+
+```bash
+docker cp backend/migrations/010_xxx.sql qingquan-db-1:/tmp/
+docker exec qingquan-db-1 psql -U qingquan -d qingquan -v ON_ERROR_STOP=1 -f /tmp/010_xxx.sql
+```
+
+## 生产飞书 TK 同步（容器内）
+
+```bash
+# 需 .env 含 T1/T2/异常/T6 table id（T6=FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY）
+docker cp /opt/qingquan/scripts/feishu_tk_daily_sync.py qingquan-api-1:/tmp/feishu_tk_daily_sync.py
+# 若 api 镜像未 rebuild，同步前 docker cp 最新 tk_feishu_sync.py / bitable.py / config.py
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python /tmp/feishu_tk_daily_sync.py --lookback-days 14
+# 仅内容日：
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python /tmp/feishu_tk_daily_sync.py --content-only --lookback-days 30
+```
+
+一键建 T6（本机有 FEISHU_*）：`python scripts/feishu-tk-create-t6-content.py`

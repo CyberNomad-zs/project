@@ -1,0 +1,114 @@
+// Self-contained Feishu OAuth v2 (user_access_token) + wiki/docx reader.
+// Node 24 (global fetch). Reads config from env, writes result JSON to LARK_OUT.
+const http = require('http');
+const { spawn } = require('child_process');
+const fs = require('fs');
+
+const APP_ID = process.env.LARK_APP_ID;
+const APP_SECRET = process.env.LARK_APP_SECRET;
+const NODE_TOKEN = process.env.LARK_NODE_TOKEN;
+const OUT = process.env.LARK_OUT;
+const REDIRECT = 'http://localhost:3000/callback';
+const SCOPES = ['offline_access', 'docx:document:readonly', 'wiki:wiki:readonly', 'drive:drive:readonly'];
+
+function save(obj) { fs.writeFileSync(OUT, JSON.stringify(obj, null, 2), 'utf8'); }
+function done(code, obj) { save(obj); try { server.close(); } catch (e) {} process.exit(code); }
+
+const state = 'st' + String(APP_ID).slice(-6);
+const authUrl = 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + new URLSearchParams({
+  client_id: APP_ID,
+  redirect_uri: REDIRECT,
+  scope: SCOPES.join(' '),
+  state,
+  response_type: 'code',
+}).toString();
+
+async function exchangeToken(code) {
+  const r = await fetch('https://open.feishu.cn/open-apis/authen/v2/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      client_id: APP_ID,
+      client_secret: APP_SECRET,
+      code,
+      redirect_uri: REDIRECT,
+    }),
+  });
+  return r.json();
+}
+
+async function apiGet(url, token) {
+  const r = await fetch(url, { headers: { Authorization: 'Bearer ' + token } });
+  return r.json();
+}
+
+async function readDoc(token) {
+  const node = await apiGet(
+    'https://open.feishu.cn/open-apis/wiki/v2/spaces/get_node?token=' + encodeURIComponent(NODE_TOKEN),
+    token
+  );
+  if (node.code !== 0) return { docError: 'get_node failed', node };
+  const info = (node.data && node.data.node) || {};
+  const objToken = info.obj_token;
+  const objType = info.obj_type;
+  const out = { title: info.title, objToken, objType };
+  if (objType === 'docx') {
+    const raw = await apiGet(
+      'https://open.feishu.cn/open-apis/docx/v1/documents/' + objToken + '/raw_content', token);
+    out.content = raw.code === 0 ? raw.data.content : null;
+    if (raw.code !== 0) out.rawError = raw;
+  } else {
+    out.note = 'obj_type is not docx; different content API needed';
+  }
+  return out;
+}
+
+const server = http.createServer(async (req, res) => {
+  let u;
+  try { u = new URL(req.url, REDIRECT); } catch (e) { res.writeHead(400); res.end('bad'); return; }
+  if (u.pathname !== '/callback') { res.writeHead(404); res.end('not found'); return; }
+  const err = u.searchParams.get('error');
+  if (err) {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<h2>授权失败: ' + err + '</h2><p>' + (u.searchParams.get('error_description') || '') + '</p>');
+    done(1, { stage: 'authorize', error: err, desc: u.searchParams.get('error_description') });
+    return;
+  }
+  const code = u.searchParams.get('code');
+  try {
+    const tok = await exchangeToken(code);
+    const at = tok.access_token || (tok.data && tok.data.access_token);
+    if (!at) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end('<h2>换取 token 失败,请回到终端查看。</h2>');
+      done(1, { stage: 'token', tokenResponse: tok });
+      return;
+    }
+    const doc = await readDoc(at);
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end('<h2>✅ 授权成功，已读取文档。可关闭本页返回 Claude Code。</h2>');
+    done(0, {
+      stage: 'done',
+      granted_scope: tok.scope,
+      has_refresh: !!tok.refresh_token,
+      refresh_token: tok.refresh_token || null,
+      expires_in: tok.expires_in,
+      ...doc,
+    });
+  } catch (e) {
+    res.writeHead(500); res.end('error');
+    done(1, { stage: 'exception', error: String(e && e.stack || e) });
+  }
+});
+
+server.on('error', (e) => { done(3, { stage: 'listen', error: String(e) }); });
+
+server.listen(3000, () => {
+  console.log('Listening on ' + REDIRECT);
+  console.log('AUTH_URL=' + authUrl);
+  // Open default browser robustly (handles & in URL as single arg).
+  spawn('rundll32', ['url.dll,FileProtocolHandler', authUrl], { detached: true, stdio: 'ignore' });
+});
+
+setTimeout(() => { done(2, { stage: 'timeout', note: 'no callback within 5 min' }); }, 300000);

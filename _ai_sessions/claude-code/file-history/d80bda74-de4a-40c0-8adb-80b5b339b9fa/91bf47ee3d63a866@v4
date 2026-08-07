@@ -1,0 +1,165 @@
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import click
+
+# allow `python -m app.main` from project root
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from app.config import ensure_data_dir, get_rules_config, get_settings
+from app.store.db import Database
+
+
+def _setup_logging(level: str) -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+
+@click.group()
+@click.option("--log-level", default=None, help="DEBUG/INFO/WARNING")
+@click.pass_context
+def cli(ctx: click.Context, log_level: str | None) -> None:
+    """亚马逊 ASIN 健康度：赛狐同步 → 规则 → 任务 → 提醒."""
+    settings = get_settings()
+    _setup_logging(log_level or settings.log_level)
+    ensure_data_dir(settings)
+    ctx.ensure_object(dict)
+    ctx.obj["settings"] = settings
+    ctx.obj["db"] = Database(settings.db_path)
+
+
+@cli.command("sync")
+@click.option("--date", "biz_date", default=None, help="业务日期 YYYY-MM-DD，默认昨天")
+@click.option("--snapshot/--no-snapshot", default=None, help="是否保存原始 JSON 快照")
+@click.pass_context
+def sync_cmd(ctx: click.Context, biz_date: str | None, snapshot: bool | None) -> None:
+    """从赛狐拉取产品分析 V2 并写入本地（及可选飞书）."""
+    from app.sync.product_analyze import sync_product_analyze_day
+
+    result = sync_product_analyze_day(
+        biz_date,
+        db=ctx.obj["db"],
+        save_snapshot=snapshot,
+    )
+    click.echo(result)
+
+
+@cli.command("rules")
+@click.option("--date", "biz_date", required=True, help="业务日期 YYYY-MM-DD")
+@click.option(
+    "--reset-tasks",
+    is_flag=True,
+    help="先清空该日任务再生成（试运行调阈值用）",
+)
+@click.pass_context
+def rules_cmd(ctx: click.Context, biz_date: str, reset_tasks: bool) -> None:
+    """对本地 asin_daily 跑规则并生成/更新异常任务."""
+    from app.rules.engine import evaluate_rows
+    from app.rules.tasks import apply_anomalies_to_tasks
+
+    db: Database = ctx.obj["db"]
+    rows = db.list_asin_daily(biz_date)
+    if not rows:
+        click.echo(f"无数据: asin_daily @ {biz_date}，请先 sync")
+        raise SystemExit(1)
+    if reset_tasks:
+        n = db.clear_open_tasks(biz_date)
+        click.echo(f"cleared tasks for {biz_date}: {n}")
+    rules_cfg = get_rules_config()
+    anomalies = evaluate_rows(rows, rules_cfg)
+    stats = apply_anomalies_to_tasks(
+        anomalies, biz_date=biz_date, db=db, rules_cfg=rules_cfg
+    )
+    click.echo(
+        {
+            "biz_date": biz_date,
+            "rows": len(rows),
+            "anomalies": len(anomalies),
+            "tasks": stats,
+        }
+    )
+
+
+@cli.command("notify")
+@click.option("--date", "biz_date", required=True, help="业务日期 YYYY-MM-DD")
+@click.option("--dry-run", is_flag=True, help="只打印不发送")
+@click.pass_context
+def notify_cmd(ctx: click.Context, biz_date: str, dry_run: bool) -> None:
+    """生成并发送（或 dry-run）每日异常摘要."""
+    from app.notify.daily_digest import send_digest
+
+    text = send_digest(
+        ctx.obj["db"], biz_date, settings=ctx.obj["settings"], dry_run=dry_run
+    )
+    click.echo(text)
+
+
+@cli.command("once")
+@click.option("--date", "biz_date", default=None, help="业务日期，默认昨天")
+@click.option("--dry-run-notify", is_flag=True, help="通知 dry-run")
+@click.pass_context
+def once_cmd(ctx: click.Context, biz_date: str | None, dry_run_notify: bool) -> None:
+    """一键：sync → rules → notify（日批入口）."""
+    from app.notify.daily_digest import send_digest
+    from app.rules.engine import evaluate_rows
+    from app.rules.tasks import apply_anomalies_to_tasks
+    from app.sync.product_analyze import resolve_biz_date, sync_product_analyze_day
+
+    day = resolve_biz_date(biz_date)
+    sync_result = sync_product_analyze_day(day, db=ctx.obj["db"])
+    click.echo(f"sync: {sync_result}")
+
+    db: Database = ctx.obj["db"]
+    rows = db.list_asin_daily(day)
+    rules_cfg = get_rules_config()
+    anomalies = evaluate_rows(rows, rules_cfg)
+    stats = apply_anomalies_to_tasks(
+        anomalies, biz_date=day, db=db, rules_cfg=rules_cfg
+    )
+    click.echo(f"rules: anomalies={len(anomalies)} tasks={stats}")
+
+    text = send_digest(
+        db, day, settings=ctx.obj["settings"], dry_run=dry_run_notify
+    )
+    click.echo(text)
+
+
+@cli.command("status")
+@click.option("--date", "biz_date", default=None)
+@click.pass_context
+def status_cmd(ctx: click.Context, biz_date: str | None) -> None:
+    """查看本地库任务/数据概况."""
+    db: Database = ctx.obj["db"]
+    if biz_date:
+        rows = db.list_asin_daily(biz_date)
+        tasks = db.list_tasks(biz_date=biz_date)
+        click.echo(f"asin_daily[{biz_date}]={len(rows)} tasks={len(tasks)}")
+    else:
+        tasks = db.list_tasks()
+        open_n = sum(1 for t in tasks if t.get("status") not in ("closed", "resolved"))
+        click.echo(f"tasks_total={len(tasks)} open={open_n} db={ctx.obj['settings'].db_path}")
+
+
+@cli.command("push-feishu-tasks")
+@click.option("--date", "biz_date", default=None, help="只推该日任务；默认全部 open")
+@click.pass_context
+def push_feishu_tasks_cmd(ctx: click.Context, biz_date: str | None) -> None:
+    """把本地异常任务同步到飞书「异常任务」表。"""
+    from app.sync.writer import write_tasks_to_feishu
+
+    db: Database = ctx.obj["db"]
+    tasks = db.list_tasks(biz_date=biz_date)
+    tasks = [t for t in tasks if t.get("status") not in ("closed", "resolved")]
+    n = write_tasks_to_feishu(tasks, settings=ctx.obj["settings"])
+    click.echo({"pushed": n, "source_open_tasks": len(tasks)})
+
+
+if __name__ == "__main__":
+    cli()

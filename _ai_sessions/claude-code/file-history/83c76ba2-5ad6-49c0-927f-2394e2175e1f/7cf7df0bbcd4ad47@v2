@@ -1,0 +1,494 @@
+"""采集上报：幂等写入 ingest_raw，并按 source 分发到事实表。"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime
+from typing import Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.infra.db import get_db
+from app.infra.security import require_ingest_key
+
+router = APIRouter(prefix="/api/v1/ingest", tags=["ingest"])
+
+
+class Evidence(BaseModel):
+    screenshot_url: str | None = None
+    source_url: str | None = None
+    raw_ref: str | None = None
+
+
+class IngestEnvelope(BaseModel):
+    platform: str | None = None
+    shop_id: str | None = Field(default=None, description="外部店铺 ID")
+    shop_name: str | None = None
+    biz_date: date | None = None
+    collected_at: datetime | None = None
+    idempotency_key: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    evidence: Evidence | None = None
+
+
+class IngestBatch(BaseModel):
+    items: list[IngestEnvelope] = Field(min_length=1, max_length=500)
+
+
+async def _resolve_shop_uuid(db: AsyncSession, platform: str | None, external_id: str | None) -> str | None:
+    if not external_id:
+        return None
+    if platform:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text FROM shop
+                    WHERE external_shop_id = :eid AND platform = :platform
+                    LIMIT 1
+                    """
+                ),
+                {"eid": external_id, "platform": platform},
+            )
+        ).first()
+        if row:
+            return row[0]
+    row = (
+        await db.execute(
+            text("SELECT id::text FROM shop WHERE external_shop_id = :eid LIMIT 1"),
+            {"eid": external_id},
+        )
+    ).first()
+    return row[0] if row else None
+
+
+async def _process_tiktok_ads(
+    db: AsyncSession,
+    *,
+    ingest_id: str,
+    env: IngestEnvelope,
+    shop_uuid: str | None,
+) -> None:
+    p = env.payload
+    campaign = str(p.get("campaign_name") or p.get("campaign") or "").strip()
+    if not campaign or not env.biz_date or not env.shop_id:
+        raise ValueError("tiktok_ads 需要 shop_id, biz_date, payload.campaign_name")
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO fact_ads_campaign_daily (
+                id, shop_id, shop_external_id, shop_name, biz_date, campaign_name,
+                spend, orders, roi, revenue, currency, row_status, source_url,
+                plan_status, delivery_status, daily_budget, target_roi, net_cost, avg_order_cost,
+                collected_at, ingest_id, created_at, updated_at
+            ) VALUES (
+                :id, :shop_id, :shop_external_id, :shop_name, :biz_date, :campaign_name,
+                :spend, :orders, :roi, :revenue, :currency, :row_status, :source_url,
+                :plan_status, :delivery_status, :daily_budget, :target_roi, :net_cost, :avg_order_cost,
+                :collected_at, :ingest_id, now(), now()
+            )
+            ON CONFLICT (shop_external_id, campaign_name, biz_date) DO UPDATE SET
+                spend = EXCLUDED.spend,
+                orders = EXCLUDED.orders,
+                roi = EXCLUDED.roi,
+                revenue = EXCLUDED.revenue,
+                currency = EXCLUDED.currency,
+                row_status = EXCLUDED.row_status,
+                source_url = EXCLUDED.source_url,
+                plan_status = COALESCE(EXCLUDED.plan_status, fact_ads_campaign_daily.plan_status),
+                delivery_status = COALESCE(EXCLUDED.delivery_status, fact_ads_campaign_daily.delivery_status),
+                daily_budget = COALESCE(EXCLUDED.daily_budget, fact_ads_campaign_daily.daily_budget),
+                target_roi = COALESCE(EXCLUDED.target_roi, fact_ads_campaign_daily.target_roi),
+                net_cost = COALESCE(EXCLUDED.net_cost, fact_ads_campaign_daily.net_cost),
+                avg_order_cost = COALESCE(EXCLUDED.avg_order_cost, fact_ads_campaign_daily.avg_order_cost),
+                collected_at = EXCLUDED.collected_at,
+                ingest_id = EXCLUDED.ingest_id,
+                shop_id = COALESCE(EXCLUDED.shop_id, fact_ads_campaign_daily.shop_id),
+                shop_name = COALESCE(EXCLUDED.shop_name, fact_ads_campaign_daily.shop_name),
+                updated_at = now()
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "shop_id": shop_uuid,
+            "shop_external_id": env.shop_id,
+            "shop_name": env.shop_name,
+            "biz_date": env.biz_date,
+            "campaign_name": campaign,
+            "spend": float(p.get("spend") or 0),
+            "orders": float(p.get("orders") or 0),
+            "roi": float(p["roi"]) if p.get("roi") is not None else None,
+            "revenue": float(p.get("revenue") or 0),
+            "currency": p.get("currency") or "GBP",
+            "row_status": p.get("row_status") or "success",
+            "source_url": (env.evidence.source_url if env.evidence else None) or p.get("source_url"),
+            "plan_status": (str(p.get("plan_status") or p.get("planStatus") or "").strip() or None),
+            "delivery_status": (
+                str(p.get("delivery_status") or p.get("deliveryStatus") or "").strip() or None
+            ),
+            "daily_budget": _opt_float(p.get("daily_budget") if p.get("daily_budget") is not None else p.get("dailyBudget")),
+            "target_roi": _opt_float(p.get("target_roi") if p.get("target_roi") is not None else p.get("targetRoi")),
+            "net_cost": _opt_float(p.get("net_cost") if p.get("net_cost") is not None else p.get("netCost")),
+            "avg_order_cost": _opt_float(
+                p.get("avg_order_cost") if p.get("avg_order_cost") is not None else p.get("avgOrderCost")
+            ),
+            "collected_at": env.collected_at,
+            "ingest_id": ingest_id,
+        },
+    )
+
+
+def _opt_float(v: Any) -> float | None:
+    if v is None or v == "":
+        return None
+    return float(v)
+
+
+async def _process_amz_link_daily(
+    db: AsyncSession,
+    *,
+    ingest_id: str,
+    env: IngestEnvelope,
+    shop_uuid: str | None,
+) -> None:
+    """Amazon 链接日指标 → fact_amz_link_daily（只写事实，不建任务）。"""
+    p = env.payload or {}
+    asin = str(p.get("asin") or "").strip() or None
+    seller_sku = str(p.get("seller_sku") or p.get("sku") or "").strip() or None
+    if not env.biz_date or not env.shop_id:
+        raise ValueError("amz_link_daily 需要 shop_id, biz_date")
+    if not asin and not seller_sku:
+        raise ValueError("amz_link_daily 需要 payload.asin 或 payload.seller_sku")
+
+    known = {
+        "asin",
+        "seller_sku",
+        "sku",
+        "parent_asin",
+        "title",
+        "units",
+        "sales_amount",
+        "currency",
+        "sessions",
+        "conversion_rate",
+        "fba_fulfillable",
+        "source_url",
+    }
+    extra = {k: v for k, v in p.items() if k not in known}
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO fact_amz_link_daily (
+                id, shop_id, shop_external_id, biz_date, asin, seller_sku, parent_asin,
+                title, units, sales_amount, currency, sessions, conversion_rate,
+                fba_fulfillable, raw_extra, ingest_id, collected_at, created_at, updated_at
+            ) VALUES (
+                :id, :shop_id, :shop_external_id, :biz_date, :asin, :seller_sku, :parent_asin,
+                :title, :units, :sales_amount, :currency, :sessions, :conversion_rate,
+                :fba_fulfillable, CAST(:raw_extra AS jsonb), :ingest_id, :collected_at, now(), now()
+            )
+            ON CONFLICT (shop_external_id, biz_date, biz_key) DO UPDATE SET
+                shop_id = COALESCE(EXCLUDED.shop_id, fact_amz_link_daily.shop_id),
+                asin = COALESCE(EXCLUDED.asin, fact_amz_link_daily.asin),
+                seller_sku = COALESCE(EXCLUDED.seller_sku, fact_amz_link_daily.seller_sku),
+                parent_asin = COALESCE(EXCLUDED.parent_asin, fact_amz_link_daily.parent_asin),
+                title = COALESCE(EXCLUDED.title, fact_amz_link_daily.title),
+                units = EXCLUDED.units,
+                sales_amount = EXCLUDED.sales_amount,
+                currency = EXCLUDED.currency,
+                sessions = COALESCE(EXCLUDED.sessions, fact_amz_link_daily.sessions),
+                conversion_rate = COALESCE(EXCLUDED.conversion_rate, fact_amz_link_daily.conversion_rate),
+                fba_fulfillable = COALESCE(EXCLUDED.fba_fulfillable, fact_amz_link_daily.fba_fulfillable),
+                raw_extra = EXCLUDED.raw_extra,
+                ingest_id = EXCLUDED.ingest_id,
+                collected_at = EXCLUDED.collected_at,
+                updated_at = now()
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "shop_id": shop_uuid,
+            "shop_external_id": env.shop_id,
+            "biz_date": env.biz_date,
+            "asin": asin,
+            "seller_sku": seller_sku,
+            "parent_asin": str(p.get("parent_asin") or "").strip() or None,
+            "title": str(p.get("title") or "").strip() or None,
+            "units": float(p.get("units") or 0),
+            "sales_amount": float(p.get("sales_amount") or 0),
+            "currency": p.get("currency") or "GBP",
+            "sessions": _opt_float(p.get("sessions")),
+            "conversion_rate": _opt_float(p.get("conversion_rate")),
+            "fba_fulfillable": _opt_float(p.get("fba_fulfillable")),
+            "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+            "ingest_id": ingest_id,
+            "collected_at": env.collected_at,
+        },
+    )
+
+
+def _parse_optional_dt(v: Any) -> datetime | None:
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        return v
+    s = str(v).strip()
+    if not s:
+        return None
+    # 常见：2026-07-29 12:30:00 / ISO
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M:%S%z",
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+    ):
+        try:
+            return datetime.strptime(s.replace("Z", "+0000"), fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+async def _process_tiktok_orders(
+    db: AsyncSession,
+    *,
+    ingest_id: str,
+    env: IngestEnvelope,
+    shop_uuid: str | None,
+) -> None:
+    """TikTok 订单头 → fact_tiktok_order（P2a）。"""
+    p = env.payload or {}
+    order_id = str(p.get("order_id") or p.get("orderId") or "").strip()
+    if not order_id or not env.shop_id:
+        raise ValueError("tiktok_orders 需要 shop_id 与 payload.order_id")
+
+    pay_time = _parse_optional_dt(p.get("pay_time") or p.get("payTime"))
+    create_time = _parse_optional_dt(p.get("create_time") or p.get("createTime"))
+    biz_date = env.biz_date
+    if biz_date is None:
+        for dt in (pay_time, create_time):
+            if dt is not None:
+                biz_date = dt.date()
+                break
+
+    known = {
+        "order_id",
+        "orderId",
+        "order_status",
+        "orderStatus",
+        "pay_time",
+        "payTime",
+        "create_time",
+        "createTime",
+        "product_name",
+        "productName",
+        "seller_sku",
+        "sellerSku",
+        "sku_id",
+        "skuId",
+        "quantity",
+        "pay_amount",
+        "payAmount",
+        "currency",
+        "shipping_status",
+        "shippingStatus",
+        "buyer_region",
+        "buyerRegion",
+        "source_url",
+        "sourceUrl",
+    }
+    extra = {k: v for k, v in p.items() if k not in known}
+
+    await db.execute(
+        text(
+            """
+            INSERT INTO fact_tiktok_order (
+                id, shop_id, shop_external_id, shop_name, order_id, order_status,
+                pay_time, create_time, biz_date, product_name, seller_sku, sku_id,
+                quantity, pay_amount, currency, shipping_status, buyer_region,
+                source_url, raw_extra, collected_at, ingest_id, created_at, updated_at
+            ) VALUES (
+                :id, :shop_id, :shop_external_id, :shop_name, :order_id, :order_status,
+                :pay_time, :create_time, :biz_date, :product_name, :seller_sku, :sku_id,
+                :quantity, :pay_amount, :currency, :shipping_status, :buyer_region,
+                :source_url, CAST(:raw_extra AS jsonb), :collected_at, :ingest_id, now(), now()
+            )
+            ON CONFLICT (shop_external_id, order_id) DO UPDATE SET
+                shop_id = COALESCE(EXCLUDED.shop_id, fact_tiktok_order.shop_id),
+                shop_name = COALESCE(EXCLUDED.shop_name, fact_tiktok_order.shop_name),
+                order_status = COALESCE(EXCLUDED.order_status, fact_tiktok_order.order_status),
+                pay_time = COALESCE(EXCLUDED.pay_time, fact_tiktok_order.pay_time),
+                create_time = COALESCE(EXCLUDED.create_time, fact_tiktok_order.create_time),
+                biz_date = COALESCE(EXCLUDED.biz_date, fact_tiktok_order.biz_date),
+                product_name = COALESCE(EXCLUDED.product_name, fact_tiktok_order.product_name),
+                seller_sku = COALESCE(EXCLUDED.seller_sku, fact_tiktok_order.seller_sku),
+                sku_id = COALESCE(EXCLUDED.sku_id, fact_tiktok_order.sku_id),
+                quantity = EXCLUDED.quantity,
+                pay_amount = EXCLUDED.pay_amount,
+                currency = COALESCE(EXCLUDED.currency, fact_tiktok_order.currency),
+                shipping_status = COALESCE(EXCLUDED.shipping_status, fact_tiktok_order.shipping_status),
+                buyer_region = COALESCE(EXCLUDED.buyer_region, fact_tiktok_order.buyer_region),
+                source_url = COALESCE(EXCLUDED.source_url, fact_tiktok_order.source_url),
+                raw_extra = EXCLUDED.raw_extra,
+                collected_at = EXCLUDED.collected_at,
+                ingest_id = EXCLUDED.ingest_id,
+                updated_at = now()
+            """
+        ),
+        {
+            "id": str(uuid4()),
+            "shop_id": shop_uuid,
+            "shop_external_id": env.shop_id,
+            "shop_name": env.shop_name,
+            "order_id": order_id,
+            "order_status": str(p.get("order_status") or p.get("orderStatus") or "").strip() or None,
+            "pay_time": pay_time,
+            "create_time": create_time,
+            "biz_date": biz_date,
+            "product_name": str(p.get("product_name") or p.get("productName") or "").strip() or None,
+            "seller_sku": str(p.get("seller_sku") or p.get("sellerSku") or "").strip() or None,
+            "sku_id": str(p.get("sku_id") or p.get("skuId") or "").strip() or None,
+            "quantity": float(p.get("quantity") or 0),
+            "pay_amount": float(p.get("pay_amount") if p.get("pay_amount") is not None else p.get("payAmount") or 0),
+            "currency": p.get("currency") or "USD",
+            "shipping_status": str(p.get("shipping_status") or p.get("shippingStatus") or "").strip() or None,
+            "buyer_region": str(p.get("buyer_region") or p.get("buyerRegion") or "").strip() or None,
+            "source_url": (env.evidence.source_url if env.evidence else None) or p.get("source_url") or p.get("sourceUrl"),
+            "raw_extra": json.dumps(extra, ensure_ascii=False, default=str),
+            "collected_at": env.collected_at,
+            "ingest_id": ingest_id,
+        },
+    )
+
+
+def _default_platform(source: str, env_platform: str | None) -> str | None:
+    if env_platform:
+        return env_platform
+    if source.startswith("tiktok"):
+        return "tiktok"
+    if source in ("amz_link_daily", "sellfox_link_daily", "amazon_link_daily"):
+        return "amazon"
+    if source.startswith("temu"):
+        return "temu"
+    return None
+
+
+async def _ingest_one(
+    db: AsyncSession,
+    source: str,
+    env: IngestEnvelope,
+) -> dict[str, Any]:
+    platform = _default_platform(source, env.platform)
+    shop_uuid = await _resolve_shop_uuid(db, platform, env.shop_id)
+    ingest_id = str(uuid4())
+    evidence = (env.evidence.model_dump() if env.evidence else {}) or {}
+
+    try:
+        await db.execute(
+            text(
+                """
+                INSERT INTO ingest_raw (
+                    id, source, platform, shop_external_id, shop_id, biz_date,
+                    idempotency_key, payload, evidence, collected_at, process_status
+                ) VALUES (
+                    :id, :source, :platform, :shop_external_id, :shop_id, :biz_date,
+                    :idempotency_key, CAST(:payload AS jsonb), CAST(:evidence AS jsonb),
+                    :collected_at, 'accepted'
+                )
+                """
+            ),
+            {
+                "id": ingest_id,
+                "source": source,
+                "platform": platform,
+                "shop_external_id": env.shop_id,
+                "shop_id": shop_uuid,
+                "biz_date": env.biz_date,
+                "idempotency_key": env.idempotency_key,
+                "payload": json.dumps(env.payload, ensure_ascii=False, default=str),
+                "evidence": json.dumps(evidence, ensure_ascii=False),
+                "collected_at": env.collected_at,
+            },
+        )
+    except IntegrityError:
+        await db.rollback()
+        existing = (
+            await db.execute(
+                text("SELECT id::text FROM ingest_raw WHERE idempotency_key = :k"),
+                {"k": env.idempotency_key},
+            )
+        ).first()
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": existing[0] if existing else None,
+            "status": "duplicated",
+            "error": None,
+        }
+
+    try:
+        if source == "tiktok_ads":
+            await _process_tiktok_ads(db, ingest_id=ingest_id, env=env, shop_uuid=shop_uuid)
+        elif source == "tiktok_orders":
+            await _process_tiktok_orders(db, ingest_id=ingest_id, env=env, shop_uuid=shop_uuid)
+        elif source in ("amz_link_daily", "sellfox_link_daily", "amazon_link_daily"):
+            await _process_amz_link_daily(db, ingest_id=ingest_id, env=env, shop_uuid=shop_uuid)
+        # 其它 source 仅保留原始
+        await db.execute(
+            text("UPDATE ingest_raw SET process_status = 'processed' WHERE id = :id"),
+            {"id": ingest_id},
+        )
+        await db.commit()
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": ingest_id,
+            "status": "created",
+            "error": None,
+        }
+    except Exception as exc:
+        await db.rollback()
+        # 重新标记失败：原事务已回滚，补写失败状态可能丢 id，简化返回 failed
+        return {
+            "idempotency_key": env.idempotency_key,
+            "id": ingest_id,
+            "status": "failed",
+            "error": str(exc),
+        }
+
+
+@router.post("/{source}")
+async def ingest(
+    source: str,
+    body: dict[str, Any],
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_ingest_key),
+) -> dict[str, Any]:
+    if "items" in body:
+        batch = IngestBatch.model_validate(body)
+        items = batch.items
+    else:
+        items = [IngestEnvelope.model_validate(body)]
+
+    results = []
+    for env in items:
+        results.append(await _ingest_one(db, source, env))
+
+    return {
+        "accepted": sum(1 for r in results if r["status"] == "created"),
+        "duplicated": sum(1 for r in results if r["status"] == "duplicated"),
+        "failed": sum(1 for r in results if r["status"] == "failed"),
+        "results": results,
+    }

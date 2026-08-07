@@ -1,0 +1,94 @@
+========================================
+  Temu 店铺监测 · 同事本机版使用说明
+========================================
+
+【分工】
+  本机（你的电脑）只跑：
+    · 商品流量待关注（数量增加 + 商品链接）
+    · 商品流量近期有下降（徽标 + 商品链接）
+    · 在售数量 / 多店轮巡
+    · 飞书告警、登录过期提醒
+
+  下架 / 上架 由公司固定 IP 服务器自动跑（赛狐），
+  本机不要配置、不要运行赛狐相关功能。
+
+  不必再装 Chrome 插件（若已装请关掉，避免双报）。
+
+
+==== A. 发送方打包（脚本自动处理）====
+
+  用 deploy\pack-traffic-local.ps1 打本机流量包即可。
+
+  会带上：config.json（团队共用飞书 webhook + storeList）
+  不会带：
+  - .userdata\              登录态（本机绑定，别人用不了）
+  - data\ / logs\           监测基线与日志
+  - sellfox.config.json     赛狐密钥（勿发给同事）
+  - openapi.config.json     若有
+  - node_modules\           让对方自己 npm install
+
+
+==== B. 同事首次使用（约 10 分钟）====
+
+  1) 安装 Node.js LTS（https://nodejs.org）+ Google Chrome
+  2) 解压本包，进入目录
+  3) ★ 先双击「首次运行.bat」（或 first-run.bat）
+       会自动 npm install（包内已有 config.json，一般不用再改）
+       等窗口提示 OK 再往下
+  4) 若要改飞书群 / 店名：记事本打开 config.json
+       - feishuWebhooks / storeList
+       - fullRun 保持 false
+  5) 双击 启动.bat / 美化启动器.bat → 选 1 登录 Temu
+  6) 选 2 测一轮；选 3 或 4 常驻
+
+
+
+==== C. 日常 ====
+
+  - 推荐双击「美化启动器.bat」（有 Python 时图形界面）
+  - 无 Python 时用「启动.bat」/ start-menu.bat 英文菜单
+  - 默认每 15 分钟扫一轮流量（intervalMinutes 可改）
+  - 登录过期：飞书橙色提醒 或 日志写未登录 → 先停常驻，再跑一次「登录 Temu」
+  - 常驻在跑时：用【日常 Chrome】进 Temu 后台人工操作 ✅ 一般可以
+  - 若日志出现【诊断=会话失效/疑似被踢】：可能是同账号双浏览器互踢或过期
+      → 先停常驻 → 登录 Temu（工具按钮）→ 再开常驻
+  - 若日志出现【诊断=浏览器进程已退出】：是监测 Chrome 被关/被杀，不是网页掉线
+  - 常驻在跑时：不要点本工具的「登录 Temu」❌（会抢 .userdata）
+  - 常驻在跑时：不要再开第二个常驻/守护 ❌
+  - 「守护常驻」黑窗应滚动显示日志；若完全空白且只有标题，
+    多半是旧版 run-forever（请更新）或输出被重定向——去看 logs\
+
+
+==== D. 不要做 ====
+
+  - 不要把 fullRun 改成 true
+  - 不要配置 / 运行 sellfox（探测、once、常驻）——那是服务器的事
+  - 不要向同事索要或外传 sellfox.config.json
+  - 已装的 Temu 监测 Chrome 插件请卸掉或关掉
+
+
+==== E. 命令速查 ====
+
+  npm run login          登录一次
+  npm run once           流量一轮
+  npm run start          流量常驻
+  （赛狐上下架：服务器 systemctl status temu-sellfox，本机不用）
+
+
+==== F. 出问题 ====
+
+  - 「未登录」→ npm run login
+  - 窗口闪一下没数据 → 看日志；确认 Chrome 已装
+  - 飞书没消息 → 检查 config.json 的 feishuWebhooks；首轮不告警是正常的
+  - 若日志出现 sellfox / 40005 白名单 → 说明误开了 fullRun，改回 false
+  - 切店失败「打不开切换店铺弹窗 / 当前=未知」→ 把 logs\monitor-当天.log
+    里带「切店失败」的整行发回；可先 config.json 设 "headless": false 看顶栏
+
+==== G. 日志在哪 ====
+
+  程序一启动会打印「日志落盘：…」路径。两份同时写：
+    logs\monitor-YYYYMMDD.log   ← 按天，推荐看这个
+    data\monitor.log            ← 历史兼容，全部追加在一个文件
+
+  注意：不要只在 logs\ 里找很久以前的 daemon-*.log（那是旧守护脚本的），
+  现在 once / start 的业务日志就是上面两个。

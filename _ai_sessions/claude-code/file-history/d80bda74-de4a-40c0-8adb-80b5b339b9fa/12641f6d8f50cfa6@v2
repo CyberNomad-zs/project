@@ -1,0 +1,135 @@
+# 亚马逊 ASIN 健康度监控与运营闭环（一期）
+
+赛狐 OpenAPI 日同步 → 本地规则引擎 → 异常任务 →（可选）飞书多维表格 / 机器人提醒。
+
+> 需求见：`亚马逊ASIN健康度监控与运营闭环系统需求说明.docx`  
+> 一期**不含**利润、自动操作亚马逊后台、AI 日报/周报、关键词自然排名。
+
+## 架构
+
+```text
+python -m app.main once
+    → Sellfox productAnalyze V2
+    → SQLite asin_daily（可选飞书 bitable）
+    → rules → anomaly_tasks
+    → 飞书机器人摘要（可选）
+```
+
+## 快速开始
+
+### 1. 环境
+
+```powershell
+cd "E:\project\亚马逊平台驾驶舱-店铺数据"
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+copy .env.example .env
+copy config\config.example.yaml config\config.yaml
+```
+
+编辑 `.env` 填入赛狐凭证：
+
+```env
+SELLFOX_CLIENT_ID=你的id
+SELLFOX_CLIENT_SECRET=你的secret
+```
+
+> 赛狐有 **IP 白名单**。本机动态 IP 若返回 `40005`，需把出口 IP 加白或换固定 IP 机器。
+
+### 2. 冒烟测试
+
+```powershell
+python scripts\smoke_sellfox.py
+```
+
+成功时会打印 token 摘要、样例字段，并写入 `data/snapshots/smoke_sample_*.json`。
+
+### 3. 同步 / 规则 / 通知
+
+```powershell
+# 同步昨天产品分析到本地 SQLite
+python -m app.main sync
+
+# 指定日期
+python -m app.main sync --date 2026-07-20
+
+# 跑规则生成橙/红任务
+python -m app.main rules --date 2026-07-20
+
+# 摘要 dry-run（不发飞书）
+python -m app.main notify --date 2026-07-20 --dry-run
+
+# 一键
+python -m app.main once --date 2026-07-20 --dry-run-notify
+```
+
+### 4. 单元测试
+
+```powershell
+pytest -q
+```
+
+## 配置说明
+
+| 文件 | 作用 |
+|---|---|
+| `.env` | 密钥与飞书 table id（勿提交） |
+| `config/config.yaml` | 店铺负责人、限速、fieldModules、sink |
+| `config/rules.default.yaml` | 黄/橙/红默认阈值 |
+
+`sync.sink`：
+
+- `sqlite`：仅本地（默认，无飞书也能跑通）
+- `feishu` / `both`：需配置 `FEISHU_*`
+
+## 飞书（待凭证）
+
+1. 创建企业自建应用，开通多维表格权限与机器人  
+2. 按需求建四张表：ASIN每日数据、异常任务、运营动作、配置  
+3. 把 `app_token` / `table_id` 写入 `.env`  
+4. 将 `config.yaml` 中 `sync.sink` 改为 `both`  
+5. 列名需与 `app/sync/writer.py` 中 `field_map` 中文列名一致（可按表结构调整映射）
+
+老板视图用飞书多维表「视图/筛选」配置（红/逾期/待决策），无需单独库表。
+
+## 验收清单（一期）
+
+- [ ] 每日可 `sync` 成功/失败有 `sync_runs` 记录  
+- [ ] 主键日期+站点+店铺+ASIN 不混淆  
+- [ ] 黄橙红按 `rules.default.yaml` 触发  
+- [ ] 橙/红生成任务并带负责人  
+- [ ] 未关闭异常不重复建任务（仅更新 streak）  
+- [ ] 通知可 dry-run；配置 webhook 后可推送  
+- [ ] 飞书凭证到位后可写入底表  
+
+## 目录
+
+```text
+app/
+  clients/sellfox.py   # 鉴权/签名/限速
+  clients/feishu.py    # 多维表/机器人骨架
+  sync/                # 拉数与映射写入
+  rules/               # 规则与任务
+  notify/              # 摘要与逾期
+  store/db.py          # SQLite
+config/
+scripts/smoke_sellfox.py
+tests/
+```
+
+## 常见错误
+
+| code | 含义 | 处理 |
+|---|---|---|
+| 40001 | token 失效 | 客户端会自动刷新 |
+| 40005 | IP 不在白名单 | 加白或换机器 |
+| 40011 | 签名错误 | 检查 client_secret / url path |
+| 40019 | 限流 | 客户端会 sleep 重试 |
+
+## 后续
+
+- 飞书表初始化脚本与字段对齐（凭证到齐后）  
+- FBA 库存/评价明细补全同步  
+- Windows 任务计划每日 10:00 `python -m app.main once`  
+- 二期：AI 日报、关键词排名、利润  

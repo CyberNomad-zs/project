@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//e/project/海外仓/**)",
+      "Bash(dir /b automation\\\\erp.py automation\\\\wms.py automation\\\\run_shipping.py automation\\\\capture\\\\wms_rotation_selftest.py)",
+      "Bash(dir /b sellfox-bridge\\\\recon.py)",
+      "PowerShell(Compress-Archive *)"
+    ]
+  }
+}

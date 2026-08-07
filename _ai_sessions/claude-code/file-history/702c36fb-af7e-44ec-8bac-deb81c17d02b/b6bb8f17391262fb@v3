@@ -1,0 +1,99 @@
+"""异常任务 → 负责人推送 + 逾期升级（编排）。"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from app.config import Settings, get_settings
+from app.notify.owner_push import push_tasks_to_owners
+from app.store.db import Database
+from app.sync.writer import fill_exec_date_from_action, write_tasks_to_feishu
+
+logger = logging.getLogger(__name__)
+
+
+def dispatch_open_tasks(
+    db: Database,
+    biz_date: str,
+    *,
+    settings: Settings | None = None,
+    push_tasks: bool = True,
+    notify_owners: bool = True,
+    escalate: bool = False,
+    dry_run_notify: bool = False,
+    only_new_notify: bool = False,
+    fill_exec_date: bool = True,
+) -> dict[str, Any]:
+    """日批后半段：推飞书任务 → 回填执行日期 → 按负责人通知 → 逾期升级。"""
+    settings = settings or get_settings()
+    open_tasks = [
+        t
+        for t in db.list_tasks(biz_date=biz_date)
+        if t.get("status") not in ("closed", "resolved")
+        and t.get("level") in ("red", "orange")
+    ]
+    out: dict[str, Any] = {
+        "open_tasks": len(open_tasks),
+        "feishu_tasks": 0,
+        "exec_date_fill": {},
+        "owner_push": {},
+    }
+
+    if push_tasks and open_tasks:
+        try:
+            out["feishu_tasks"] = write_tasks_to_feishu(open_tasks, settings=settings)
+        except Exception as e:
+            logger.exception("推飞书任务失败")
+            out["feishu_tasks_error"] = str(e)
+
+    # 有「采取动作」且「执行日期」为空 → 系统写当天（母表+子表）
+    if fill_exec_date:
+        try:
+            out["exec_date_fill"] = fill_exec_date_from_action(
+                settings=settings, dry_run=dry_run_notify
+            )
+        except Exception as e:
+            logger.exception("执行日期回填失败")
+            out["exec_date_fill_error"] = str(e)
+
+    if notify_owners:
+        try:
+            out["owner_push"] = push_tasks_to_owners(
+                db,
+                biz_date,
+                settings=settings,
+                dry_run=dry_run_notify,
+                only_new=only_new_notify,
+            )
+        except Exception as e:
+            logger.exception("负责人推送失败")
+            out["owner_push_error"] = str(e)
+
+    # 「需要老板决策」勾选 → 通知老板（从飞书同步勾选 + 去重）
+    if notify_owners:
+        try:
+            from app.notify.boss_decision import notify_boss_decisions
+
+            out["boss_decision"] = notify_boss_decisions(
+                db,
+                settings=settings,
+                dry_run=dry_run_notify,
+                sync_from_feishu=True,
+            )
+        except Exception as e:
+            logger.exception("老板决策通知失败")
+            out["boss_decision_error"] = str(e)
+
+    if escalate:
+        from app.notify.escalate import send_escalate_notification
+
+        try:
+            out["escalate"] = send_escalate_notification(
+                db, settings=settings, dry_run=dry_run_notify
+            )
+        except Exception as e:
+            logger.exception("逾期升级通知失败")
+            out["escalate_error"] = str(e)
+
+    return out

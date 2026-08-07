@@ -1,0 +1,25 @@
+const DEFAULT = { webhook: '', intervalMinutes: 15, enabled: true, storeName: '' };
+
+async function load() {
+  const { config } = await chrome.storage.local.get('config');
+  const c = Object.assign({}, DEFAULT, config || {});
+  document.getElementById('webhook').value = c.webhook || '';
+  document.getElementById('storeName').value = c.storeName || '';
+  document.getElementById('interval').value = c.intervalMinutes || 15;
+  document.getElementById('enabled').checked = c.enabled !== false;
+}
+
+document.getElementById('save').addEventListener('click', async () => {
+  const config = {
+    webhook: document.getElementById('webhook').value.trim(),
+    storeName: document.getElementById('storeName').value.trim(),
+    intervalMinutes: Math.max(1, Number(document.getElementById('interval').value) || 15),
+    enabled: document.getElementById('enabled').checked,
+  };
+  await chrome.storage.local.set({ config });
+  const el = document.getElementById('saved');
+  el.textContent = '✓ 已保存';
+  setTimeout(() => (el.textContent = ''), 2000);
+});
+
+load();

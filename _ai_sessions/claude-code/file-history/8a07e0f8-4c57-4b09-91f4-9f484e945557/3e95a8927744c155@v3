@@ -1,0 +1,41 @@
+const out = document.getElementById("out");
+const runBtn = document.getElementById("run");
+const dry = document.getElementById("dry");
+
+let running = false;
+let lines = [];
+
+function paint() {
+  out.textContent = lines.join("\n");
+  out.scrollTop = out.scrollHeight;
+}
+function log(line) { lines.push(line); paint(); }
+
+runBtn.addEventListener("click", () => {
+  if (running) return;
+  const isDry = dry.checked;
+  if (!isDry && !confirm("⚠️ 真跑会【真实下单并发货】、不可撤销。确认继续？")) return;
+
+  running = true;
+  runBtn.disabled = true;
+  runBtn.classList.toggle("live", !isDry);
+  runBtn.textContent = "运行中…";
+  lines = [];
+  paint();
+
+  const port = chrome.runtime.connect({ name: "hwc" });
+  port.onMessage.addListener((msg) => {
+    if (!msg) return;
+    if (msg.type === "log") log(msg.line);
+    else if (msg.type === "done") {
+      running = false;
+      runBtn.disabled = false;
+      runBtn.textContent = "开始发货";
+      try { port.disconnect(); } catch (e) {}
+    }
+  });
+  port.onDisconnect.addListener(() => {
+    if (running) { log("✗ 与后台连接断开（可能后台被回收），请重试。"); running = false; runBtn.disabled = false; runBtn.textContent = "开始发货"; }
+  });
+  port.postMessage({ cmd: "run", dry: isDry });
+});

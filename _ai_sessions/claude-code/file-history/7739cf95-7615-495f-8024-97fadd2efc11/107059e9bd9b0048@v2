@@ -1,0 +1,155 @@
+# -*- coding: utf-8 -*-
+"""临时：列出 TK Base 表/视图/字段/店铺取值，并探测文件夹 API。"""
+from __future__ import annotations
+
+import json
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+env: dict[str, str] = {}
+for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        continue
+    k, v = line.split("=", 1)
+    env[k.strip()] = v.strip().strip('"').strip("'")
+
+APP_ID = env["FEISHU_APP_ID"]
+APP_SECRET = env["FEISHU_APP_SECRET"]
+APP_TOKEN = env.get("FEISHU_BITABLE_APP_TOKEN_TK") or env["FEISHU_BITABLE_APP_TOKEN"]
+
+
+def req(method: str, url: str, body=None, token: str | None = None) -> dict:
+    data = None
+    headers = {"Content-Type": "application/json; charset=utf-8"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if body is not None:
+        data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    r = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(r, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return {"code": e.code, "msg": raw}
+
+
+def main() -> None:
+    tok = req(
+        "POST",
+        "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+        {"app_id": APP_ID, "app_secret": APP_SECRET},
+    )
+    if tok.get("code") != 0:
+        print("token fail", tok)
+        return
+    token = tok["tenant_access_token"]
+    print("token ok")
+
+    tables = req(
+        "GET",
+        f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables?page_size=100",
+        token=token,
+    )
+    items = (tables.get("data") or {}).get("items") or []
+    print(f"\n=== TABLES ({len(items)}) code={tables.get('code')} ===")
+    for t in items:
+        print(f"  {t.get('table_id')}\t{t.get('name')}")
+
+    # probe folder / dashboard endpoints
+    probes = [
+        f"/bitable/v1/apps/{APP_TOKEN}",
+        f"/bitable/v1/apps/{APP_TOKEN}/dashboards",
+        f"/bitable/v1/apps/{APP_TOKEN}/folders",
+        f"/bitable/v1/apps/{APP_TOKEN}/workflow",
+        f"/base/v2/apps/{APP_TOKEN}/folders",
+        f"/base/v2/apps/{APP_TOKEN}/nodes",
+        f"/bitable/v1/apps/{APP_TOKEN}/tables/{items[0]['table_id']}/forms" if items else None,
+    ]
+    print("\n=== PROBES ===")
+    for p in probes:
+        if not p:
+            continue
+        r = req("GET", f"https://open.feishu.cn/open-apis{p}", token=token)
+        snippet = json.dumps(r, ensure_ascii=False)[:240]
+        print(f"GET {p.split(APP_TOKEN)[-1] or '/'}: code={r.get('code')} {snippet}")
+
+    # For each table: fields + views + sample distinct 店铺
+    shop_field_names = {"店铺", "店铺名称", "店名", "shop", "Shop", "store", "Store"}
+    for t in items:
+        tid = t["table_id"]
+        name = t.get("name")
+        print(f"\n=== {name} ({tid}) ===")
+        fields = req(
+            "GET",
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{tid}/fields?page_size=100",
+            token=token,
+        )
+        finfo = (fields.get("data") or {}).get("items") or []
+        print("  fields:", ", ".join(f"{f.get('field_name')}({f.get('type')}/{f.get('field_id')})" for f in finfo))
+        shop_fields = [f for f in finfo if (f.get("field_name") or "") in shop_field_names or "店铺" in (f.get("field_name") or "")]
+        views = req(
+            "GET",
+            f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{tid}/views?page_size=100",
+            token=token,
+        )
+        vitems = (views.get("data") or {}).get("items") or []
+        print("  views:", ", ".join(f"{v.get('view_name')}({v.get('view_id')}/{v.get('view_type')})" for v in vitems))
+
+        if not shop_fields:
+            print("  [no shop field — skip distinct]")
+            continue
+        sf = shop_fields[0]
+        fname = sf["field_name"]
+        # sample records to get distinct shops
+        shops: set[str] = set()
+        page_token = None
+        pages = 0
+        while pages < 10:
+            q = f"page_size=100&field_names={urllib.parse.quote(json.dumps([fname], ensure_ascii=False))}"
+            if page_token:
+                q += f"&page_token={urllib.parse.quote(page_token)}"
+            recs = req(
+                "GET",
+                f"https://open.feishu.cn/open-apis/bitable/v1/apps/{APP_TOKEN}/tables/{tid}/records?{q}",
+                token=token,
+            )
+            if recs.get("code") != 0:
+                print("  records fail", recs.get("code"), recs.get("msg"))
+                break
+            data = recs.get("data") or {}
+            for item in data.get("items") or []:
+                val = (item.get("fields") or {}).get(fname)
+                if val is None:
+                    continue
+                if isinstance(val, list):
+                    # multi-select or text segments
+                    parts = []
+                    for x in val:
+                        if isinstance(x, dict):
+                            parts.append(x.get("text") or x.get("name") or str(x))
+                        else:
+                            parts.append(str(x))
+                    s = "".join(parts) if parts and isinstance(val[0], dict) and "text" in (val[0] or {}) else ",".join(parts)
+                elif isinstance(val, dict):
+                    s = val.get("text") or val.get("name") or str(val)
+                else:
+                    s = str(val)
+                if s.strip():
+                    shops.add(s.strip())
+            pages += 1
+            if not data.get("has_more"):
+                break
+            page_token = data.get("page_token")
+        print(f"  shop_field={fname} distinct({len(shops)}): {sorted(shops)}")
+
+
+if __name__ == "__main__":
+    main()

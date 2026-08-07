@@ -1,0 +1,71 @@
+# 复制为 config/config.yaml 后按环境修改（密钥请放 .env）
+
+sellfox:
+  # 全局限速：官方约 1 次/秒
+  min_interval_seconds: 1.1
+  page_size: 100
+  # 产品分析 fieldModules（不含利润 PROFIT_INFO）
+  field_modules:
+    - PRODUCT_INFO
+    - SALE_INFO
+    - SESSION_PERFORMANCE_INFO
+    - PERFORMANCE_INFO
+    - AD_INFO
+    - FBA_INVENTORY_INFO
+    - REVIEW_PERFORMANCE_INFO
+  # 可选：限制店铺；空列表表示不按店铺过滤
+  shop_id_list: []
+  # 统计范围：0=有销售/广告/表现数据的商品（见官方文档）
+  is_new_or_moving_or_in_stock: "0"
+  dim_type: "1"  # 1=ASIN
+  compare_type_list:
+    - "1"  # 环比
+
+sync:
+  # 同步结果是否保存原始 JSON 快照（调试用，体积大）
+  save_raw_snapshot: false
+  # 写入目标：sqlite | feishu | both
+  sink: sqlite
+  # 母表全量 + 按店子表双写（scripts/init_shop_tables.py）
+  dual_write_shop_tables: true
+
+# 店铺名称变体 → 规范名（分表路由 / 视图合并）
+shop_aliases:
+  LEDVIE: Ledvia-UK
+  Ledvia: Ledvia-UK
+  Ledvia-UK: Ledvia-UK
+  NOTTAC: Nottac-UK
+  Nottac: Nottac-UK
+  Nottac-UK: Nottac-UK
+  特米: 特米-UK
+  特米-UK: 特米-UK
+  昇新: 昇新-UK
+  昇新-UK: 昇新-UK
+  SHENGXIN: 昇新-UK
+  起的快: 起的快-UK
+  起的快-UK: 起的快-UK
+  字同: 字同道合
+  字同道合: 字同道合
+
+owners:
+  # 店铺名 -> 负责人（示例，按实际修改）
+  SHENGXIN: 马文静
+  起的快: 马文静
+  特米: 潘启豪
+  LEDVIE: 潘启豪
+  NOTTAC: 梦晴
+  字同: 梦晴
+
+reviewers:
+  default: 唐丹
+
+notify:
+  # 视图链接占位，配置飞书后替换
+  view_base_url: ""
+  it_receivers: []
+  # 可选：负责人 -> 飞书 open_id，群机器人 @ 用；不配则仅按姓名分段推送
+  owner_open_ids: {}
+  # 可选：老板 open_id 列表，勾选「需要老板决策」时 @；不配则只发卡片不 @
+  # 获取方式：飞书开放平台 / 通讯录，或让对方把 open_id 发给 IT
+  boss_open_ids: []
+  # boss_open_id: ou_xxx   # 也可只配单个

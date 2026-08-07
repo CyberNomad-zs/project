@@ -1,0 +1,60 @@
+from app.sync.mapping import map_product_analyze_row
+
+
+def test_map_fields_map_shape():
+    raw = {
+        "currency": "GBP",
+        "title": "demo bulb",
+        "asinList": ["B09D9MR3DK"],
+        "parentAsinList": ["B0H6X3TWMV"],
+        "skuList": ["UK-BM-G4-20W"],
+        "mskuList": ["HB-G4-20W-10PK"],
+        "brandNameList": ["Levidon"],
+        "commodityNameList": ["G4 20W 可调"],
+        "openDate": "2025-07-01 10:54:21",
+        "shopInfos": [
+            {"shopName": "特米-UK", "marketplaceName": "英国", "shopId": "397426"}
+        ],
+        "fieldsMap": {
+            "salePrice": {
+                "currValue": "520.26",
+                "momValue": "370.76",
+                "momPercent": "40.3200",
+            },
+            "orderNum": {
+                "currValue": "79",
+                "momValue": "61",
+                "momPercent": "29.5100",
+            },
+            "sessions": {
+                "currValue": "0",
+                "momValue": "113",
+                "momPercent": "-100.0000",
+            },
+            "adTotalCost": {
+                "currValue": "74.02",
+                "momValue": "70.86",
+                "momPercent": "4.4600",
+            },
+            "acos": {"currValue": "29.72", "momValue": "38.45", "momPercent": "-22.7"},
+            "conversionRate": {
+                "currValue": "40",
+                "momValue": "54.8",
+                "momPercent": "-27",
+            },
+        },
+    }
+    row = map_product_analyze_row(
+        raw, biz_date="2026-07-21", owners={"特米": "潘启豪"}
+    )
+    assert row["asin"] == "B09D9MR3DK"
+    assert row["shop_name"] == "特米-UK"
+    assert row["marketplace"] == "英国"
+    assert row["owner"] == "潘启豪"
+    assert abs(row["sale_price"] - 520.26) < 0.01
+    assert abs(row["sale_price_change_pct"] - 0.4032) < 0.0001
+    assert abs(row["sessions_change_pct"] - (-1.0)) < 0.0001
+    assert abs(row["conversion_rate_change_pp"] - (40 - 54.8)) < 0.01
+    assert abs(row["acos"] - 29.72) < 0.01
+    assert row["title"] == "demo bulb"
+    assert row["title_cn"] == "G4 20W 可调"

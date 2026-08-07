@@ -1,0 +1,33 @@
+# -*- coding: utf-8 -*-
+from playwright.sync_api import sync_playwright
+
+URL = "https://www.showdoc.com.cn/2143160933861042/9145888065939630"
+SHOT = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\bf8d3248-1b4a-473b-8aa8-16a14e848bfc\scratchpad\showdoc.png"
+HTML = r"C:\Users\Administrator\AppData\Local\Temp\claude\E--project----\bf8d3248-1b4a-473b-8aa8-16a14e848bfc\scratchpad\showdoc_body.txt"
+
+with sync_playwright() as p:
+    b = p.chromium.launch(headless=True, args=["--no-sandbox"])
+    pg = b.new_context(viewport={"width": 1400, "height": 1600}).new_page()
+    try:
+        pg.goto(URL, wait_until="networkidle", timeout=60000)
+    except Exception as e:
+        print("goto warn:", e, flush=True)
+    pg.wait_for_timeout(6000)
+    pg.screenshot(path=SHOT, full_page=True)
+    # 诊断：列出候选容器的文本长度，找到正文真正在哪个容器
+    diag = pg.evaluate(r"""() => {
+      const out=[];
+      document.querySelectorAll('div,article,section,main').forEach(e=>{
+        const t=(e.innerText||'').trim();
+        if(t.length>200) out.push({cls:e.className||e.id||e.tagName, len:t.length});
+      });
+      out.sort((a,b)=>b.len-a.len);
+      return out.slice(0,8);
+    }""")
+    body = pg.evaluate("() => document.body.innerText")
+    with open(HTML, "w", encoding="utf-8") as f:
+        f.write("BODY_LEN=%d\n\nDIAG containers:\n%s\n\n--- body innerText ---\n%s"
+                % (len(body or ""), diag, body or ""))
+    print("shot saved, body_len =", len(body or ""), flush=True)
+    print("diag =", diag, flush=True)
+    b.close()

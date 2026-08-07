@@ -1,0 +1,173 @@
+/**
+ * 会话级切店（右上角头像 → 切换 →「切换店铺」弹窗）
+ * 对齐 temu-plugin content.js，多 mall 共用账号时必须用此方式，不能用「来源店铺」筛选。
+ */
+import { log } from './logger.js';
+
+// 注意：经 page.evaluate → eval(helpers) 注入。必须用 function/var，不能用 const/let
+// （const/let 不泄漏到 evaluate 外层；切店回调里直接调 realClick/sleep/visible 会挂）。
+const SWITCH_HELPERS = `
+  function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+  function visible(el) {
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+  function textEls(re, maxLen = 40) {
+    return [...document.querySelectorAll('*')].filter((e) => {
+      const t = (e.textContent || '').trim();
+      return re.test(t) && t.length <= maxLen;
+    });
+  }
+  function clickableAncestor(el) {
+    let p = el;
+    for (let i = 0; i < 6 && p; i++, p = p.parentElement) {
+      if (p.tagName === 'BUTTON' || p.getAttribute('role') === 'button') return p;
+    }
+    return el;
+  }
+  function realClick(el) {
+    if (!el) return;
+    const opts = { bubbles: true, cancelable: true, view: window };
+    try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      try { el.dispatchEvent(new MouseEvent(type, opts)); } catch (e) {}
+    }
+    try { el.click(); } catch (e) {}
+  }
+  async function waitFor(fn, timeout = 8000, step = 300) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      let v = null;
+      try { v = fn(); } catch (e) { v = null; }
+      if (v) return v;
+      await sleep(step);
+    }
+    return null;
+  }
+  function innermost(els) {
+    return els.slice().sort((a, b) => (a.textContent || '').length - (b.textContent || '').length)[0] || null;
+  }
+  function findStoreNameEl() {
+    const W = window.innerWidth;
+    let best = null;
+    for (const el of document.querySelectorAll('span,a,div,button,p')) {
+      const t = (el.textContent || '').trim();
+      if (!/^[A-Za-z][A-Za-z0-9]*(?:\\s[A-Za-z0-9]+){0,3}$/.test(t)) continue;
+      if (t.length < 2 || t.length > 30) continue;
+      if (/^(Seller Central|Beta|NEW|SKC|SKU|USD|Best Seller)$/i.test(t)) continue;
+      if (/^[A-Z0-9]+$/.test(t)) continue;
+      if (el.children.length > 2) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 || r.top < 0 || r.top > 90) continue;
+      if (r.left < W * 0.5) continue;
+      if (!best || r.left > best.left) best = { el, left: r.left };
+    }
+    return best ? best.el : null;
+  }
+  function readStoreName() {
+    const el = findStoreNameEl();
+    return el ? (el.textContent || '').trim() : null;
+  }
+  function modalOpen() {
+    return textEls(/切换店铺|您的账户存在/, 40).length > 0;
+  }
+  // 对齐插件：点顶栏店名/箭头 → 下拉「切换」→ 「切换店铺」弹窗
+  async function openStoreModal() {
+    if (modalOpen()) return true;
+    const nameEl = findStoreNameEl();
+    if (nameEl) {
+      const r = nameEl.getBoundingClientRect();
+      realClick(clickableAncestor(nameEl));
+      const arrow = document.elementFromPoint(
+        Math.min(window.innerWidth - 3, r.right + 14),
+        r.top + r.height / 2,
+      );
+      if (arrow && arrow !== nameEl) realClick(arrow);
+    } else {
+      // 读不到店名时兜底点右上角头像区
+      const av = [...document.querySelectorAll('img,div,span')].find((e) => {
+        const r = e.getBoundingClientRect();
+        return r.top >= 0 && r.top < 80 && r.left > window.innerWidth * 0.85 && r.width > 20 && r.height > 20;
+      });
+      if (av) realClick(av);
+    }
+    const sw = await waitFor(() => {
+      const cands = textEls(/^切换$/, 6).filter(visible);
+      return cands.length ? clickableAncestor(cands[cands.length - 1]) : null;
+    }, 3500, 200);
+    if (sw) realClick(sw);
+    return !!(await waitFor(() => (modalOpen() ? true : null), 4500, 200));
+  }
+`;
+
+export async function readCurrentStoreName(page) {
+  return page.evaluate((helpers) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    return readStoreName();
+  }, SWITCH_HELPERS);
+}
+
+/**
+ * 切换到目标店铺（会话级）。已是当前店则 ok。
+ * @returns {Promise<{ok:boolean,msg:string}>}
+ */
+export async function switchSessionStore(page, target) {
+  const cur = await readCurrentStoreName(page);
+  if (cur && cur === target) {
+    log.info(`已是当前店：${target}`);
+    return { ok: true, msg: 'already' };
+  }
+  log.info(`会话切店 → ${target}（当前=${cur || '未知'}）`);
+  // Playwright page.evaluate 只接受 1 个参数，多个值必须包成对象
+  const result = await page.evaluate(async ({ helpers, targetName }) => {
+    // eslint-disable-next-line no-eval
+    eval(helpers);
+    if (!(await openStoreModal())) return { ok: false, msg: '打不开切换店铺弹窗' };
+    await sleep(400);
+    const esc = String(targetName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 对齐插件：找含店名且含「切换」的最短节点作行容器
+    const rows = textEls(new RegExp(esc), 120).filter((e) => /切换/.test(e.textContent || ''));
+    const row = innermost(rows);
+    if (!row) return { ok: false, msg: '弹窗里没找到店铺 ' + targetName };
+    let btn = [...row.querySelectorAll('button,[role=button]')].find(
+      (b) => /切换/.test(b.textContent || '') && !b.disabled && b.getAttribute('aria-disabled') !== 'true',
+    );
+    if (!btn) {
+      const allSwitch = textEls(/^切换$/, 6)
+        .map(clickableAncestor)
+        .filter((b) => b && !b.disabled && visible(b));
+      btn =
+        allSwitch.find(
+          (b) =>
+            row.contains(b) ||
+            (b.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_CONTAINED_BY),
+        ) || allSwitch[allSwitch.length - 1];
+    }
+    if (!btn) return { ok: false, msg: '没找到可点的切换按钮（可能已是当前店）' };
+    realClick(btn);
+    return { ok: true, msg: 'clicked' };
+  }, { helpers: SWITCH_HELPERS, targetName: target });
+
+  if (!result.ok) {
+    log.warn(`切店失败：${result.msg}`);
+    await page.keyboard.press('Escape').catch(() => {});
+    return result;
+  }
+  // 等顶栏店名变化或导航完成
+  await page.waitForTimeout(2500);
+  const deadline = Date.now() + 25000;
+  while (Date.now() < deadline) {
+    const name = await readCurrentStoreName(page);
+    if (name === target) {
+      log.info(`切店成功：${target}`);
+      return { ok: true, msg: 'switched' };
+    }
+    await page.waitForTimeout(800);
+  }
+  const after = await readCurrentStoreName(page);
+  if (after === target) return { ok: true, msg: 'switched-late' };
+  log.warn(`切店超时，当前显示=${after || '未知'}，目标=${target}`);
+  return { ok: false, msg: `timeout current=${after}` };
+}

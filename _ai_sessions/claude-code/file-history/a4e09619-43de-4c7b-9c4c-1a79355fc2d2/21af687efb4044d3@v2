@@ -1,0 +1,44 @@
+{
+  "enabled": true,
+  "appKey": "11b17d84bdc6285c0710e21c468ff1a6",
+  "appSecret": "c4d3a0aac9ce46f89e201b517ab95996b8496876",
+  "region": "global",
+  "baseUrl": "https://openapi-b-global.temu.com",
+  "apiMode": "listQuery",
+  "pageSize": 100,
+  "intervalMinutes": 15,
+  "editBaseUrl": "https://agentseller.temu.com",
+  "debug": true,
+  "forceAssumeActiveOnType1": false,
+  "alerts": {
+    "delist": true,
+    "lowTraffic": true,
+    "restrictedTraffic": true
+  },
+  "stores": [
+    {
+      "name": "Agnis",
+      "mallId": "634418217263027",
+      "accessToken": "",
+      "enabled": true
+    },
+    {
+      "name": "HomeCove",
+      "mallId": "634418217681106",
+      "accessToken": "",
+      "enabled": true
+    },
+    {
+      "name": "Twilight Cove",
+      "mallId": "",
+      "accessToken": "",
+      "enabled": false,
+      "_note": "App information 里尚未绑定此店；绑定并授权后再填 mallId/accessToken 并 enabled:true"
+    }
+  ],
+  "feishuWebhooks": [
+    "https://open.feishu.cn/open-apis/bot/v2/hook/eafe2bd9-973f-4381-9031-455228d3977a"
+  ],
+  "stateFile": "data/openapi-state.json",
+  "_ipWhitelistNote": "Partner 白名单 IP 当前为 18.175.249.236；跑监测的机器出口 IP 必须在此列表，否则接口会拒"
+}

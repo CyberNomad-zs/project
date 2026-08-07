@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""按逻辑店铺创建飞书业务子表（母表保留，命名：母表名__规范店名）。
+
+用法:
+  python scripts/init_shop_tables.py --dry-run
+  python scripts/init_shop_tables.py
+  python scripts/init_shop_tables.py --shops Ledvia-UK,Nottac-UK
+"""
+from __future__ import annotations
+
+import argparse
+import copy
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from app.clients.feishu import FeishuClient, FeishuError
+from app.config import get_settings
+from app.sync.feishu_schema import TABLE_SPECS
+from app.sync.shops import (
+    KIND_TO_MOTHER_NAME,
+    ShopTableRegistry,
+    TABLE_KINDS,
+    child_table_name,
+    default_registry_path,
+    list_canonical_shops_from_db,
+    list_canonical_shops_from_names,
+)
+
+# TABLE_SPECS env_key → kind
+ENV_TO_KIND = {
+    "FEISHU_TABLE_ASIN_DAILY": "asin_daily",
+    "FEISHU_TABLE_TASKS": "tasks",
+    "FEISHU_TABLE_ACTIONS": "actions",
+    "FEISHU_TABLE_CONFIG": "config",
+    "FEISHU_TABLE_DAILY_SUMMARY": "daily_summary",
+    "FEISHU_TABLE_PRODUCT_MASTER": "product_master",
+}
+
+
+def _fields_for_create(mother_name: str, fields: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """创建时去掉单向关联(type=18)：需指向动作子表，稍后单独补。"""
+    out = []
+    for f in fields:
+        f = copy.deepcopy(f)
+        if f.get("type") == 18:
+            continue  # 关联运营动作 等
+        # create_table 不接受非法 property
+        out.append(f)
+    return out
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="初始化按店飞书子表")
+    parser.add_argument("--shops", default="", help="逗号分隔规范店名；默认从本地库")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--registry",
+        default="",
+        help="输出 JSON 路径，默认 data/feishu_shop_tables.json",
+    )
+    args = parser.parse_args()
+
+    settings = get_settings()
+    if not settings.has_feishu or not settings.feishu_bitable_app_token:
+        print("ERROR: 需要 FEISHU_APP_ID/SECRET 与 FEISHU_BITABLE_APP_TOKEN")
+        return 2
+
+    if args.shops.strip():
+        shops = list_canonical_shops_from_names(
+            [s.strip() for s in args.shops.split(",") if s.strip()]
+        )
+    else:
+        shops = list_canonical_shops_from_db()
+
+    if not shops:
+        print("ERROR: 无规范店铺列表")
+        return 2
+
+    registry_path = Path(args.registry) if args.registry else default_registry_path()
+    print(f"逻辑店铺({len(shops)}): {shops}")
+    print(f"registry → {registry_path}")
+    print(f"kinds: {list(TABLE_KINDS)}")
+
+    planned = []
+    for shop in shops:
+        for kind, mother in KIND_TO_MOTHER_NAME.items():
+            planned.append((shop, kind, child_table_name(mother, shop)))
+    print(f"将确保 {len(planned)} 张子表")
+    if args.dry_run:
+        for shop, kind, name in planned:
+            print(f"  {name}  ({kind})")
+        print("[DRY-RUN] 未调用飞书")
+        return 0
+
+    # mother_name → fields
+    name_to_fields = {s["name"]: s["fields"] for s in TABLE_SPECS}
+    name_to_kind = {}
+    for s in TABLE_SPECS:
+        kind = ENV_TO_KIND.get(s["env_key"])
+        if kind:
+            name_to_kind[s["name"]] = kind
+
+    registry = ShopTableRegistry.load(registry_path)
+    app = settings.feishu_bitable_app_token
+
+    try:
+        with FeishuClient(settings) as client:
+            existing = {
+                t.get("name"): t.get("table_id")
+                for t in client.list_tables(app)
+                if t.get("name") and t.get("table_id")
+            }
+            print(f"base 已有表 {len(existing)} 张")
+
+            # 先建非 tasks 关联依赖：全部表先建（tasks 去掉 link 字段）
+            for shop in shops:
+                for mother_name, kind in [
+                    (KIND_TO_MOTHER_NAME[k], k) for k in TABLE_KINDS
+                ]:
+                    tname = child_table_name(mother_name, shop)
+                    if tname in existing and existing[tname]:
+                        tid = existing[tname]
+                        print(f"exists: {tname} -> {tid}")
+                        registry.set(shop, kind, tid)
+                        continue
+                    fields = name_to_fields.get(mother_name) or []
+                    create_fields = _fields_for_create(mother_name, fields)
+                    print(f"create: {tname} ({len(create_fields)} fields) ...")
+                    try:
+                        data = client.create_table(app, tname, create_fields)
+                        tid = (
+                            data.get("table_id")
+                            or (data.get("table") or {}).get("table_id")
+                            or ""
+                        )
+                        if not tid:
+                            print(f"  FAIL no table_id: {data}")
+                            continue
+                        print(f"  OK {tid}")
+                        existing[tname] = tid
+                        registry.set(shop, kind, tid)
+                        time.sleep(0.35)
+                    except FeishuError as e:
+                        print(f"  FAIL [{e.code}] {e.message}")
+
+            # 补 tasks 子表 → actions 子表 的单向关联字段
+            for shop in shops:
+                task_tid = registry.get(shop, "tasks")
+                action_tid = registry.get(shop, "actions")
+                if not task_tid or not action_tid:
+                    continue
+                try:
+                    names = {
+                        f.get("field_name")
+                        for f in client.list_fields(app, task_tid)
+                        if f.get("field_name")
+                    }
+                    if "关联运营动作" in names:
+                        continue
+                    client.create_field(
+                        app,
+                        task_tid,
+                        "关联运营动作",
+                        18,
+                        property_={"table_id": action_tid},
+                    )
+                    print(f"link field OK: tasks__{shop} → actions__{shop}")
+                    time.sleep(0.2)
+                except FeishuError as e:
+                    print(f"link field skip {shop}: [{e.code}] {e.message}")
+
+            # 动作定位列
+            for shop in shops:
+                action_tid = registry.get(shop, "actions")
+                if not action_tid:
+                    continue
+                try:
+                    from app.sync.writer import ACTION_SYSTEM_FIELD_NAMES
+
+                    created = client.ensure_text_fields(
+                        app, action_tid, ACTION_SYSTEM_FIELD_NAMES
+                    )
+                    if created:
+                        print(f"action cols {shop}: {created}")
+                except Exception as e:
+                    print(f"action cols skip {shop}: {e}")
+
+        path = registry.save(registry_path)
+        print(f"\n✅ 已写入注册表: {path}")
+        print(json_summary(registry))
+        return 0
+    except FeishuError as e:
+        print(f"FEISHU ERROR [{e.code}] {e.message}")
+        return 1
+
+
+def json_summary(registry: ShopTableRegistry) -> str:
+    lines = ["shops:"]
+    for shop in registry.shops():
+        kinds = registry.data.get(shop) or {}
+        lines.append(f"  {shop}: {len(kinds)} kinds")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

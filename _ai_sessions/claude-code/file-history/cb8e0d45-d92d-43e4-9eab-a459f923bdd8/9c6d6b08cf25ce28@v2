@@ -1,0 +1,74 @@
+# -*- coding: utf-8 -*-
+"""
+只读核对：物流下单真跑后的结果。
+- 打开 orderShip，报告各阶段数量（待处理应下降，物流下单/三方仓阶段应变化）
+- 抓当前可见弹窗文字（若结果/确认弹窗还挂着）
+- 截图存证
+不做任何变更。
+"""
+import sys, os, time
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
+from playwright.sync_api import sync_playwright
+
+
+def main():
+    with sync_playwright() as p:
+        ctx = p.chromium.launch_persistent_context(
+            config.BROWSER_PROFILE, headless=False, no_viewport=True,
+            args=["--start-maximized"], ignore_https_errors=True,
+        )
+        page = ctx.pages[0] if ctx.pages else ctx.new_page()
+        page.goto(config.ERP_URL, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(6)
+        fr = page.main_frame
+
+        # 可见弹窗文字
+        dlg = fr.evaluate(r"""() => {
+            const out=[];
+            document.querySelectorAll('.el-dialog, .el-message-box, .vxe-modal--box').forEach(d=>{
+                const st=getComputedStyle(d.closest('.el-dialog__wrapper')||d);
+                const vis = d.offsetParent!==null;
+                if(vis){ const t=(d.innerText||'').trim().replace(/\s+\n/g,'\n'); if(t) out.push(t.slice(0,400)); }
+            });
+            return out;
+        }""")
+        print("=== 可见弹窗 ===")
+        print(dlg if dlg else "（无弹窗）")
+
+        # 阶段数量
+        labels = ["待审核", "待处理", "自营仓库", "三方仓", "有货", "缺货", "已发货", "已搁置", "异常处理"]
+        import re
+        counts = {}
+        for lb in labels:
+            el = fr.query_selector(f"text={lb}")
+            num = None
+            if el:
+                try:
+                    parent = el.evaluate_handle("e=>e.parentElement")
+                    txt = fr.evaluate("e=>e.innerText", parent)
+                    m = re.findall(r"\d+", txt or "")
+                    num = m[-1] if m else None
+                except Exception:
+                    pass
+            counts[lb] = num
+        print("\n=== 各阶段数量 ===")
+        print(counts)
+
+        # 待处理列表总数
+        total = fr.evaluate(r"""() => { const a=[...document.querySelectorAll('.total_style')]
+            .map(e=>parseInt((e.innerText||'0').replace(/\D/g,''),10)).filter(x=>!isNaN(x));
+            return a.length? Math.max(...a):0; }""")
+        print("\n待处理列表 total_style =", total)
+
+        shot = os.path.join(config.DUMP_DIR, "erp_after_place.png")
+        page.screenshot(path=shot, full_page=True)
+        print("截图:", shot)
+
+        print("\nDONE，浏览器保持 15 秒。")
+        time.sleep(15)
+        ctx.close()
+
+
+if __name__ == "__main__":
+    main()

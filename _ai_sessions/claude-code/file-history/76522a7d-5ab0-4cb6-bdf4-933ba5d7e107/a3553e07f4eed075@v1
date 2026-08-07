@@ -1,0 +1,15 @@
+# 清泉服务器（2C4G）
+
+| 项 | 值 |
+|---|---|
+| SSH | `ssh qingquan-sg` |
+| IP | `43.156.50.38` |
+| 用户 | `ubuntu` |
+| 规格 | 2 核 / 4G · Ubuntu 24.04 · 腾讯云轻量新加坡 |
+| 密钥 | 仓库 `keys/qingquan_sg_ed25519`（密码登录已关闭） |
+
+```bash
+ssh -i keys/qingquan_sg_ed25519 ubuntu@43.156.50.38
+# 或本机已配别名：
+ssh qingquan-sg
+```

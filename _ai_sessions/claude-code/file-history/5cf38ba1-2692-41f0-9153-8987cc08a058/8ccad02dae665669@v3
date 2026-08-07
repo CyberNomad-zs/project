@@ -1,0 +1,127 @@
+/* TikTok shop analytics / home KPI daily snapshot (P2c).
+ * Wait for SPA metrics; label + regex on body text.
+ */
+(function () {
+  function clean(t) {
+    return String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+  }
+  function detectCurrency(text) {
+    var s = String(text || '');
+    if (/[£]|GBP/i.test(s)) return 'GBP';
+    if (/[€]|EUR/i.test(s)) return 'EUR';
+    if (/[¥￥]|CNY|RMB/i.test(s) && !/\$/.test(s)) return 'CNY';
+    if (/\$|USD/i.test(s)) return 'USD';
+    return null;
+  }
+  function parseNumber(value) {
+    if (value == null || value === '') return null;
+    if (typeof value === 'number' && isFinite(value)) return value;
+    var s = String(value).trim();
+    if (!s || s === '-' || s === '—') return null;
+    var m = s.match(/[¥$€£￥]?\s*([0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?)/);
+    if (m) {
+      var n0 = Number(String(m[1]).replace(/,/g, ''));
+      if (isFinite(n0)) return n0;
+    }
+    s = s.replace(/[,\s]/g, '').replace(/[¥$€£￥]/g, '').replace(/USD|GBP|EUR|CNY|RMB/gi, '').replace(/%/g, '');
+    var n = Number(s);
+    return isFinite(n) ? n : null;
+  }
+  function bodyText() {
+    return clean((document.body && (document.body.innerText || document.body.textContent)) || '');
+  }
+  function findByRegex(body, patterns) {
+    for (var i = 0; i < patterns.length; i++) {
+      var m = body.match(patterns[i]);
+      if (m) {
+        var n = parseNumber(m[1] != null ? m[1] : m[0]);
+        if (n != null) return { value: n, label: m[0].slice(0, 80) };
+      }
+    }
+    return null;
+  }
+  function walkTexts(limit) {
+    var out = [];
+    var nodes = document.querySelectorAll('div,span,p,li,td,th,h1,h2,h3,h4,strong,label');
+    for (var i = 0; i < nodes.length && out.length < limit; i++) {
+      var el = nodes[i];
+      if (el.children && el.children.length > 4) continue;
+      var t = clean(el.textContent);
+      if (!t || t.length < 1 || t.length > 120) continue;
+      out.push(t);
+    }
+    return out;
+  }
+  function findNearNumber(labels) {
+    var texts = walkTexts(800);
+    for (var i = 0; i < texts.length; i++) {
+      var low = texts[i].toLowerCase();
+      var hit = false;
+      for (var j = 0; j < labels.length; j++) {
+        if (low.indexOf(String(labels[j]).toLowerCase()) >= 0) { hit = true; break; }
+      }
+      if (!hit) continue;
+      var n = parseNumber(texts[i]);
+      if (n != null) return { value: n, label: texts[i] };
+      for (var k = 1; k <= 4 && i + k < texts.length; k++) {
+        n = parseNumber(texts[i + k]);
+        if (n != null) return { value: n, label: texts[i] + ' → ' + texts[i + k] };
+      }
+    }
+    return null;
+  }
+  try {
+    var body = bodyText();
+    // SPA 未出数时 body 很短或只有导航
+    var gmv =
+      findNearNumber(['GMV', '成交额', '销售额', '销售金额', 'Total sales', 'Gross merchandise', 'Gross sales', '支付金额', '营收']) ||
+      findByRegex(body, [
+        /GMV[:\s]*([£$€]?[\d,]+\.?\d*)/i,
+        /成交额[:\s]*([£$€]?[\d,]+\.?\d*)/,
+        /销售额[:\s]*([£$€]?[\d,]+\.?\d*)/,
+        /Total sales[:\s]*([£$€]?[\d,]+\.?\d*)/i
+      ]);
+    var orders =
+      findNearNumber(['订单数', '订单量', 'Orders', 'Order count', '下单数', '已支付订单', 'Paid orders']) ||
+      findByRegex(body, [/订单[数量]?[:\s]*([\d,]+)/, /Orders?[:\s]*([\d,]+)/i]);
+    var buyers =
+      findNearNumber(['买家数', '客户数', 'Buyers', 'Customers', '购买人数', '下单人数']) ||
+      findByRegex(body, [/买家[数]?[:\s]*([\d,]+)/, /Buyers?[:\s]*([\d,]+)/i]);
+    var refund =
+      findNearNumber(['退款金额', '退款', 'Refund amount', 'Refund']) ||
+      findByRegex(body, [/退款[金额]?[:\s]*([£$€\-]?[\d,]+\.?\d*)/, /Refund[:\s]*([£$€\-]?[\d,]+\.?\d*)/i]);
+    var bodyCur = detectCurrency(body.slice(0, 3000));
+    var raw = { bodyLen: body.length, sample: body.slice(0, 200) };
+    if (gmv) raw.gmvHit = gmv.label;
+    if (orders) raw.ordersHit = orders.label;
+    if (buyers) raw.buyersHit = buyers.label;
+    if (refund) raw.refundHit = refund.label;
+    var ok = !!(gmv || orders || buyers || (body.length > 2500 && refund));
+    // 若页面明显未加载完，标错
+    if (!ok && (body.length < 2000 || /Key metrics Key metrics/.test(body))) {
+      return JSON.stringify({
+        ok: false, module: 'shop_daily', source: 'dom-labels', url: location.href || '',
+        title: document.title || '', raw: raw,
+        error: 'KPI SPA not ready (body short or placeholder). url=' + (location.href || '')
+      });
+    }
+    return JSON.stringify({
+      ok: ok,
+      module: 'shop_daily',
+      source: 'dom-labels',
+      url: location.href || '',
+      title: document.title || '',
+      currency: bodyCur || 'GBP',
+      gmv: gmv ? gmv.value : null,
+      ordersCnt: orders ? orders.value : null,
+      buyersCnt: buyers ? buyers.value : null,
+      refundAmount: refund ? refund.value : null,
+      raw: raw,
+      error: ok ? null : 'no KPI labels found. url=' + (location.href || '')
+    });
+  } catch (e) {
+    return JSON.stringify({
+      ok: false, module: 'shop_daily', url: location.href || '', error: String(e && e.message ? e.message : e)
+    });
+  }
+})();

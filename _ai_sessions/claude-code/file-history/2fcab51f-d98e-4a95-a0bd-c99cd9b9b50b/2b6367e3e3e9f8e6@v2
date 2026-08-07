@@ -1,0 +1,55 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+export const ROOT = resolve(__dirname, '..');
+
+/** 读取并规范化 config.json */
+export function loadConfig() {
+  const raw = JSON.parse(readFileSync(resolve(ROOT, 'config.json'), 'utf8'));
+  return {
+    // 告警目标群 webhook：支持单个字符串或数组（多个群同发）。兼容旧字段 feishuWebhook。
+    feishuWebhooks: (Array.isArray(raw.feishuWebhooks)
+      ? raw.feishuWebhooks
+      : [raw.feishuWebhooks ?? raw.feishuWebhook ?? ''])
+      .map((s) => String(s || '').trim()).filter(Boolean),
+    feishuSecret: raw.feishuSecret || '',
+    intervalMinutes: Number(raw.intervalMinutes) || 15,
+    stores: raw.stores || 'all',
+    // 多店会话切店清单（店名与卖家中心顶栏英文名一致）。默认三店。
+    storeList: Array.isArray(raw.storeList)
+      ? raw.storeList
+      : ['Agnis', 'HomeCove', 'Twilight Cove'],
+    // 默认 true：赛狐下架 + 浏览器流量（对齐插件，无需 Chrome 扩展）
+    fullRun: raw.fullRun !== false,
+    alerts: {
+      onSaleDrop: raw.alerts?.onSaleDrop !== false,
+      trafficAnomaly: raw.alerts?.trafficAnomaly !== false,
+      // 赛狐下架 / 上架点名（fullRun 时启用，默认都开）
+      delist: raw.alerts?.delist !== false,
+      onshelf: raw.alerts?.onshelf !== false,
+      // 登录过期/连续监测失败时发飞书提醒，避免登录态失效后静默死掉没人知道
+      loginExpiry: raw.alerts?.loginExpiry !== false,
+    },
+    // 连续失败达到该轮次才发登录过期告警（默认 2 轮 ≈ 30 分钟，滤掉偶发抖动）
+    loginAlertAfterRounds: Number(raw.loginAlertAfterRounds) || 2,
+    // 仍未恢复时每隔多少轮再提醒一次（默认 16 轮 ≈ 4 小时，避免刷屏）
+    loginRealertRounds: Number(raw.loginRealertRounds) || 16,
+    headless: raw.headless === true,
+    // 代理：config.proxy 若为字符串（含空串）则以它为准——空串 = 强制直连，
+    // 不再回落系统 HTTPS_PROXY（实测本机 7897 代理会频繁 ERR_CONNECTION_CLOSED，直连反而稳）。
+    // 仅当 config.json 完全没有 proxy 字段时才跟随系统环境变量。
+    proxy: typeof raw.proxy === 'string' ? raw.proxy : (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || ''),
+    loginUrl: raw.loginUrl || 'https://agentseller.temu.com/goods/list',
+    goodsListUrl: raw.goodsListUrl || 'https://agentseller.temu.com/goods/list',
+    userDataDir: resolve(ROOT, raw.userDataDir || './.userdata'),
+    // 浏览器 channel：默认 'chrome' = 用系统真实 Chrome（指纹与真人一致，最不易被风控识别）。
+    // 设为 '' 或 'chromium' 则回落 Playwright 内置 Chromium。
+    channel: raw.channel === '' ? '' : (raw.channel || 'chrome'),
+    // 可选：显式指定 chrome.exe 路径，优先级高于 channel。
+    executablePath: raw.executablePath || '',
+    perStoreTimeoutMs: Number(raw.perStoreTimeoutMs) || 60000,
+    navTimeoutMs: Number(raw.navTimeoutMs) || 60000,
+  };
+}

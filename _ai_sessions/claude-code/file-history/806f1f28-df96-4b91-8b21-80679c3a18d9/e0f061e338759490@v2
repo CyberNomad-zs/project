@@ -1,0 +1,74 @@
+"""初始化管理员与种子店铺。
+
+用法（容器内）:
+  python -m app.scripts.seed
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+
+from sqlalchemy import text
+
+from app.config import get_settings
+from app.infra.db import SessionLocal
+from app.infra.security import hash_password
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("seed")
+
+SEED_SHOPS = [
+    ("temu", "396706", "Agnis", "GBP"),
+    ("temu", "398202", "HomeCove", "GBP"),
+    ("temu", "398203", "Twilight Cove", "GBP"),
+    ("tiktok", "27501502216807", "Deal to deal", "GBP"),
+    ("tiktok", "27328767468273", "Gardena", "GBP"),
+    ("tiktok", "27758103898326", "TikTok - Pop", "GBP"),
+]
+
+
+async def run() -> None:
+    settings = get_settings()
+    async with SessionLocal() as db:
+        exists = (
+            await db.execute(
+                text("SELECT id FROM org_user WHERE username = :u"),
+                {"u": settings.admin_username},
+            )
+        ).first()
+        if not exists:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO org_user (username, password_hash, display_name, is_admin)
+                    VALUES (:u, :p, '管理员', TRUE)
+                    """
+                ),
+                {
+                    "u": settings.admin_username,
+                    "p": hash_password(settings.admin_password),
+                },
+            )
+            logger.info("created admin user %s", settings.admin_username)
+        else:
+            logger.info("admin exists, skip")
+
+        for platform, eid, name, currency in SEED_SHOPS:
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO shop (platform, external_shop_id, name, currency)
+                    VALUES (:platform, :eid, :name, :currency)
+                    ON CONFLICT (platform, external_shop_id) DO UPDATE
+                    SET name = EXCLUDED.name
+                    """
+                ),
+                {"platform": platform, "eid": eid, "name": name, "currency": currency},
+            )
+        await db.commit()
+        logger.info("seeded %d shops", len(SEED_SHOPS))
+
+
+if __name__ == "__main__":
+    asyncio.run(run())

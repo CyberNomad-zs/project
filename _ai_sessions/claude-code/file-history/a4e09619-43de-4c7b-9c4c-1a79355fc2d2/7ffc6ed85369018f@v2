@@ -1,0 +1,21 @@
+{
+  "name": "temu-monitor",
+  "version": "1.0.0",
+  "description": "Temu Seller Central 多店铺在售数量 + 商品流量异常 自动化监测，飞书告警",
+  "type": "module",
+  "scripts": {
+    "login": "node src/cli.js login",
+    "calibrate": "node src/cli.js calibrate",
+    "probe": "node src/probe.js",
+    "once": "node src/cli.js once",
+    "start": "node src/cli.js start",
+    "openapi:init": "node src/openapi/cli.js init",
+    "openapi:probe": "node src/openapi/cli.js probe",
+    "openapi:once": "node src/openapi/cli.js once",
+    "openapi:start": "node src/openapi/cli.js start",
+    "openapi:dry": "node src/openapi/cli.js dry"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

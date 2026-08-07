@@ -1,0 +1,107 @@
+# TK · P1 验收清单（广告规则加深 + 筛选 + 字段/细粒度结论）
+
+> 日期：2026-08-04  
+> 对应计划：[TK-整体开发计划](./TK-整体开发计划.md) · P1  
+> 关联： [P1.2 CTR 评估](./TK-P1-广告系列CTR字段评估.md) · [P1.7 细粒度 POC](./TK-P1-广告细粒度POC结论.md)
+
+---
+
+## 1. 本轮已交付（代码/文档）
+
+| # | 项 | 路径 / 说明 |
+|---|----|-------------|
+| P1.1 | 广告规则 `ads_budget_burn` / `ads_cpa_high` | `backend/app/domain/tk_ads_rules.py` |
+| | 阈值配置 | `config.py`：`tk_ads_budget_burn_ratio=0.8`、`tk_ads_budget_min=1`、`tk_ads_max_cpa=15`、`tk_ads_cpa_aov_ratio=0.4` |
+| | 单测 | `backend/tests/test_tk_ads_rules.py`（14 passed） |
+| | 广告列表 open 异常码 | `tk_ops` lateral 含 burn/cpa |
+| | **生产写入** | 2026-08-04 write eval：burn=5 入 PG；飞书 anomaly **created=5 failed=0** |
+| P1.2 | 系列 CTR/展示 | **书面无字段** → `docs/TK-P1-广告系列CTR字段评估.md` |
+| P1.3 | 商品销量排行 | `GET /api/v1/tk/products/ranking` + 任务台总览 TOP 表；生产已通（TOP1 销量 265） |
+| P1.5 | 任务台分析域筛选 | `web/src/App.vue`：`object_type`；**生产 dist 已 rebuild** |
+| P1.7 | 细粒度 POC | **全量 P2** → `docs/TK-P1-广告细粒度POC结论.md` |
+
+**规则语义摘要：**
+
+| code | 条件 | 互斥/叠加 |
+|------|------|-----------|
+| `ads_spend_no_sale` | spend≥min 且无单无收 | 与 ROI 互斥 |
+| `ads_roi_low` | 有单且 ROI&lt;目标或全局 | 与空耗互斥 |
+| `ads_budget_burn` | daily_budget≥min 且 spend/budget≥ratio | 可与空耗/ROI/CPA 叠加 |
+| `ads_cpa_high` | 有单；CPA≥max_cpa **或** CPA/AOV≥ratio | 可与 ROI 叠加；空耗不评 |
+
+字典码已在 `011_tk_anomaly_types_specialize.sql` 启用，**无需新迁移**。
+
+---
+
+## 2. 自检命令
+
+```powershell
+cd backend
+.\.venv\Scripts\python.exe -m pytest tests/test_tk_ads_rules.py tests/test_tk_product_ranking_api.py -q
+
+# 登录后
+# POST /api/v1/tk/ads/anomaly-eval  body: { "dry_run": true }
+# GET  /api/v1/tk/products/ranking?limit=10
+# GET  /api/v1/tk/anomaly-tasks?object_type=campaign&open_only=true
+```
+
+任务台：TikTok → 异常任务 → **分析域**；平台总览 → **商品销量排行 TOP**。
+
+---
+
+## 3. P1 验收勾选
+
+| # | 项 | 状态 |
+|---|----|------|
+| 1 | 预算将尽规则 + 单测 | ✅ |
+| 2 | 高 CPA 规则 + 单测 | ✅ |
+| 3 | Eval API 返回 burn/cpa 计数与阈值 | ✅ |
+| 4 | 任务台 object_type 筛选 | ✅ 代码 + **生产 dist 2026-08-04** |
+| 5 | 系列 CTR/展示书面结论 | ✅ 无字段 |
+| 6 | 广告细粒度 POC 书面结论 | ✅ 全量 P2 |
+| 7 | `pytest` TK ads / ranking | ✅ |
+| 8 | 生产部署 + write eval | ✅ burn=5 入 PG |
+| 9 | 飞书异常同步新 code | ✅ anomaly scanned=66 created=5 updated=10 failed=0 |
+| 10 | 商品排行一版 | ✅ API + 总览 UI；快照 sales_qty（非日 GMV） |
+| 11 | 中心任务投影（P1.6） | ✅ 沿用 `project_center_task=true`（write 已开）；无单独重构 |
+| 12 | 下钻（P1.8） | 🟡 最小：总览店铺表 + 异常按店/分析域筛；无独立店详情路由 |
+| 13 | 飞书 T3 商品（P1.4） | ⬜ **可选跳过**：任务台已有排行；T3 表未建 |
+| 14 | ① 渠道 GMV 拆解（P1.9） | ⬜ **冻结**：依赖 P0.7 采集 POC，未通过不建表 |
+
+### 3.1 生产 2026-08-04 实跑
+
+| 项 | 结果 |
+|----|------|
+| ads write | biz=08-02 scanned=10 roi=8 empty=2 **burn=5** cpa=0 upserted=15 |
+| PG open | stockout 50 · roi 8 · **burn 5** · empty 2 · low 1（合计 66） |
+| 飞书 anomaly | created=5（burn） updated=10 failed=0 |
+| products/ranking | total 有销量 116；TOP1 Gardena 拖把 sales=265 |
+| web dist | `object_type` / `products/ranking` / `ads_budget_burn` 均在 bundle |
+
+---
+
+## 4. 不做 / 冻结（P1 边界）
+
+- 系列日表加 impressions/ctr 空列  
+- 创意/组日表全量  
+- ② 视频内容、③ 达人、商品卡多渠道 CTR  
+- AI 素材分级  
+- **P1.4** 飞书 T3：可选，本轮用任务台排行代替  
+- **P1.9** 渠道拆解：等 P0.7/采集门禁  
+
+---
+
+## 5. 生产部署备忘
+
+```bash
+# 后端
+scp backend/app/domain/tk_ads_rules.py backend/app/config.py backend/app/api/tk_ops.py ...
+set -a; . /opt/qingquan/.env; set +a
+cd /opt/qingquan/deploy
+docker compose -p qingquan -f docker-compose.prod.yml --env-file ../.env build api worker
+docker compose -p qingquan -f docker-compose.prod.yml --env-file ../.env up -d api worker
+
+# 前端（nginx root=/opt/qingquan/web/dist）
+scp web/src/App.vue ...
+cd /opt/qingquan/web && npm run build
+```

@@ -123,7 +123,8 @@ if (Test-Path -LiteralPath $zipPath) {
 
 Push-Location $stage
 try {
-  & tar.exe -a -cf $zipPath *
+  # 必须用 Windows 自带 bsdtar；Git Bash 的 GNU tar 会把 E:\ 当远程主机
+  & "$env:SystemRoot\System32\tar.exe" -a -cf $zipPath *
   if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
 } finally {
   Pop-Location
@@ -135,7 +136,7 @@ $sizeMb = (Get-Item -LiteralPath $zipPath).Length / 1MB
 Write-Host ("ZIP sizeMB={0:N2}" -f $sizeMb)
 Write-Host "ZIP=$zipPath"
 Write-Host '--- verify ---'
-& tar.exe -tf $zipPath | Select-String -Pattern 'stores\.config\.json$|\.env$|gui\.py$|feishu-tk-store|tk-p0-post|tblRI8j|LzTAbQ|README'
+& "$env:SystemRoot\System32\tar.exe" -tf $zipPath | Select-String -Pattern 'stores\.config\.json$|\.env$|gui\.py$|feishu-tk-store|tk-p0-post|tblRI8j|LzTAbQ|README'
 
 cmd.exe /c "rd /s /q `"$stage`""
 Write-Host 'DONE'

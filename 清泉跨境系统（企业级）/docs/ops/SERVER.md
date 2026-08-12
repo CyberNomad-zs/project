@@ -60,6 +60,16 @@ curl -sS http://127.0.0.1:8000/health
 - 飞书异常表：`feishu-tk-upgrade-anomaly-amz-style.py` 列已齐（skip）；`feishu-tk-daily-sync.ps1 -AnomalyOnly` → created=4 updated=30 failed=0
 - 生产：scp `tk_ops.py` + `web/src` → rebuild api/worker + `npm run build`；冒烟 `SHOP_DAILY_SMOKE_OK` / `ANOMALY_SMOKE_OK` / dist 含 `数据新鲜度` `待老板决策`
 
+### 生产飞书 TK 切清泉组织新 Base（2026-08-12）
+
+- 新 Base `LzTAbQsThaPOzis2lFvciDMlnyh`（清泉组织副本，2026-08-10 建）；旧金猫 `C1iHbw6TVad6rUsbZnbc2gSDnHg` 保留不删
+- 生产 `/opt/qingquan/.env`：`FEISHU_APP_ID/SECRET` 切 `cli_aaf3f14a863bdbc3`，`FEISHU_BITABLE_APP_TOKEN(_TK)` 切新 Base，TK 六表 ID 全换（shop `tblrpFX6gWaf7KPX` / ads `tblgLifLVW91v5Bk` / anomaly `tblgDbCXVfdbp0oS` / content `tbl9NVOxwfA24tyw` / affiliate `tblDTIwDWHGlJ9qf` / experience `tblSyTljO6C6tRaY`）；切换前自动备份 `.env.bak.*`
+- 影响面：`get_tenant_access_token` 仅 TK 同步 / AMZ（未配置表，空转）/ worker tasks（空转）/ IM（`TK_NOTIFY_IM=false`）使用；采购/Temu 独立凭据不受影响
+- `config/feishu-tk-store-tables.json`（分店表映射，已指向新 Base）scp 到 `/opt/qingquan/config/`；容器无挂载，rebuild 后需 `docker cp` 到 `qingquan-api-1`/`qingquan-worker-1`。**注意**：容器内 `_REPO_ROOT=/`（`parents[3]`），相对路径解析为 `/config/feishu-tk-store-tables.json`（不是 `/app/config/`），文件必须放 `/config/`
+- rebuild api/worker 前已校验容器内 py 与宿主机 `/opt/qingquan/backend` 完全一致（md5 全等），rebuild 不丢热修
+- 重推：清 `sync_feishu_map` 旧表映射 → `scripts/_prod_exp_resync_new_base.sh`（体验分）+ `scripts/_prod_tk_full_resync_new_base.sh`（T1/T2/异常/T6/T7，lookback 30d）
+- 注意：Git Bash ssh 读不了 ed25519 密钥（libcrypto unsupported），须用 `C:\Windows\System32\OpenSSH\ssh.exe`
+
 ## 迁移（已有库）
 
 ```bash
@@ -120,7 +130,7 @@ docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
 - 规则：`shop_health_drop`（较上次快照**任意下降**）+ `shop_health_low`（`≤ TK_HEALTH_LOW_THRESHOLD`，默认 150）
 - 数据：`tk.fact_tiktok_health_daily`（采集 `run-shop-modules*.ps1` → ingest `tiktok_health_daily`）
 - 去重：未闭环同码只刷新；**分数继续恶化**才再推
-- 通知：**双通道** `notify_dual` = 群 webhook（`FEISHU_BOT_WEBHOOK_TK_HEALTH`）+ 企业应用 IM 私信（`FEISHU_IM_RECEIVE_ID`）
+- 通知：`notify_dual` = 群 webhook（`FEISHU_BOT_WEBHOOK_TK_HEALTH`）为主；IM 私信可选（`TK_NOTIFY_IM`，**2026-08-11 起默认 false，只群发**）
 
 ### 店铺体验分（2026-08-11）
 

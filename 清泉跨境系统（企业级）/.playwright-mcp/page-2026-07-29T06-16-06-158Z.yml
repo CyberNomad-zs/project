@@ -1,0 +1,48 @@
+- generic [active] [ref=e1]:
+  - main [ref=e3]:
+    - generic [ref=e4]:
+      - generic [ref=e5]:
+        - link [ref=e6] [cursor=pointer]:
+          - /url: https://business-api.tiktok.com/portal
+          - img "tt4b logo" [ref=e7]
+        - generic [ref=e8]:
+          - link "discover_api_products" [ref=e9] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "solutions" [ref=e10] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "开发文档" [ref=e11] [cursor=pointer]:
+            - /url: https://business-api.tiktok.com/portal/docs/
+          - link "支持" [ref=e12] [cursor=pointer]:
+            - /url: /portal/docs/[slug]/[version]
+          - link "博客" [ref=e13] [cursor=pointer]:
+            - /url: https://business-api.tiktok.com/portal/blog
+      - generic [ref=e14]:
+        - link [ref=e15] [cursor=pointer]:
+          - /url: https://business-api.tiktok.com/portal/search
+        - button [ref=e23] [cursor=pointer]
+    - iframe [ref=e33]:
+      
+    - generic [ref=e44]:
+      - generic [ref=e45]:
+        - generic [ref=e46]: © 2026 TikTok for Business
+        - link "条款和政策" [ref=e47] [cursor=pointer]:
+          - /url: https://ads.tiktok.com/i18n/official/policy/terms
+        - link "隐私和 Cookie 政策" [ref=e48] [cursor=pointer]:
+          - /url: https://ads.tiktok.com/i18n/official/policy/privacy?
+      - generic [ref=e49]:
+        - link [ref=e50] [cursor=pointer]:
+          - /url: https://www.tiktok.com/@tiktokforbusiness?lang=en
+          - img "TikTok" [ref=e51]
+        - link [ref=e52] [cursor=pointer]:
+          - /url: https://www.linkedin.com/company/tiktokbusiness/
+          - img "LinkedIn" [ref=e53]
+        - link [ref=e54] [cursor=pointer]:
+          - /url: https://www.facebook.com/TikTokforBusiness/
+          - img "Facebook" [ref=e55]
+        - link [ref=e56] [cursor=pointer]:
+          - /url: https://www.instagram.com/tiktok.forbusiness/
+          - img "Instagram" [ref=e57]
+        - link [ref=e58] [cursor=pointer]:
+          - /url: https://www.twitter.com/TikTokBusiness
+          - img "Twitter" [ref=e59]
+  - alert [ref=e60]

@@ -1,0 +1,163 @@
+- generic [ref=e528]:
+  - generic [ref=e1520]:
+    - generic [ref=e1521]:
+      - button [ref=e1522] [cursor=pointer]
+      - generic [ref=e1526]:
+        - generic [ref=e1527] [cursor=pointer]
+        - heading "飞书云文档" [level=1] [ref=e1532] [cursor=pointer]
+    - generic [ref=e1534]:
+      - generic [ref=e1535]: 搜索
+      - generic [ref=e1545]:
+        - generic [ref=e1546]:
+          - button "主页" [ref=e1548]
+          - button "云盘 我的空间和共享空间搬到云盘了" [ref=e1554]:
+            - generic [ref=e1555]: 云盘
+            - generic: 我的空间和共享空间搬到云盘了
+          - button "知识库" [ref=e1563]
+          - button "智能纪要" [ref=e1569]
+        - generic [ref=e1575]:
+          - generic [ref=e1576]:
+            - button "置顶文档" [ref=e1578]
+            - list [ref=e1588]:
+              - button "在金猫智领未来(南京)信息科技有限公司玩转云文档" [ref=e1598] [cursor=pointer]
+          - button "置顶知识库" [ref=e1603]
+          - generic [ref=e1612]:
+            - button "我的文档库" [ref=e1614]
+            - button [ref=e1623] [cursor=pointer]
+  - generic [ref=e529]:
+    - generic [ref=e532]:
+      - generic [ref=e533]:
+        - generic [ref=e534] [cursor=pointer]
+        - button [ref=e540] [cursor=pointer]
+      - generic [ref=e546]:
+        - generic [ref=e548]:
+          - generic [ref=e549]:
+            - generic [ref=e1654]:
+              - generic [ref=e1655]: 金猫智领未来(南京)信息科技有限公司
+              - generic [ref=e1659]: 陈勇胜
+            - generic [ref=e559]:
+              - generic [ref=e561] [cursor=pointer]
+              - generic [ref=e564]: TK驾驶舱
+            - generic [ref=e566]: 外部
+            - button [ref=e569] [cursor=pointer]
+          - generic [ref=e574]:
+            - button [ref=e576] [cursor=pointer]
+            - generic [ref=e2367] [cursor=pointer]: 已经保存到云端
+        - generic [ref=e585]:
+          - button [ref=e594] [cursor=pointer]
+          - generic [ref=e597]:
+            - generic [ref=e598]:
+              - button "分享" [ref=e600] [cursor=pointer]
+              - generic [ref=e608]:
+                - button [ref=e2369] [cursor=pointer]
+                - button [ref=e1669] [cursor=pointer]
+                - button [ref=e623] [cursor=pointer]
+            - button [ref=e1675] [cursor=pointer]
+            - button [ref=e633] [cursor=pointer]
+            - button [ref=e639] [cursor=pointer]
+            - button [ref=e645] [cursor=pointer]
+            - button [ref=e1680] [cursor=pointer]
+            - generic [ref=e1687] [cursor=pointer]
+    - generic [ref=e660]:
+      - generic [ref=e662]:
+        - generic [ref=e664]:
+          - textbox [ref=e1697]:
+            - /placeholder: 搜索
+          - generic [ref=e677]:
+            - button [ref=e678] [cursor=pointer]
+            - generic [ref=e682] [cursor=pointer]
+        - generic [ref=e2375]:
+          - generic [ref=e2376]: D1 多店对比
+          - generic [ref=e2387]: D2 广告投放
+          - generic [ref=e2398]: D4 视频内容
+          - generic [ref=e2409]: 异常任务
+          - generic [ref=e2426]: 健康度监控
+          - generic [ref=e2435]: AI-TK广告投流分析
+          - generic [ref=e2444]: TK广告日报
+          - generic [ref=e2456]: AI广告智能筛选分析表
+          - generic [ref=e2468]: 候选池
+          - generic [ref=e2477]: 英国TikTok Shop选品池
+          - generic [ref=e2489]: 数据标准
+          - generic [ref=e2501]: 选品流程
+          - generic [ref=e2513]: 英国合规清单
+          - generic [ref=e2525]: 来源说明
+          - generic [ref=e2537]: 总览看板
+          - generic [ref=e2548]: 视频制作任务管理
+          - generic [ref=e2557]: 产品表
+          - generic [ref=e2569]: 视频任务表
+          - generic [ref=e2581]: 爆款视频拆解表
+          - generic [ref=e2593]: 达人寄样跟踪表
+          - generic [ref=e2602]: tk达人
+          - generic [ref=e2614]: 黑猫SUK
+          - generic [ref=e2623]: 在库货物
+          - generic [ref=e2635]: 在途货物
+          - generic [ref=e2647]: 产品利润表
+          - generic [ref=e2656]: TK产品
+          - generic [ref=e2668]: TT SHOP2
+          - generic [ref=e2680]: pop店
+          - generic [ref=e2692]: TK产品直播定价
+          - generic [ref=e2704]: 送测分析表
+          - generic [ref=e2716]: 达人统计表
+          - generic [ref=e2728]: TK报销
+          - generic [ref=e2740]: 示例
+          - generic [ref=e2752]: 独立站定价
+          - generic [ref=e2764]: wayfair
+          - generic [ref=e2776]: TikTok Shop 新品上架 SOP
+          - generic [ref=e2787]: TikTok Shop UK 本土店运营 SOP & 风控规则
+          - generic [ref=e2798]: 店铺日经营
+          - generic [ref=e2810]: 广告活动日明细
+          - generic [ref=e2822]: 补货
+          - generic [ref=e2831]: 补货申请
+          - generic [ref=e2840]: TK补货申请表
+          - generic [ref=e2852]: 采购数据
+          - generic [ref=e2864]: 出货明细
+          - generic [ref=e2881]: TK补货备忘
+          - generic [ref=e2893]: 内容日
+          - generic [ref=e2907]:
+            - textbox [active] [ref=e2912]: 文件夹
+            - generic [ref=e2913]: 可拖拽内容到这里
+        - button [ref=e1215] [cursor=pointer]
+      - generic [ref=e1221]:
+        - generic [ref=e1223]:
+          - list [ref=e1226]:
+            - listitem [ref=e1227] [cursor=pointer]:
+              - generic [ref=e1230]: 全部
+            - listitem [ref=e1242] [cursor=pointer]:
+              - generic [ref=e1243]: 01_红色任务
+            - listitem [ref=e1250] [cursor=pointer]:
+              - generic [ref=e1251]: 02_橙色任务
+            - listitem [ref=e1258] [cursor=pointer]:
+              - generic [ref=e1259]: 06_待老板决策
+            - listitem [ref=e1266] [cursor=pointer]:
+              - generic [ref=e1267]: 07_全部未关闭
+            - listitem [ref=e1274] [cursor=pointer]:
+              - generic [ref=e1275]: 按等级-红橙黄
+          - generic [ref=e1283] [cursor=pointer]
+        - generic [ref=e1290]:
+          - generic [ref=e1293]:
+            - generic [ref=e1296]:
+              - button "添加记录" [ref=e1297] [cursor=pointer]
+              - button [ref=e1307] [cursor=pointer]
+            - generic [ref=e1312]:
+              - generic [ref=e1313]: 字段配置
+              - generic [ref=e1322]: 视图配置
+              - generic [ref=e1332]: 筛选
+              - generic [ref=e1343]: 分组
+              - generic [ref=e1354]: 排序
+              - generic [ref=e1364]: 行高
+              - generic [ref=e1373]: 填色
+            - generic [ref=e1383]:
+              - generic [ref=e1384]:
+                - button [ref=e1386] [cursor=pointer]
+                - generic [ref=e1390]: 智能提醒
+                - generic [ref=e1400]: 生成表单
+                - generic [ref=e1411] [cursor=pointer]
+              - generic [ref=e1417]:
+                - generic [ref=e1419] [cursor=pointer]
+                - generic [ref=e1426] [cursor=pointer]
+            - generic [ref=e1432]:
+              - generic [ref=e1434] [cursor=pointer]
+              - generic [ref=e1441] [cursor=pointer]
+          - generic [ref=e1453]:
+            - generic [ref=e1454]: 评论
+            - generic [ref=e1455] [cursor=pointer]

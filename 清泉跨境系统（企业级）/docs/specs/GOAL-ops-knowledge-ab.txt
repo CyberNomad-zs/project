@@ -1,0 +1,67 @@
+你是执行者，这份文档是你唯一的任务来源；中途没人可问，拿不准写进 BLOCKED.md 跳过继续，最后随交付提交。
+断了/新会话：先读 PROGRESS.md 接着做，别重做；每完成一项立刻更新。
+这活为什么干：异常处置只有自由文本 note，经验不可复用；干完后运营打开任务能同时看到「历史统计」和「已发布剧本」，闭环时动作+效果可结构化沉淀。
+让步顺序：结构化闭环正确 > 双轨效果可查询 > 三平台骨架可演示 > UI 好看。
+死规矩=「只允许/不许」违反即失败；「建议」可换路并记 PROGRESS.md。
+
+## 我替领导拍的板
+1. 可指导=A+B（已确认）：任务详情同时返回历史Top统计 + 仅published剧本；无剧本时统计仍可用。
+2. 效果=标签+指标双轨：resolve 必填 effect_code；metric_effect 可空，有 fact 时异步回填，无 fact 不失败。
+3. 范围=三平台各1类：amazon/link_wow_units_drop、tiktok/low_roi、temu/listing_off。
+4. 知识来源=预置码表+任务回写聚合；不做 LLM、不挖旧 free-text。
+5. 可指导不含自动改价/预算（G3）；推荐只读+人选用。
+6. 交付=一份垂直切片（API+迁移+最小Web+测试）。
+7. pytest 若未装：允许在 backend 虚拟环境 pip install pytest pytest-asyncio httpx，记 PROGRESS；可往 requirements.txt 追加测试依赖一行。
+
+## 界限
+只允许改/新建：
+- backend/migrations/004_ops_knowledge.sql（或下一可用序号）
+- backend/app/domain/（task_engine 及相关新模块 kb_*.py）
+- backend/app/api/（tasks.py 扩展 + 新 kb 路由并挂 main.py）
+- backend/app/scripts/（种子扩展，可选）
+- backend/tests/（新建测试）
+- web/src/（App.vue / api.js 最小展示）
+- docs/openapi-v1.yaml（与实现同步）
+- 仓库根 PROGRESS.md、BLOCKED.md
+- backend/requirements.txt 仅可追加 pytest/pytest-asyncio（若测需要）
+其余路径只读。不许改 CI/密钥/docker 生产凭据/001–003 已落地 SQL 语义（可新 migration 扩展列）。
+判卷：本任务书与测试文件可增不可删断言放宽。最诱人顺手活（飞书同步字段、环比跑批修复、导航大改）→ BLOCKED.md。
+
+## 现状与任务0（2026-07-29 实测）
+- task_progress 仅 note 自由文本；无 action_code/effect/知识表（001_init.sql）。
+- AMZ 规则种子4条在 002；演示种子含三平台多类型（seed_demo_tasks.py）。
+- backend/tests 目录空；默认 python 无 pytest/fastapi；存在 backend/.venv（True）。
+- API：POST /api/v1/tasks/{id}/progress|resolve 仅 note（tasks.py）。
+任务0：在 backend/.venv 跑 python -c "import fastapi; print(fastapi.__version__)"；失败则用该 venv pip 装 requirements 再核。写 PROGRESS 开工回执≤10行（目标/顺序/最大风险）再动工。对不上现状就停，证据置顶 BLOCKED.md。
+
+## 任务1 数据模型
+新增：ops_action_dict(code,name,platform可空,enabled)；ops_effect_dict(code,name,enabled)；task_progress 增 action_code/effect_code 可空+兼容旧 note；task 可冗余 last_action_code/last_effect_code；kb_playbook(id,platform,anomaly_type,title,body,action_codes[],status draft|published|rejected,evidence jsonb,created_at…)；可选 task_effect_metric(task_id, window_days, metric, before, after, delta_ratio, computed_at) 或 JSON 挂 task。
+种子：≥3 action（每平台至少1）、≥4 effect（recovered/partial/no_effect/false_positive）、3 条骨架 anomaly 各 1 条 published 剧本（可短）。
+验收：psql 或 SQLAlchemy 查表存在；三字典/剧本 count≥上述。
+
+## 任务2 写路径
+扩展 progress：可选 action_code+note；resolve：effect_code 对三骨架类型必填（其它类型可仅 note 兼容）；非法 code→400。
+指标回填：提供函数/POST /api/v1/kb/metric-backfill 对 amazon+link_wow_units_drop 在 fact_amz_link_daily 有数据时写入 metric；无数据返回 skipped 不 500。
+验收：venv 下 pytest -q 覆盖 合法闭环 / 缺 effect_code 400 / 未知 action 400；测试数≥4 且 skipped=0。
+
+## 任务3 读路径 A+B
+GET /api/v1/kb/guidance?platform=&anomaly_type= 返回：
+- history: 按 action_code 聚合次数与 effect 分布（可空数组）
+- playbooks: 仅 status=published
+POST /api/v1/kb/playbooks/generate-draft 从 history 生成 draft（draft 不得出现在 guidance.playbooks）；POST .../publish 变 published。
+验收：先 seed 结构化闭环≥2 → guidance.history 非空；draft 不出现在 guidance.playbooks；publish 后出现。反向：把 published 改 draft 后再 GET，playbooks 不得含该条（测后还原）。
+
+## 任务4 最小 Web
+任务抽屉/详情：调 guidance 展示两块标题「历史参考」「已发布剧本」；闭环表单可选 action + 必选 effect（骨架类型）。不求美观。
+验收：手测或页面不报错即可；API 契约测试不过则本任务不算完成。
+
+## 规矩
+防作弊：禁止 pytest skip/xfail 滥用、放宽断言、mock 掉 DB 却声称集成通过、删测、|| true；测试只许≥开工基线（基线0，交付≥4）。
+不新增鉴权体系；沿用 get_current_user。同一验收连败3次换项；比开工差则回滚报告。
+进度：PROGRESS.md；卡死：BLOCKED.md。
+
+## 完成条件
+硬指标1：对三骨架类型各至少1次「resolve 带 action+effect」后，guidance 返回 history，且至少1条 published playbook 可被 GET 到。
+硬指标2：白名单外 git diff 为空（或仅 PROGRESS/BLOCKED）；无自动执行平台操作代码。
+每条验收在对话贴真实命令输出（含反向验证红→绿）。BLOCKED.md 必交（无则写「无」）。
+止损：有效工时约1个工作日或同项失败3次→停，如实汇报。

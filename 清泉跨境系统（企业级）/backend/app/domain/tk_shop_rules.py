@@ -1,0 +1,394 @@
+"""TK 店铺分析异常：从 fact_tiktok_shop_daily 环比生成 anomaly task。
+
+规则（P0 · ① 店铺数据分析）：
+  - shop_gmv_drop    店日 GMV 较前日下降 ≥ 阈值比例
+  - shop_order_drop  店日订单较前日下降 ≥ 阈值比例
+
+跳过：前日基线过低（min_gmv_base / min_orders_base）；明显测试店名。
+幂等：dedupe = tiktok:{shop_ext}:{code}
+异常域：object_type=shop（任务台筛「店铺分析」）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from decimal import Decimal
+from typing import Any
+
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import Settings, get_settings
+from app.domain import tk_anomaly
+
+
+def _f(v: Any) -> float | None:
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        return float(v)
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _drop_ratio(curr: float | None, prev: float | None) -> float | None:
+    """返回环比下降比例 (prev-curr)/prev；上涨或无法算返回 None。"""
+    if curr is None or prev is None:
+        return None
+    if prev <= 0:
+        return None
+    if curr >= prev:
+        return None
+    return (prev - curr) / prev
+
+
+def _priority_for_drop(ratio: float, *, p0_ratio: float = 0.5) -> str:
+    if ratio >= p0_ratio:
+        return "P0"
+    if ratio >= 0.2:
+        return "P1"
+    return "P2"
+
+
+def classify_shop_pair(
+    curr: dict[str, Any],
+    prev: dict[str, Any] | None,
+    *,
+    gmv_drop_ratio: float,
+    order_drop_ratio: float,
+    min_gmv_base: float,
+    min_orders_base: float,
+    p0_drop_ratio: float = 0.5,
+) -> list[dict[str, Any]]:
+    """对比当日与前日店日行，返回命中的异常列表（可同时命中 GMV+订单）。"""
+    shop_ext = str(curr.get("shop_external_id") or "").strip()
+    if not shop_ext:
+        return []
+    shop_name = str(curr.get("shop_name") or shop_ext).strip()
+    low = shop_name.lower()
+    if "schema-tk-smoke" in low or low.startswith("[test]"):
+        return []
+
+    if not prev:
+        return []
+
+    hits: list[dict[str, Any]] = []
+    currency = curr.get("currency") or prev.get("currency") or "GBP"
+    biz = curr.get("biz_date")
+    prev_biz = prev.get("biz_date")
+
+    curr_gmv = _f(curr.get("gmv"))
+    prev_gmv = _f(prev.get("gmv"))
+    curr_orders = _f(curr.get("orders_cnt"))
+    prev_orders = _f(prev.get("orders_cnt"))
+
+    gmv_ratio = _drop_ratio(curr_gmv, prev_gmv)
+    if (
+        gmv_ratio is not None
+        and prev_gmv is not None
+        and prev_gmv >= min_gmv_base
+        and gmv_ratio >= gmv_drop_ratio
+    ):
+        pri = _priority_for_drop(gmv_ratio, p0_ratio=p0_drop_ratio)
+        pct = gmv_ratio * 100
+        metric = (
+            f"gmv={curr_gmv:.2f} prev_gmv={prev_gmv:.2f} drop={pct:.1f}% "
+            f"currency={currency} prev_date={prev_biz}"
+        )
+        detail = (
+            f"{biz} GMV {curr_gmv:.2f}{currency} 较前日 {prev_biz} "
+            f"{prev_gmv:.2f} 下降 {pct:.1f}%（阈值 {gmv_drop_ratio * 100:.0f}%）"
+        )
+        hits.append(
+            {
+                "anomaly_code": "shop_gmv_drop",
+                "priority": pri,
+                "summary": f"店铺GMV骤降 · {shop_name}",
+                "metric_snapshot": metric,
+                "detail": detail,
+                "current_value": curr_gmv,
+                "current_value_label": "当日GMV",
+                "compare_value": prev_gmv,
+                "compare_value_label": "前日GMV",
+                "change_magnitude": pct,
+                "change_magnitude_label": "环比下降%",
+                "needs_boss_decision": pri == "P0",
+                "description": f"{detail} | {metric}",
+            }
+        )
+
+    order_ratio = _drop_ratio(curr_orders, prev_orders)
+    if (
+        order_ratio is not None
+        and prev_orders is not None
+        and prev_orders >= min_orders_base
+        and order_ratio >= order_drop_ratio
+    ):
+        pri = _priority_for_drop(order_ratio, p0_ratio=p0_drop_ratio)
+        pct = order_ratio * 100
+        metric = (
+            f"orders={curr_orders:.0f} prev_orders={prev_orders:.0f} drop={pct:.1f}% "
+            f"prev_date={prev_biz}"
+        )
+        detail = (
+            f"{biz} 订单 {curr_orders:.0f} 较前日 {prev_biz} "
+            f"{prev_orders:.0f} 下降 {pct:.1f}%（阈值 {order_drop_ratio * 100:.0f}%）"
+        )
+        hits.append(
+            {
+                "anomaly_code": "shop_order_drop",
+                "priority": pri,
+                "summary": f"店铺订单骤降 · {shop_name}",
+                "metric_snapshot": metric,
+                "detail": detail,
+                "current_value": curr_orders,
+                "current_value_label": "当日订单",
+                "compare_value": prev_orders,
+                "compare_value_label": "前日订单",
+                "change_magnitude": pct,
+                "change_magnitude_label": "环比下降%",
+                "needs_boss_decision": pri == "P0",
+                "description": f"{detail} | {metric}",
+            }
+        )
+
+    return hits
+
+
+@dataclass
+class ShopEvalStats:
+    biz_date: str
+    scanned: int = 0
+    hit_gmv_drop: int = 0
+    hit_order_drop: int = 0
+    created_or_updated: int = 0
+    skipped: int = 0
+    missing_prev: int = 0
+    errors: list[str] = field(default_factory=list)
+    samples: list[dict[str, Any]] = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "biz_date": self.biz_date,
+            "scanned": self.scanned,
+            "hit_gmv_drop": self.hit_gmv_drop,
+            "hit_order_drop": self.hit_order_drop,
+            "created_or_updated": self.created_or_updated,
+            "skipped": self.skipped,
+            "missing_prev": self.missing_prev,
+            "errors": self.errors[:20],
+            "samples": self.samples[:10],
+        }
+
+
+async def resolve_shop_biz_date(db: AsyncSession, biz_date: date | None) -> date:
+    if biz_date:
+        return biz_date
+    row = (
+        await db.execute(text("SELECT MAX(biz_date) FROM tk.fact_tiktok_shop_daily"))
+    ).first()
+    if row and row[0]:
+        return row[0]
+    return datetime.now(timezone.utc).date()
+
+
+async def fetch_shop_daily_rows(
+    db: AsyncSession,
+    *,
+    biz_date: date,
+    shop_external_id: str | None = None,
+) -> list[dict[str, Any]]:
+    clauses = ["biz_date = :biz_date"]
+    params: dict[str, Any] = {"biz_date": biz_date}
+    if shop_external_id:
+        clauses.append("shop_external_id = :shop_external_id")
+        params["shop_external_id"] = shop_external_id
+    rows = (
+        await db.execute(
+            text(
+                f"""
+                SELECT
+                    id::text,
+                    shop_id::text,
+                    shop_external_id,
+                    shop_name,
+                    biz_date,
+                    gmv,
+                    orders_cnt,
+                    buyers_cnt,
+                    refund_amount,
+                    currency,
+                    source_url
+                FROM tk.fact_tiktok_shop_daily
+                WHERE {' AND '.join(clauses)}
+                ORDER BY gmv DESC NULLS LAST, shop_external_id
+                """
+            ),
+            params,
+        )
+    ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+async def fetch_prev_shop_daily_map(
+    db: AsyncSession,
+    *,
+    biz_date: date,
+    shop_external_ids: list[str],
+) -> dict[str, dict[str, Any]]:
+    """取每个店在 biz_date 之前最近一条店日行（不要求严格连续日历日）。"""
+    if not shop_external_ids:
+        return {}
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT DISTINCT ON (shop_external_id)
+                    id::text,
+                    shop_id::text,
+                    shop_external_id,
+                    shop_name,
+                    biz_date,
+                    gmv,
+                    orders_cnt,
+                    buyers_cnt,
+                    refund_amount,
+                    currency,
+                    source_url
+                FROM tk.fact_tiktok_shop_daily
+                WHERE shop_external_id = ANY(:shops)
+                  AND biz_date < :biz_date
+                ORDER BY shop_external_id, biz_date DESC
+                """
+            ),
+            {"shops": shop_external_ids, "biz_date": biz_date},
+        )
+    ).mappings().all()
+    return {str(r["shop_external_id"]): dict(r) for r in rows}
+
+
+async def evaluate_shop_anomalies(
+    db: AsyncSession,
+    *,
+    biz_date: date | None = None,
+    shop_external_id: str | None = None,
+    project_center_task: bool = True,
+    dry_run: bool = False,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    """扫描店日事实并写入/更新 ① 店铺分析类异常任务。"""
+    cfg = settings or get_settings()
+    day = await resolve_shop_biz_date(db, biz_date)
+    stats = ShopEvalStats(biz_date=day.isoformat())
+    rows = await fetch_shop_daily_rows(
+        db, biz_date=day, shop_external_id=shop_external_id
+    )
+    stats.scanned = len(rows)
+
+    gmv_drop_ratio = float(cfg.tk_shop_gmv_drop_ratio)
+    order_drop_ratio = float(cfg.tk_shop_order_drop_ratio)
+    min_gmv_base = float(cfg.tk_shop_min_gmv_base)
+    min_orders_base = float(cfg.tk_shop_min_orders_base)
+    p0_drop_ratio = float(cfg.tk_shop_p0_drop_ratio)
+
+    shop_ids = [
+        str(r.get("shop_external_id") or "").strip()
+        for r in rows
+        if r.get("shop_external_id")
+    ]
+    prev_map = await fetch_prev_shop_daily_map(
+        db, biz_date=day, shop_external_ids=shop_ids
+    )
+
+    for row in rows:
+        shop_ext = str(row.get("shop_external_id") or "").strip()
+        prev = prev_map.get(shop_ext)
+        if not prev:
+            stats.missing_prev += 1
+            stats.skipped += 1
+            continue
+
+        hits = classify_shop_pair(
+            row,
+            prev,
+            gmv_drop_ratio=gmv_drop_ratio,
+            order_drop_ratio=order_drop_ratio,
+            min_gmv_base=min_gmv_base,
+            min_orders_base=min_orders_base,
+            p0_drop_ratio=p0_drop_ratio,
+        )
+        if not hits:
+            stats.skipped += 1
+            continue
+
+        object_ref = shop_ext
+        for hit in hits:
+            code = hit["anomaly_code"]
+            if code == "shop_gmv_drop":
+                stats.hit_gmv_drop += 1
+            elif code == "shop_order_drop":
+                stats.hit_order_drop += 1
+
+            sample = {
+                "shop_external_id": shop_ext,
+                "shop_name": row.get("shop_name"),
+                "anomaly_code": code,
+                "priority": hit["priority"],
+                "metric_snapshot": hit["metric_snapshot"],
+                "domain": "店铺分析",
+            }
+            if dry_run:
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+                continue
+
+            try:
+                task = await tk_anomaly.create_anomaly_task(
+                    db,
+                    anomaly_code=code,
+                    summary=hit["summary"],
+                    shop_id=row.get("shop_id"),
+                    shop_external_id=shop_ext,
+                    shop_name=row.get("shop_name"),
+                    object_ref=object_ref,
+                    object_type="shop",
+                    product_name=row.get("shop_name"),
+                    priority=hit["priority"],
+                    progress_note=hit["detail"],
+                    metric_snapshot=hit["metric_snapshot"],
+                    biz_date=day,
+                    dedupe_key=f"tiktok:{object_ref}:{code}",
+                    source_url=row.get("source_url"),
+                    project_center_task=project_center_task,
+                    current_value=hit.get("current_value"),
+                    current_value_label=hit.get("current_value_label"),
+                    compare_value=hit.get("compare_value"),
+                    compare_value_label=hit.get("compare_value_label"),
+                    change_magnitude=hit.get("change_magnitude"),
+                    change_magnitude_label=hit.get("change_magnitude_label"),
+                    needs_boss_decision=hit.get("needs_boss_decision"),
+                    description=hit.get("description"),
+                )
+                sample["task_id"] = task.get("id")
+                sample["task_key"] = task.get("task_key")
+                sample["status"] = task.get("status")
+                stats.samples.append(sample)
+                stats.created_or_updated += 1
+            except Exception as exc:  # noqa: BLE001 — 单行失败不中断整批
+                stats.errors.append(f"{shop_ext}/{code}: {exc}")
+
+    return {
+        **stats.as_dict(),
+        "thresholds": {
+            "gmv_drop_ratio": gmv_drop_ratio,
+            "order_drop_ratio": order_drop_ratio,
+            "min_gmv_base": min_gmv_base,
+            "min_orders_base": min_orders_base,
+            "p0_drop_ratio": p0_drop_ratio,
+        },
+        "dry_run": dry_run,
+        "domain": "店铺分析",
+    }

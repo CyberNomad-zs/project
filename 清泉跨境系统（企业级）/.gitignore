@@ -1,0 +1,50 @@
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+node_modules/
+dist/
+*.log
+.DS_Store
+pgdata/
+.pgdata/
+logs/
+.idea/
+.vscode/
+backup/
+*.dump
+*.sql.gz
+Thumbs.db
+*.local
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# 本地临时机密（本项目只把 SSH 密钥放 keys/，其它勿进仓）
+secrets/
+*.local.md
+api_keys.md
+**/api_keys.md
+# SSH 私钥禁止进仓（公钥与 README 可保留）
+keys/qingquan_sg_ed25519
+keys/_qingquan_sg_ed25519_unix
+keys/*_ed25519
+keys/*_rsa
+keys/*_ecdsa
+keys/id_*
+# 含生产明文密码的同事交接（仅本机传阅，禁止提交）
+docs/ops/生产环境-同事交接.md
+# 采集运行时产物 / 解包临时目录
+collectors/**/logs/
+collectors/**/*.log
+_docx_unpack_tt/
+_xmind_*/
+_tiktok_shop_req.zip
+_tiktok_shop_req_extract.txt
+_goal_draft.txt
+dist-pack/*.zip
+web/dist/

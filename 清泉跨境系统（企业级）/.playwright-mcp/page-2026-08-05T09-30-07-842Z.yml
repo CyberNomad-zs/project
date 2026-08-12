@@ -1,0 +1,12 @@
+- generic [ref=e2]:
+  - generic [ref=e5]:
+    - generic [ref=e6]: 赛狐开放平台
+    - generic [ref=e7]: 当前文档需要密码才可访问
+    - generic [ref=e11]:
+      - generic [ref=e17]:
+        - textbox "输入密码" [ref=e18]
+        - img "eye-invisible" [ref=e19] [cursor=pointer]
+      - button "访问文档" [ref=e23] [cursor=pointer]
+  - link "homepage link" [ref=e27] [cursor=pointer]:
+    - /url: https://apifox.com
+    - generic [ref=e28]: Built with

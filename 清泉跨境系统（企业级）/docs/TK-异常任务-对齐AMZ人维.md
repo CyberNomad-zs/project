@@ -1,0 +1,82 @@
+# TK · 异常任务表对齐 AMZ 人维形态（2026-08-05）
+
+> AMZ 参考：[异常任务](https://dcnkj1up67d5.feishu.cn/base/TkW0bXEAAa3Fo3sdKagcL9fTn2b?table=tblXnUm9VSmyQ2AC&view=vew4nGzUUj)  
+> TK 表：[异常任务](https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg?table=tblstt4IVNJihCd3&view=vew3Zet9vT) · `tblstt4IVNJihCd3`
+
+---
+
+## 1. 做了什么
+
+| 层 | 变更 |
+|----|------|
+| PG | 迁移 `015_tk_anomaly_amz_ops_fields.sql`：等级、当前/对比值、连续次数、老板决策、说明、人维闭环列 |
+| 规则 | ads/product/shop/content 出单时写入 `current_value*` / `compare_*` / `description` / `needs_boss_decision`；同 dedupe 再命中 `streak_count+1` |
+| 同步 | `tk_anomaly_task_to_fields` 双写 AMZ 同名列（等级/指标摘要/负责人/说明…）+ TK 扩展列 |
+| 飞书 | 脚本补 26 列 + 视图壳：`01_红色任务` `02_橙色任务` `06_待老板决策` `07_全部未关闭` `按等级-红橙黄` |
+| 本机 | 015 已 apply；异常 sync **updated=32 failed=0**；相关 pytest **35 passed** |
+| 任务台 | 2026-08-05：异常列表展示等级/待老板决策/当前值·对比/说明；P0 行高亮 |
+| 生产 | 015 已 apply；飞书列 skip 齐；anomaly sync **created=4 updated=30 failed=0**；api/web 热修含人维列 |
+
+**刻意不做：** 不把 AMZ 的 ACOS/FBA 异常类型搬进 TK；类型仍走 `dim_tk_anomaly_type`（广告/商品/店/内容）。
+
+---
+
+## 2. 等级映射
+
+| priority | 等级 level_code |
+|----------|-----------------|
+| P0 | red |
+| P1 | orange |
+| P2 | yellow |
+
+P0 默认 `需要老板决策=true`。
+
+---
+
+## 3. 你在飞书 UI 补筛选（约 3 分钟）
+
+API 只能建视图壳，筛选请手工：
+
+| 视图 | 筛选建议 |
+|------|----------|
+| 01_红色任务 | 等级 = red；可选再限状态≠已闭环 |
+| 02_橙色任务 | 等级 = orange |
+| 06_待老板决策 | 需要老板决策 = ✓；状态 = 未处理 或 处理中 |
+| 07_全部未关闭 | 状态 = 未处理 或 处理中 |
+| 按等级-红橙黄 | 分组字段 = 等级（可改看板） |
+
+已有视图「未闭环异常任务清单」可保留。
+
+---
+
+## 4. 生产补齐
+
+```bash
+# 生产库
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f backend/migrations/015_tk_anomaly_amz_ops_fields.sql
+
+# 有飞书凭证的机器（本机已跑过可 skip）
+backend\.venv\Scripts\python.exe scripts\feishu-tk-upgrade-anomaly-amz-style.py
+
+# 灌新字段
+powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -AnomalyOnly
+```
+
+发版：含 `tk_anomaly.py` / `bitable.py` / `tk_*_rules.py` / `tk_feishu_sync.py` 的 api 镜像。
+
+---
+
+## 5. 运营怎么用（对齐 AMZ）
+
+1. 先看 **01_红色** / **06_待老板决策**  
+2. 系统已填：类型、等级、指标摘要、当前值/对比值、说明  
+3. 人填：负责人、是否属实、采取动作、下一步、复查日期 → 改状态闭环  
+4. 库存跟进仍可链到 **TK补货备忘**（手工表），不自动写  
+
+---
+
+## 6. 脚本与文档
+
+- `scripts/feishu-tk-upgrade-anomaly-amz-style.py`  
+- `backend/migrations/015_tk_anomaly_amz_ops_fields.sql`  
+- 字段权威说明：[`TK-异常任务-PG建表说明.md`](./TK-异常任务-PG建表说明.md)  

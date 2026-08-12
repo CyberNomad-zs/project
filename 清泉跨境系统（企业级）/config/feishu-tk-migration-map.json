@@ -1,0 +1,53 @@
+{
+  "migrated_at": "2026-08-10",
+  "method": "feishu_base_copy_ui",
+  "src": {
+    "tenant": "金猫",
+    "app_token": "C1iHbw6TVad6rUsbZnbc2gSDnHg",
+    "url": "https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg",
+    "deleted": false
+  },
+  "dst": {
+    "tenant": "清泉",
+    "app_id": "cli_aaf3f14a863bdbc3",
+    "app_token": "LzTAbQsThaPOzis2lFvciDMlnyh",
+    "url": "https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh",
+    "table_count": 44
+  },
+  "core_tables": {
+    "tk_shop_daily": {
+      "name": "店铺日经营",
+      "env": "FEISHU_BITABLE_TABLE_TK_SHOP_DAILY",
+      "src": "tblwh7EVeAFPfvuy",
+      "dst": "tblrpFX6gWaf7KPX"
+    },
+    "tk_ads_campaign": {
+      "name": "广告活动日明细",
+      "env": "FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN",
+      "src": "tblXaQ871ZcrrTPL",
+      "dst": "tblgLifLVW91v5Bk"
+    },
+    "tk_anomaly_task": {
+      "name": "异常任务",
+      "env": "FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK",
+      "src": "tblstt4IVNJihCd3",
+      "dst": "tblgDbCXVfdbp0oS"
+    },
+    "tk_content_daily": {
+      "name": "内容日",
+      "env": "FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY",
+      "src": "tbleuAjZFdrkLBu6",
+      "dst": "tbl9NVOxwfA24tyw"
+    },
+    "tk_affiliate_creator_daily": {
+      "name": "达人日",
+      "env": "FEISHU_BITABLE_TABLE_TK_AFFILIATE_CREATOR_DAILY",
+      "src": "tblsoAKtF05YyyWd",
+      "dst": "tblDTIwDWHGlJ9qf"
+    }
+  },
+  "abandoned_empty_base": {
+    "app_token": "Tcb0bPY3baO2TTsaXqpcWF2enfb",
+    "note": "此前手工空 Base + API 半迁移，已弃用；以 LzTAb 副本为准"
+  }
+}

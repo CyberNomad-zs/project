@@ -1,0 +1,7 @@
+name: ai-dev-sop
+version: 2.3.1
+packed_at: 2026-07-28 14:46:39 +0800
+entry_skill: skills/ai-dev-sop/SKILL.md
+invoke: /ai-dev-sop
+install: ./install.sh --no-project
+docs: 使用说明.md

@@ -1,0 +1,99 @@
+- generic [ref=e5]:
+  - generic [ref=e6]:
+    - generic [ref=e7]:
+      - generic [ref=e8]: NEW
+      - generic [ref=e9]: 紧急｜7月27日标题大清洗：你不改，亚马逊替你改
+      - generic [ref=e10] [cursor=pointer]:
+        - text: 了解详情
+        - generic [ref=e11]: 
+    - button "×" [ref=e12] [cursor=pointer]
+  - generic [ref=e14]:
+    - generic [ref=e16]:
+      - link "首页" [ref=e17] [cursor=pointer]:
+        - /url: /
+      - generic [ref=e18] [cursor=pointer]: 解决方案
+      - link "Skill Hub" [ref=e19] [cursor=pointer]:
+        - /url: /skillHub
+      - link "紫鸟 CLI" [ref=e20] [cursor=pointer]:
+        - /url: /ziniaoCli
+      - link "联系我们" [ref=e21] [cursor=pointer]:
+        - /url: /contactUs
+      - link "文档中心" [ref=e22] [cursor=pointer]:
+        - /url: /docSupport
+    - generic [ref=e23]: ZH
+    - generic [ref=e25]: 登录
+  - main [ref=e28]:
+    - generic [ref=e31]:
+      - generic [ref=e34]:
+        - tablist [ref=e35]:
+          - generic [ref=e37]:
+            - tab "业务介绍" [ref=e39] [cursor=pointer]
+            - tab "接入指南" [ref=e41] [cursor=pointer]
+            - tab "开发文档" [selected] [ref=e43] [cursor=pointer]
+            - tab "平台规则" [ref=e45] [cursor=pointer]
+            - tab "FAQ" [ref=e47] [cursor=pointer]
+          - generic [ref=e51]:
+            - textbox "请输入关键词搜索" [ref=e53]
+            - button "搜 索" [ref=e56] [cursor=pointer]
+        - generic:
+          - generic:
+            - tabpanel "开发文档"
+      - generic [ref=e58]:
+        - generic [ref=e59]:
+          - generic [ref=e61]:
+            - img "search" [ref=e63]
+            - textbox "通过关键词搜索目录" [ref=e66]
+          - menu [ref=e67]:
+            - menuitem "API调用指南 - 简单通用模式（推荐）" [ref=e68] [cursor=pointer]
+            - menuitem "API调用指南" [ref=e70] [cursor=pointer]
+            - menuitem "SDK使用指南" [ref=e73] [cursor=pointer]
+            - menuitem "紫鸟浏览器API" [expanded] [ref=e76] [cursor=pointer]
+            - list [ref=e79]:
+              - menuitem "获取紫鸟公司ID" [ref=e80] [cursor=pointer]
+              - menuitem "账号管理" [ref=e82] [cursor=pointer]
+              - menuitem "设备管理" [ref=e84] [cursor=pointer]
+              - menuitem "部门员工" [ref=e86] [cursor=pointer]
+              - menuitem "访问策略" [ref=e88] [cursor=pointer]
+              - menuitem "角色和权限" [ref=e90] [cursor=pointer]
+              - menuitem "消息推送回调配置操作文档" [ref=e92] [cursor=pointer]
+              - menuitem "sso单点登录" [ref=e94] [cursor=pointer]
+              - menuitem "自动化控制（Webdriver/CDP技术）" [ref=e97] [cursor=pointer]
+            - menuitem "LinkFox AI 对接文档" [ref=e99] [cursor=pointer]
+            - menuitem "MCP服务使用说明" [ref=e102] [cursor=pointer]
+        - navigation [ref=e107]:
+          - list [ref=e108]:
+            - listitem [ref=e109]: 开发文档/
+            - listitem [ref=e110]: 紫鸟浏览器API/
+            - listitem [ref=e111]: 访问策略
+  - generic [ref=e116]:
+    - generic [ref=e117]:
+      - generic [ref=e119]:
+        - generic [ref=e120]:
+          - heading "产品" [level=2] [ref=e121]
+          - link "紫鸟浏览器" [ref=e123] [cursor=pointer]:
+            - /url: https://www.ziniao.com/
+          - link "下载" [ref=e125] [cursor=pointer]:
+            - /url: https://www.ziniao.com/download?docId=142
+          - link "紫鸟生态中心" [ref=e127] [cursor=pointer]:
+            - /url: https://appstore.superbrowser.com/
+        - generic [ref=e128]:
+          - heading "商务合作" [level=2] [ref=e129]
+          - link "加入开放平台" [ref=e131] [cursor=pointer]:
+            - /url: /login
+          - link "联系我们" [ref=e133] [cursor=pointer]:
+            - /url: /contactUs
+        - generic [ref=e134]:
+          - heading "帮助" [level=2] [ref=e135]
+          - link "文档中心" [ref=e137] [cursor=pointer]:
+            - /url: /docSupport
+          - link "操作指南" [ref=e139] [cursor=pointer]:
+            - /url: /docSupport?docId=110
+      - generic [ref=e140]:
+        - img "wxQcode" [ref=e141]
+        - generic [ref=e142]: 扫一扫添加生态管家 请备注"紫鸟开放平台"
+    - generic [ref=e143]:
+      - generic [ref=e144]: Copyright @2022
+      - link "闽公网安备 35010202000988号" [ref=e145] [cursor=pointer]:
+        - /url: http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=35010202000988
+      - link "闽ICP备16014564号-3" [ref=e147] [cursor=pointer]:
+        - /url: https://beian.miit.gov.cn/

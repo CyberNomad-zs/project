@@ -1,0 +1,54 @@
+# Dependencies
+node_modules/
+
+# Local git backup / nested repo metadata (never commit)
+.git.bak/
+**/.git.bak/
+
+# Browser login state (cookies / App-Bound encrypted profile — machine-local)
+**/.userdata/
+temu-monitor/.userdata/
+
+# Runtime data, logs, diagnostics
+**/logs/
+temu-monitor/logs/
+temu-monitor/data/
+temu-monitor/capture/
+
+# Local secrets / real config (commit config.example.json instead)
+temu-monitor/config.json
+**/.env
+**/.env.*
+!**/.env.example
+api_keys.md
+**/api_keys.md
+
+# Extension signing key (NEVER commit)
+*.pem
+temu-plugin.pem
+
+# Built extension packages (optional redistribute; not source)
+*.crx
+temu-plugin.crx
+temu-plugin.zip
+_dist/
+**/_dist/
+
+# Temu OpenAPI secrets & runtime state (never commit)
+temu-monitor/openapi.config.json
+temu-monitor/data/openapi-state.json
+temu-monitor/sellfox.config.json
+temu-monitor/data/sellfox-state.json
+
+# Local Playwright MCP / browser debug dumps
+**/.playwright-mcp/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+.idea/
+.vscode/
+*.log

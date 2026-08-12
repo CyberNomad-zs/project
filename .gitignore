@@ -1,0 +1,13 @@
+﻿# other local folders under E:\project
+日报/
+_migrate_ai_sessions_*/
+.grok/
+*.tmp
+
+# nested/bak git metadata
+**/.git.bak/
+**/.git/
+
+# never commit secrets at monorepo root
+api_keys.md
+**/api_keys.md

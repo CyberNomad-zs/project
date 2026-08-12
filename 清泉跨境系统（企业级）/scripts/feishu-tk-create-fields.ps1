@@ -1,0 +1,240 @@
+﻿# 为「清泉 · TK 驾驶舱」多维表创建字段（T1 店铺日经营 / T2 广告活动日明细 / T6 内容日）
+# 用法：先在飞书 Base 里建好空表（或沿用现网广告表），填入 table id 后运行。
+# T6 也可用一键脚本：python scripts/feishu-tk-create-t6-content.py（会建表+字段+视图）
+#
+#   $env:FEISHU_APP_ID="cli_xxx"
+#   $env:FEISHU_APP_SECRET="xxx"
+#   $env:FEISHU_APP_TOKEN="LzTAbQsThaPOzis2lFvciDMlnyh"   # 清泉组织 TK Base（2026-08-10）
+#   $env:FEISHU_TABLE_TK_SHOP_DAILY="tbl..."               # T1
+#   $env:FEISHU_TABLE_TK_ADS_CAMPAIGN="tbl..."             # T2（可=现网广告表）
+#   $env:FEISHU_TABLE_TK_CONTENT_DAILY="tbl..."            # T6
+#   # 也可只建一张：FEISHU_TABLE_ID + FEISHU_TK_TABLE_KIND=shop|ads|content
+#
+#   powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-create-fields.ps1
+
+$ErrorActionPreference = 'Stop'
+
+$appId = $env:FEISHU_APP_ID
+$appSecret = $env:FEISHU_APP_SECRET
+$appToken = $env:FEISHU_APP_TOKEN
+if (-not $appToken) { $appToken = $env:FEISHU_BITABLE_APP_TOKEN_TK }
+if (-not $appToken) { $appToken = $env:FEISHU_BITABLE_APP_TOKEN }
+
+function Invoke-FeishuJson {
+  param(
+    [string]$Method,
+    [string]$Url,
+    [hashtable]$Headers,
+    [object]$Body
+  )
+  $params = @{
+    Method      = $Method
+    Uri         = $Url
+    Headers     = $Headers
+    ContentType = 'application/json; charset=utf-8'
+  }
+  if ($null -ne $Body) {
+    $json = $Body | ConvertTo-Json -Depth 12 -Compress
+    $params.Body = [System.Text.Encoding]::UTF8.GetBytes($json)
+  }
+  return Invoke-RestMethod @params
+}
+
+function New-TextField([string]$Name) {
+  return @{ field_name = $Name; type = 1 }
+}
+function New-NumberField([string]$Name, [string]$Fmt = '0.00') {
+  return @{ field_name = $Name; type = 2; property = @{ formatter = $Fmt } }
+}
+function New-DateField([string]$Name, [string]$Fmt = 'yyyy/MM/dd') {
+  return @{ field_name = $Name; type = 5; property = @{ date_formatter = $Fmt; auto_fill = $false } }
+}
+function New-SingleSelect([string]$Name, [string[]]$Options) {
+  $opts = @()
+  foreach ($o in $Options) { $opts += @{ name = $o } }
+  return @{ field_name = $Name; type = 3; property = @{ options = $opts } }
+}
+
+# T1 · 多店对比宽表（模块 2 + 3.1 汇总）
+$T1 = @(
+  (New-DateField '日期'),
+  (New-TextField '店铺'),
+  (New-TextField '店铺ID'),
+  (New-TextField '币种'),
+  (New-NumberField '销售额'),
+  (New-NumberField '订单量' '0'),
+  (New-NumberField '买家数' '0'),
+  (New-NumberField '退款金额'),
+  (New-NumberField '客单价'),
+  (New-NumberField '广告花费'),
+  (New-NumberField '广告销售额'),
+  (New-NumberField '广告订单' '0'),
+  (New-NumberField '广告ROI'),
+  (New-TextField '广告币种'),
+  (New-NumberField '自然订单(估)' '0'),
+  (New-NumberField '自然销售额(估)'),
+  (New-NumberField '健康分' '0.0'),
+  (New-TextField '健康状态'),
+  (New-NumberField '延迟发货率' '0.00%'),
+  (New-NumberField '负面反馈率' '0.00%'),
+  (New-NumberField '结算金额'),
+  (New-NumberField '待结算'),
+  (New-NumberField '财务退款'),
+  (New-TextField '财务币种'),
+  (New-NumberField '销售额环比' '0.00%'),
+  (New-NumberField '广告花费环比' '0.00%'),
+  (New-SingleSelect '数据状态' @('success', 'partial', 'error')),
+  (New-DateField '抓取时间' 'yyyy/MM/dd HH:mm'),
+  (New-TextField '数据源'),
+  (New-TextField '本地ID')
+)
+
+# T2 · 广告活动日明细（模块 3.2；兼容现网列名）
+$T2 = @(
+  (New-DateField '日期'),
+  (New-TextField '店铺'),
+  (New-TextField '店铺ID'),
+  (New-TextField '品名'),
+  (New-NumberField '广告花费'),
+  (New-NumberField '销量' '0'),
+  (New-NumberField 'ROI'),
+  (New-NumberField '销售额'),
+  (New-TextField '币种'),
+  (New-SingleSelect '计划状态' @('投放中', '已关闭', '未知')),
+  (New-TextField '投放状态'),
+  (New-NumberField '日预算'),
+  (New-NumberField '目标ROI'),
+  (New-NumberField '净成本'),
+  (New-NumberField '平均下单成本'),
+  (New-NumberField '预算消耗率' '0.00%'),
+  (New-SingleSelect '盈亏标签' @('高ROI', '正常', '低效亏损')),
+  (New-DateField '抓取时间' 'yyyy/MM/dd HH:mm'),
+  (New-TextField '数据源URL'),
+  (New-SingleSelect '状态' @('success', 'partial', 'error')),
+  (New-TextField '本地ID')
+)
+
+# T6 · 内容日（P2.4 · 视频窗口快照；biz_date=锚点，窗口原文保留）
+$T6 = @(
+  (New-DateField '日期'),
+  (New-TextField '店铺'),
+  (New-TextField '店铺ID'),
+  (New-TextField '内容ID'),
+  (New-TextField '视频标题'),
+  (New-SingleSelect '渠道' @('short_video', 'live', 'photo', 'other')),
+  (New-TextField '商品ID'),
+  (New-NumberField '归因GMV'),
+  (New-NumberField '归因SKU订单' '0'),
+  (New-NumberField '归因成交件数' '0'),
+  (New-NumberField '播放量' '0'),
+  (New-NumberField '曝光' '0'),
+  (New-NumberField '点击' '0'),
+  (New-NumberField 'CTR' '0.00%'),
+  (New-NumberField 'CVR' '0.00%'),
+  (New-NumberField '客户数' '0'),
+  (New-TextField '币种'),
+  (New-TextField '窗口'),
+  (New-TextField '发布时间'),
+  (New-DateField '抓取时间' 'yyyy/MM/dd HH:mm'),
+  (New-TextField '数据源URL'),
+  (New-TextField '本地ID')
+)
+
+$targets = @()
+$shopTbl = $env:FEISHU_TABLE_TK_SHOP_DAILY
+if (-not $shopTbl) { $shopTbl = $env:FEISHU_BITABLE_TABLE_TK_SHOP_DAILY }
+$adsTbl = $env:FEISHU_TABLE_TK_ADS_CAMPAIGN
+if (-not $adsTbl) { $adsTbl = $env:FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN }
+$contentTbl = $env:FEISHU_TABLE_TK_CONTENT_DAILY
+if (-not $contentTbl) { $contentTbl = $env:FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY }
+
+if ($shopTbl) { $targets += @{ name = 'T1店铺日经营'; tableId = $shopTbl; fields = $T1 } }
+if ($adsTbl) { $targets += @{ name = 'T2广告活动日明细'; tableId = $adsTbl; fields = $T2 } }
+if ($contentTbl) { $targets += @{ name = 'T6内容日'; tableId = $contentTbl; fields = $T6 } }
+
+if ($targets.Count -eq 0 -and $env:FEISHU_TABLE_ID) {
+  $kind = ($env:FEISHU_TK_TABLE_KIND | ForEach-Object { $_.ToLower() })
+  switch ($kind) {
+    'ads' { $targets += @{ name = 'T2广告活动日明细'; tableId = $env:FEISHU_TABLE_ID; fields = $T2 } }
+    'content' { $targets += @{ name = 'T6内容日'; tableId = $env:FEISHU_TABLE_ID; fields = $T6 } }
+    default { $targets += @{ name = 'T1店铺日经营'; tableId = $env:FEISHU_TABLE_ID; fields = $T1 } }
+  }
+}
+
+if (-not $appId -or -not $appSecret -or -not $appToken -or $targets.Count -eq 0) {
+  Write-Host "缺少环境变量。需要："
+  Write-Host '  FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_APP_TOKEN(或 BITABLE APP TOKEN TK)'
+  Write-Host '  以及至少一张：FEISHU_TABLE_TK_SHOP_DAILY / FEISHU_TABLE_TK_ADS_CAMPAIGN / FEISHU_TABLE_TK_CONTENT_DAILY'
+  Write-Host '  或 FEISHU_TABLE_ID + FEISHU_TK_TABLE_KIND=shop|ads|content'
+  exit 1
+}
+
+Write-Host "1) 获取 tenant_access_token ..."
+$tokenResp = Invoke-FeishuJson -Method POST `
+  -Url 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' `
+  -Headers @{} `
+  -Body @{ app_id = $appId; app_secret = $appSecret }
+if ($tokenResp.code -ne 0) {
+  throw "获取 token 失败: code=$($tokenResp.code) msg=$($tokenResp.msg)"
+}
+$token = $tokenResp.tenant_access_token
+$auth = @{ Authorization = "Bearer $token" }
+Write-Host "   OK  app_token=$appToken"
+
+function Ensure-Fields {
+  param($Label, $TableId, $FieldSpecs)
+  Write-Host ""
+  Write-Host "=== $Label  table=$TableId ==="
+  $listUrl = "https://open.feishu.cn/open-apis/bitable/v1/apps/$appToken/tables/$TableId/fields?page_size=100"
+  $listResp = Invoke-FeishuJson -Method GET -Url $listUrl -Headers $auth -Body $null
+  if ($listResp.code -ne 0) {
+    throw "列字段失败 ($Label): code=$($listResp.code) msg=$($listResp.msg)"
+  }
+  $existing = @{}
+  foreach ($f in @($listResp.data.items)) {
+    if ($f.field_name) { $existing[$f.field_name] = $f }
+  }
+  Write-Host ("   已有 {0} 字段" -f $existing.Count)
+
+  $createUrl = "https://open.feishu.cn/open-apis/bitable/v1/apps/$appToken/tables/$TableId/fields"
+  $created = 0; $skipped = 0; $failed = @()
+  foreach ($spec in $FieldSpecs) {
+    $name = $spec.field_name
+    if ($existing.ContainsKey($name)) {
+      Write-Host "   skip  $name"
+      $skipped++
+      continue
+    }
+    try {
+      $r = Invoke-FeishuJson -Method POST -Url $createUrl -Headers $auth -Body $spec
+      if ($r.code -eq 0) {
+        Write-Host "   OK    $name"
+        $created++
+      }
+      else {
+        Write-Host "   FAIL  $name code=$($r.code) msg=$($r.msg)"
+        $failed += "$name : $($r.msg)"
+      }
+    }
+    catch {
+      Write-Host "   ERR   $name $_"
+      $failed += "$name : $_"
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  Write-Host "   小结: 新建 $created , 跳过 $skipped , 失败 $($failed.Count)"
+  if ($failed.Count -gt 0) {
+    $failed | ForEach-Object { Write-Host "     - $_" }
+  }
+}
+
+foreach ($t in $targets) {
+  Ensure-Fields -Label $t.name -TableId $t.tableId -FieldSpecs $t.fields
+}
+
+Write-Host ""
+Write-Host "完成。请将 table id 写入 .env："
+Write-Host "  FEISHU_BITABLE_APP_TOKEN_TK=$appToken"
+if ($shopTbl) { Write-Host "  FEISHU_BITABLE_TABLE_TK_SHOP_DAILY=$shopTbl" }
+if ($adsTbl) { Write-Host "  FEISHU_BITABLE_TABLE_TK_ADS_CAMPAIGN=$adsTbl" }
+if ($contentTbl) { Write-Host "  FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY=$contentTbl" }

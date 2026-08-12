@@ -1,0 +1,508 @@
+- generic [ref=f1e7]:
+  - generic [ref=f1e11]:
+    - link "赛狐开放平台" [ref=f1e13] [cursor=pointer]:
+      - /url: /
+    - generic [ref=f1e17]:
+      - generic:
+        - link "首页" [ref=f1e18] [cursor=pointer]:
+          - /url: /doc-3471817
+        - link "开发指南" [ref=f1e22] [cursor=pointer]:
+          - /url: /doc-3471817?nav=2
+        - link "API文档" [ref=f1e25] [cursor=pointer]:
+          - /url: /doc-3471817?nav=01GJPY2G1RSAM6SGKMWST7DRZ8
+        - link "关于我们" [ref=f1e28] [cursor=pointer]:
+          - /url: https://www.sellfox.com/aboutUs.html
+        - link "更新公告" [ref=f1e34] [cursor=pointer]:
+          - /url: https://sellfoxapi.apifox.cn/doc-8391559
+      - generic [ref=f1e40]:
+        - link "首页" [ref=f1e41] [cursor=pointer]:
+          - /url: /doc-3471817
+        - link "开发指南" [ref=f1e45] [cursor=pointer]:
+          - /url: /doc-3471817?nav=2
+        - link "API文档" [ref=f1e48] [cursor=pointer]:
+          - /url: /doc-3471817?nav=01GJPY2G1RSAM6SGKMWST7DRZ8
+        - link "关于我们" [ref=f1e51] [cursor=pointer]:
+          - /url: https://www.sellfox.com/aboutUs.html
+        - link "更新公告" [ref=f1e57] [cursor=pointer]:
+          - /url: https://sellfoxapi.apifox.cn/doc-8391559
+    - generic [ref=f1e65]:
+      - link [ref=f1e66] [cursor=pointer]:
+        - /url: https://www.sellfox.com/index.html
+        - button "访问赛狐官网" [ref=f1e68]
+      - button "Toggle theme" [ref=f1e71] [cursor=pointer]
+  - generic [ref=f1e76]:
+    - generic [ref=f1e79]:
+      - generic [ref=f1e371] [cursor=pointer]:
+        - textbox "搜索" [ref=f1e375]
+        - generic: Ctrl+K
+      - list [ref=f1e87]:
+        - listitem [ref=f1e88]:
+          - generic "开发指南" [ref=f1e89] [cursor=pointer]
+          - list [ref=f1e95]:
+            - listitem [ref=f1e96]:
+              - link "赛狐开放平台免责声明" [ref=f1e97] [cursor=pointer]:
+                - /url: /doc-3471817
+            - listitem [ref=f1e99]:
+              - link "申请API权限" [ref=f1e100] [cursor=pointer]:
+                - /url: /doc-1748360
+            - listitem [ref=f1e102]:
+              - link "获取 Access Token" [ref=f1e103] [cursor=pointer]:
+                - /url: /doc-1589130
+            - listitem [ref=f1e105]:
+              - link "限流策略说明" [ref=f1e106] [cursor=pointer]:
+                - /url: /doc-4717915
+            - listitem [ref=f1e108]:
+              - link "生成sign（签名）" [ref=f1e109] [cursor=pointer]:
+                - /url: /doc-1749562
+            - listitem [ref=f1e111]:
+              - link "公共请求参数" [ref=f1e112] [cursor=pointer]:
+                - /url: /doc-1749600
+            - listitem [ref=f1e114]:
+              - link "公共报错" [ref=f1e115] [cursor=pointer]:
+                - /url: /doc-1759053
+            - listitem [ref=f1e117]:
+              - link "创建赛狐报告" [ref=f1e118] [cursor=pointer]:
+                - /url: /doc-2982783
+            - listitem [ref=f1e120]:
+              - link "更新公告" [ref=f1e121] [cursor=pointer]:
+                - /url: /doc-8391559
+            - listitem [ref=f1e123]:
+              - generic "数据结构" [ref=f1e124] [cursor=pointer]
+            - listitem [ref=f1e130]:
+              - generic "场景调用指南" [ref=f1e131] [cursor=pointer]
+        - listitem [ref=f1e137]:
+          - generic "商品" [ref=f1e138] [cursor=pointer]
+        - listitem [ref=f1e144]:
+          - generic "销售" [ref=f1e145] [cursor=pointer]
+        - listitem [ref=f1e151]:
+          - generic "订单" [ref=f1e152] [cursor=pointer]
+        - listitem [ref=f1e158]:
+          - generic "客服" [ref=f1e159] [cursor=pointer]
+        - listitem [ref=f1e165]:
+          - generic "广告" [ref=f1e166] [cursor=pointer]
+        - listitem [ref=f1e172]:
+          - generic "FBA" [ref=f1e173] [cursor=pointer]
+        - listitem [ref=f1e179]:
+          - generic "采购" [ref=f1e180] [cursor=pointer]
+        - listitem [ref=f1e186]:
+          - generic "仓库" [ref=f1e187] [cursor=pointer]
+        - listitem [ref=f1e193]:
+          - generic "数据" [ref=f1e194] [cursor=pointer]
+        - listitem [ref=f1e200]:
+          - generic "财务" [ref=f1e201] [cursor=pointer]
+        - listitem [ref=f1e207]:
+          - generic "工具" [ref=f1e208] [cursor=pointer]
+        - listitem [ref=f1e214]:
+          - generic "设置" [ref=f1e215] [cursor=pointer]
+        - listitem [ref=f1e221]:
+          - generic "Feed" [ref=f1e222] [cursor=pointer]
+        - listitem [ref=f1e228]:
+          - generic "报告中心" [ref=f1e229] [cursor=pointer]
+        - listitem [ref=f1e235]:
+          - generic "多平台" [ref=f1e236] [cursor=pointer]
+          - list [ref=f1e406]:
+            - listitem [ref=f1e407]:
+              - generic "销售" [ref=f1e408] [cursor=pointer]
+              - list [ref=f1e579]:
+                - listitem [ref=f1e580]:
+                  - link "获取AliExpress在线产品（子体） POST" [ref=f1e581] [cursor=pointer]:
+                    - /url: /api-421782541
+                    - generic [ref=f1e582]: 获取AliExpress在线产品（子体）
+                    - generic [ref=f1e583]: POST
+                - listitem [ref=f1e586]:
+                  - link "获取AliExpress在线产品（父体） POST" [ref=f1e587] [cursor=pointer]:
+                    - /url: /api-421782542
+                    - generic [ref=f1e588]: 获取AliExpress在线产品（父体）
+                    - generic [ref=f1e589]: POST
+                - listitem [ref=f1e592]:
+                  - link "获取eBay在线产品（子体） POST" [ref=f1e593] [cursor=pointer]:
+                    - /url: /api-421782543
+                    - generic [ref=f1e594]: 获取eBay在线产品（子体）
+                    - generic [ref=f1e595]: POST
+                - listitem [ref=f1e598]:
+                  - link "获取eBay在线产品（父体） POST" [ref=f1e599] [cursor=pointer]:
+                    - /url: /api-421782544
+                    - generic [ref=f1e600]: 获取eBay在线产品（父体）
+                    - generic [ref=f1e601]: POST
+                - listitem [ref=f1e604]:
+                  - link "获取SHEIN在线产品（子体） POST" [ref=f1e605] [cursor=pointer]:
+                    - /url: /api-421782545
+                    - generic [ref=f1e606]: 获取SHEIN在线产品（子体）
+                    - generic [ref=f1e607]: POST
+                - listitem [ref=f1e610]:
+                  - link "获取SHEIN在线产品（父体） POST" [ref=f1e611] [cursor=pointer]:
+                    - /url: /api-421782546
+                    - generic [ref=f1e612]: 获取SHEIN在线产品（父体）
+                    - generic [ref=f1e613]: POST
+                - listitem [ref=f1e616]:
+                  - link "获取Shopify在线产品（子体） POST" [ref=f1e617] [cursor=pointer]:
+                    - /url: /api-421782547
+                    - generic [ref=f1e618]: 获取Shopify在线产品（子体）
+                    - generic [ref=f1e619]: POST
+                - listitem [ref=f1e622]:
+                  - link "获取Shopify在线产品（父体） POST" [ref=f1e623] [cursor=pointer]:
+                    - /url: /api-421782548
+                    - generic [ref=f1e624]: 获取Shopify在线产品（父体）
+                    - generic [ref=f1e625]: POST
+                - listitem [ref=f1e628]:
+                  - link "获取Temu本土店的在线产品（子体） POST" [ref=f1e629] [cursor=pointer]:
+                    - /url: /api-421782549
+                    - generic [ref=f1e630]: 获取Temu本土店的在线产品（子体）
+                    - generic [ref=f1e631]: POST
+                - listitem [ref=f1e634]:
+                  - link "获取Temu本土店的在线产品（父体） POST" [ref=f1e635] [cursor=pointer]:
+                    - /url: /api-421782550
+                    - generic [ref=f1e636]: 获取Temu本土店的在线产品（父体）
+                    - generic [ref=f1e637]: POST
+                - listitem [ref=f1e640]:
+                  - link "获取Temu跨境店的在线产品（子体） POST" [ref=f1e641] [cursor=pointer]:
+                    - /url: /api-421782551
+                    - generic [ref=f1e642]: 获取Temu跨境店的在线产品（子体）
+                    - generic [ref=f1e643]: POST
+                - listitem [ref=f1e646]:
+                  - link "获取Temu跨境店的在线产品（父体） POST" [ref=f1e647] [cursor=pointer]:
+                    - /url: /api-421782552
+                    - generic [ref=f1e648]: 获取Temu跨境店的在线产品（父体）
+                    - generic [ref=f1e649]: POST
+                - listitem [ref=f1e652]:
+                  - link "获取TikTok在线产品（全托子体） POST" [ref=f1e653] [cursor=pointer]:
+                    - /url: /api-421782553
+                    - generic [ref=f1e654]: 获取TikTok在线产品（全托子体）
+                    - generic [ref=f1e655]: POST
+                - listitem [ref=f1e658]:
+                  - link "获取TikTok在线产品（全托父体） POST" [ref=f1e659] [cursor=pointer]:
+                    - /url: /api-421782554
+                    - generic [ref=f1e660]: 获取TikTok在线产品（全托父体）
+                    - generic [ref=f1e661]: POST
+                - listitem [ref=f1e664]:
+                  - link "获取TikTok在线产品（自营店全球商品--子体） POST" [ref=f1e665] [cursor=pointer]:
+                    - /url: /api-421782555
+                    - generic [ref=f1e666]: 获取TikTok在线产品（自营店全球商品--子体）
+                    - generic [ref=f1e667]: POST
+                - listitem [ref=f1e670]:
+                  - link "获取TikTok在线产品（自营店全球商品--父体） POST" [ref=f1e671] [cursor=pointer]:
+                    - /url: /api-421782556
+                    - generic [ref=f1e672]: 获取TikTok在线产品（自营店全球商品--父体）
+                    - generic [ref=f1e673]: POST
+                - listitem [ref=f1e676]:
+                  - link "获取TikTok在线产品（自营店铺商品-子体） POST" [ref=f1e677] [cursor=pointer]:
+                    - /url: /api-421782557
+                    - generic [ref=f1e678]: 获取TikTok在线产品（自营店铺商品-子体）
+                    - generic [ref=f1e679]: POST
+                - listitem [ref=f1e682]:
+                  - link "获取TikTok在线产品（自营店铺商品-父体） POST" [ref=f1e683] [cursor=pointer]:
+                    - /url: /api-421782558
+                    - generic [ref=f1e684]: 获取TikTok在线产品（自营店铺商品-父体）
+                    - generic [ref=f1e685]: POST
+                - listitem [ref=f1e688]:
+                  - link "获取Walmart在线产品（子体） POST" [ref=f1e689] [cursor=pointer]:
+                    - /url: /api-421782559
+                    - generic [ref=f1e690]: 获取Walmart在线产品（子体）
+                    - generic [ref=f1e691]: POST
+                - listitem [ref=f1e694]:
+                  - link "获取Walmart在线产品（父体） POST" [ref=f1e695] [cursor=pointer]:
+                    - /url: /api-421782560
+                    - generic [ref=f1e696]: 获取Walmart在线产品（父体）
+                    - generic [ref=f1e697]: POST
+            - listitem [ref=f1e414]:
+              - generic "订单" [ref=f1e415] [cursor=pointer]
+            - listitem [ref=f1e421]:
+              - generic "平台仓" [ref=f1e422] [cursor=pointer]
+            - listitem [ref=f1e428]:
+              - generic "数据" [ref=f1e429] [cursor=pointer]
+            - listitem [ref=f1e435]:
+              - generic "财务" [ref=f1e436] [cursor=pointer]
+            - listitem [ref=f1e442]:
+              - generic "设置" [ref=f1e443] [cursor=pointer]
+    - generic [ref=f1e701]:
+      - generic [ref=f1e702]:
+        - navigation [ref=f1e703]:
+          - list [ref=f1e704]:
+            - listitem [ref=f1e705]:
+              - generic [ref=f1e706]: 销售
+        - generic [ref=f1e708]:
+          - button [ref=f1e709] [cursor=pointer]
+          - button [ref=f1e715] [cursor=pointer]
+      - heading "获取TikTok在线产品（全托父体）" [level=1] [ref=f1e721]
+      - generic [ref=f1e723]:
+        - generic [ref=f1e724]: POST
+        - generic [ref=f1e727]: /api/multiplatform/tiktok/fullyManaged/product/getParentPageList.json
+        - button "调试" [ref=f1e731] [cursor=pointer]
+      - button "Run in Apifox" [ref=f1e736] [cursor=pointer]
+      - generic [ref=f1e742]: 用户获取自身TikTok店铺（全托）的父体产品信息
+      - generic [ref=f1e745]:
+        - heading "请求参数" [level=2] [ref=f1e746]
+        - generic [ref=f1e747]:
+          - generic [ref=f1e748]:
+            - generic [ref=f1e750]:
+              - generic [ref=f1e751]: Query 参数
+              - button "生成代码" [ref=f1e753] [cursor=pointer]
+            - generic [ref=f1e763]:
+              - generic [ref=f1e767]:
+                - generic [ref=f1e768]:
+                  - generic [ref=f1e769]:
+                    - generic [ref=f1e770]: access_token
+                    - generic [ref=f1e772]: string
+                  - generic [ref=f1e778]: 必需
+                - generic [ref=f1e784]:
+                  - text: 通过获取token接口获得的token，详见
+                  - link "获取 Access Token" [ref=f1e785] [cursor=pointer]:
+                    - /url: /doc-1589130
+                - generic [ref=f1e787]:
+                  - generic [ref=f1e788]: "默认值:"
+                  - generic [ref=f1e789]: "{{access_token}}"
+              - generic [ref=f1e795]:
+                - generic [ref=f1e796]:
+                  - generic [ref=f1e797]:
+                    - generic [ref=f1e798]: client_id
+                    - generic [ref=f1e800]: string
+                  - generic [ref=f1e806]: 必需
+                - generic [ref=f1e812]:
+                  - text: client_id, 获取方式详见
+                  - link "申请API权限" [ref=f1e813] [cursor=pointer]:
+                    - /url: /1748360
+                - generic [ref=f1e815]:
+                  - generic [ref=f1e816]: "默认值:"
+                  - generic [ref=f1e817]: "{{client_id}}"
+              - generic [ref=f1e823]:
+                - generic [ref=f1e824]:
+                  - generic [ref=f1e825]:
+                    - generic [ref=f1e826]: timestamp
+                    - generic [ref=f1e828]: string
+                  - generic [ref=f1e834]: 必需
+                - generic [ref=f1e835]: 13位毫秒时间戳，与当前时间差异不超过正负15分钟，示例：1668153260508
+                - generic [ref=f1e842]:
+                  - generic [ref=f1e843]: "默认值:"
+                  - generic [ref=f1e844]: "121212"
+              - generic [ref=f1e850]:
+                - generic [ref=f1e851]:
+                  - generic [ref=f1e852]:
+                    - generic [ref=f1e853]: nonce
+                    - generic [ref=f1e855]: string
+                  - generic [ref=f1e861]: 必需
+                - generic [ref=f1e862]: 随机整数值，保证每个请求唯一，示例：11251
+                - generic [ref=f1e869]:
+                  - generic [ref=f1e870]: "默认值:"
+                  - generic [ref=f1e871]: "121212"
+              - generic [ref=f1e877]:
+                - generic [ref=f1e878]:
+                  - generic [ref=f1e879]:
+                    - generic [ref=f1e880]: sign
+                    - generic [ref=f1e882]: string
+                  - generic [ref=f1e888]: 必需
+                - generic [ref=f1e894]:
+                  - text: 请求签名，详见
+                  - link "生成sign（签名）" [ref=f1e895] [cursor=pointer]:
+                    - /url: /doc-1749562
+                - generic [ref=f1e897]:
+                  - generic [ref=f1e898]: "默认值:"
+                  - generic [ref=f1e899]: "121212121"
+          - generic [ref=f1e902]:
+            - generic [ref=f1e904]:
+              - generic [ref=f1e905]: Header 参数
+              - button "生成代码" [ref=f1e907] [cursor=pointer]
+            - generic [ref=f1e921]:
+              - generic [ref=f1e922]:
+                - generic [ref=f1e923]:
+                  - generic [ref=f1e924]: Content-Type
+                  - generic [ref=f1e926]: string
+                - generic [ref=f1e932]: 可选
+              - generic [ref=f1e933]: 固定再header位置加入Content-Type:application/json
+              - generic [ref=f1e940]:
+                - generic [ref=f1e941]: "默认值:"
+                - generic [ref=f1e942]: application/json
+        - generic [ref=f1e945]:
+          - generic [ref=f1e947]:
+            - generic [ref=f1e949]:
+              - generic [ref=f1e950]: Body 参数
+              - generic [ref=f1e951]: application/json
+              - generic [ref=f1e952]: 必填
+            - button "生成代码" [ref=f1e954] [cursor=pointer]
+          - generic [ref=f1e961]:
+            - generic [ref=f1e968]:
+              - generic [ref=f1e972]:
+                - generic [ref=f1e973]:
+                  - generic [ref=f1e974]:
+                    - generic [ref=f1e975]: pageNo
+                    - generic [ref=f1e977]: string
+                  - generic [ref=f1e983]: 可选
+                - generic [ref=f1e984]: 第几页，默认第一页，从1开始
+                - generic [ref=f1e991]:
+                  - generic [ref=f1e992]: "示例:"
+                  - generic [ref=f1e993]: "1"
+              - generic [ref=f1e999]:
+                - generic [ref=f1e1000]:
+                  - generic [ref=f1e1001]:
+                    - generic [ref=f1e1002]: pageSize
+                    - generic [ref=f1e1004]: string
+                  - generic [ref=f1e1010]: 可选
+                - generic [ref=f1e1011]: 每页条数，默认100，最大支持1000
+                - generic [ref=f1e1018]:
+                  - generic [ref=f1e1019]: "示例:"
+                  - generic [ref=f1e1020]: "100"
+              - generic [ref=f1e1026]:
+                - generic [ref=f1e1027]:
+                  - generic [ref=f1e1028]:
+                    - generic [ref=f1e1029]: shopIdList
+                    - generic [ref=f1e1031]: array[string]
+                  - generic [ref=f1e1037]: 可选
+                - generic [ref=f1e1038]: 店铺ID列表，最多50个
+            - generic [ref=f1e1045]:
+              - generic [ref=f1e1047]: 示例
+              - code [ref=f1e1052]: "{ \"pageNo\": 1, \"pageSize\": 100, \"shopIdList\": [ \"string\" ] }"
+      - generic [ref=f1e1053]:
+        - heading "请求示例代码" [level=2] [ref=f1e1054]
+        - tablist [ref=f1e1056]:
+          - generic [ref=f1e1058]:
+            - tab "Shell" [ref=f1e1060] [cursor=pointer]
+            - tab "JavaScript" [ref=f1e1076] [cursor=pointer]
+            - tab "Java" [ref=f1e1083] [cursor=pointer]
+            - tab "Swift" [ref=f1e1093] [cursor=pointer]
+            - tab "Go" [ref=f1e1100] [cursor=pointer]
+            - tab "PHP" [ref=f1e1107] [cursor=pointer]
+            - tab "Python" [ref=f1e1115] [cursor=pointer]
+            - tab "HTTP" [ref=f1e1123] [cursor=pointer]
+            - tab "C" [ref=f1e1132] [cursor=pointer]
+            - tab "C#" [ref=f1e1139] [cursor=pointer]
+            - tab "Objective-C" [ref=f1e1150] [cursor=pointer]
+            - tab "Ruby" [ref=f1e1158] [cursor=pointer]
+            - tab "OCaml" [ref=f1e1182] [cursor=pointer]
+            - tab "Dart" [ref=f1e1192] [cursor=pointer]
+            - tab "R" [ref=f1e1202] [cursor=pointer]
+          - button [ref=f1e1210] [cursor=pointer]
+      - generic [ref=f1e1214]:
+        - heading "返回响应" [level=2] [ref=f1e1215]
+        - tablist [ref=f1e1216]:
+          - generic [ref=f1e1217]:
+            - tab "right 🟢200" [expanded] [ref=f1e1218] [cursor=pointer]:
+              - img "right" [ref=f1e1219]
+              - generic [ref=f1e1222]: 🟢200
+            - tabpanel [ref=f1e1225]:
+              - generic [ref=f1e1228]:
+                - generic [ref=f1e1229]:
+                  - generic [ref=f1e1230]:
+                    - generic [ref=f1e1231]: "*/*"
+                    - generic [ref=f1e1235]: OK
+                  - generic [ref=f1e1238]:
+                    - generic [ref=f1e1240]:
+                      - generic [ref=f1e1242]:
+                        - text: Body
+                        - generic [ref=f1e1243]: "*/*"
+                      - button "生成代码" [ref=f1e1246] [cursor=pointer]
+                    - generic [ref=f1e1256]:
+                      - generic [ref=f1e1261]:
+                        - generic [ref=f1e1262]:
+                          - generic [ref=f1e1263]: requestId
+                          - generic [ref=f1e1265]: string
+                        - generic [ref=f1e1271]: 可选
+                      - generic [ref=f1e1275]:
+                        - generic [ref=f1e1276]:
+                          - generic [ref=f1e1277]:
+                            - generic [ref=f1e1278]: code
+                            - generic [ref=f1e1282]:
+                              - generic [ref=f1e1283]: integer
+                              - text: <int32>
+                          - generic [ref=f1e1286]: 可选
+                        - generic [ref=f1e1287]: code(默认0代表成功)
+                      - generic [ref=f1e1297]:
+                        - generic [ref=f1e1298]:
+                          - generic [ref=f1e1299]: msg
+                          - generic [ref=f1e1301]: string
+                        - generic [ref=f1e1305]: 错误信息
+                        - generic [ref=f1e1308]: 可选
+                      - generic [ref=f1e1309]:
+                        - generic [ref=f1e1313] [cursor=pointer]:
+                          - button "collapse button" [ref=f1e1314]
+                          - generic [ref=f1e1318]:
+                            - generic [ref=f1e1319]: data
+                            - generic [ref=f1e1322]:
+                              - generic [ref=f1e1323]: object
+                              - generic [ref=f1e1325]: (Page«TiktokFullyManagedProductPageListOpenVo»)
+                          - generic [ref=f1e1326]: Page«TiktokFullyManagedProductPageListOpenVo»
+                          - generic [ref=f1e1329]: 可选
+                        - generic [ref=f1e1330]:
+                          - generic [ref=f1e1336]:
+                            - generic [ref=f1e1337]:
+                              - generic [ref=f1e1338]: pageNo
+                              - generic [ref=f1e1342]:
+                                - generic [ref=f1e1343]: integer
+                                - text: <int32>
+                            - generic [ref=f1e1344]: 页码
+                            - generic [ref=f1e1347]: 可选
+                          - generic [ref=f1e1353]:
+                            - generic [ref=f1e1354]:
+                              - generic [ref=f1e1355]: pageSize
+                              - generic [ref=f1e1359]:
+                                - generic [ref=f1e1360]: integer
+                                - text: <int32>
+                            - generic [ref=f1e1361]: 每页条数
+                            - generic [ref=f1e1364]: 可选
+                          - generic [ref=f1e1370]:
+                            - generic [ref=f1e1371]:
+                              - generic [ref=f1e1372]: totalPage
+                              - generic [ref=f1e1376]:
+                                - generic [ref=f1e1377]: integer
+                                - text: <int32>
+                            - generic [ref=f1e1378]: 总页数
+                            - generic [ref=f1e1381]: 可选
+                          - generic [ref=f1e1387]:
+                            - generic [ref=f1e1388]:
+                              - generic [ref=f1e1389]: totalSize
+                              - generic [ref=f1e1393]:
+                                - generic [ref=f1e1394]: integer
+                                - text: <int32>
+                            - generic [ref=f1e1395]: 总条数
+                            - generic [ref=f1e1398]: 可选
+                          - generic [ref=f1e1404] [cursor=pointer]:
+                            - button "collapse button" [ref=f1e1405]
+                            - generic [ref=f1e1409]:
+                              - generic [ref=f1e1410]: rows
+                              - generic [ref=f1e1415]:
+                                - text: array
+                                - generic [ref=f1e1416]: "[object (TiktokFullyManagedProductPageListOpenVo)]"
+                            - generic [ref=f1e1417]: 当前页数据
+                            - generic [ref=f1e1420]: 可选
+                      - generic [ref=f1e1425]:
+                        - generic [ref=f1e1426]:
+                          - generic [ref=f1e1427]: ts
+                          - generic [ref=f1e1431]:
+                            - generic [ref=f1e1432]: integer
+                            - text: <int64>
+                        - generic [ref=f1e1433]: 响应时间戳
+                        - generic [ref=f1e1436]: 可选
+                - generic [ref=f1e1438]:
+                  - generic [ref=f1e1439]: 示例
+                  - code [ref=f1e1444]: "{ \"requestId\": \"string\", \"code\": 0, \"msg\": \"string\", \"data\": { \"pageNo\": 0, \"pageSize\": 0, \"totalPage\": 0, \"totalSize\": 0, \"rows\": [ { \"parentId\": \"string\", \"platformProductId\": \"string\", \"shopId\": \"string\", \"shopName\": \"string\", \"shopType\": \"string\", \"shopSite\": \"string\" } ] }, \"ts\": 0 }"
+          - tab "right 🟢201" [ref=f1e1446] [cursor=pointer]:
+            - img "right" [ref=f1e1447]
+            - generic [ref=f1e1450]: 🟢201
+          - tab "right 🟠401" [ref=f1e1454] [cursor=pointer]:
+            - img "right" [ref=f1e1455]
+            - generic [ref=f1e1458]: 🟠401
+          - tab "right 🟠403" [ref=f1e1462] [cursor=pointer]:
+            - img "right" [ref=f1e1463]
+            - generic [ref=f1e1466]: 🟠403
+          - tab "right 🟠404" [ref=f1e1470] [cursor=pointer]:
+            - img "right" [ref=f1e1471]
+            - generic [ref=f1e1474]: 🟠404
+      - generic [ref=f1e1477]:
+        - generic [ref=f1e1478]: 修改于
+        - text: 5 个月前
+      - generic [ref=f1e1479]:
+        - link "上一页 获取TikTok在线产品（全托子体）" [ref=f1e1480] [cursor=pointer]:
+          - /url: /api-421782553
+          - generic [ref=f1e1484]:
+            - generic [ref=f1e1485]: 上一页
+            - generic [ref=f1e1486]: 获取TikTok在线产品（全托子体）
+        - link "下一页 获取TikTok在线产品（自营店全球商品--子体）" [ref=f1e1487] [cursor=pointer]:
+          - /url: /api-421782555
+          - generic [ref=f1e1488]:
+            - generic [ref=f1e1489]: 下一页
+            - generic [ref=f1e1490]: 获取TikTok在线产品（自营店全球商品--子体）
+      - contentinfo [ref=f1e1495]:
+        - link [ref=f1e1497] [cursor=pointer]:
+          - /url: /llms.txt
+          - button "LLMs.txt" [ref=f1e1498]
+        - link "homepage link" [ref=f1e1502] [cursor=pointer]:
+          - /url: https://apifox.com
+          - generic [ref=f1e1503]: Built with

@@ -1,0 +1,289 @@
+var LOG = TemuLogger.createLogger('popup');
+
+function send(type, extra) {
+  return new Promise((res) => chrome.runtime.sendMessage(Object.assign({ type }, extra), res));
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function setMsg(text, cls) {
+  const el = document.getElementById('msg');
+  el.textContent = text || '';
+  el.className = cls || '';
+}
+function fmtTs(ts) {
+  return ts ? new Date(ts).toLocaleString('zh-CN') : '—';
+}
+function num(v) { return v != null ? v : '—'; }
+function editLink(productId) { return 'https://agentseller.temu.com/goods/edit?from=productList&productId=' + productId; }
+function itemsHtml(items, label, color) {
+  if (!Array.isArray(items) || !items.length) return '';
+  return `<div class="items">${esc(label)}${items.map((it) => {
+    const nm = esc((it.name || '商品').slice(0, 22));
+    const skc = it.skc ? String(it.skc) : '';
+    const skcHtml = skc
+      ? `<span style="color:#8a9099;font-size:11px"> SKC ${esc(skc)}</span>`
+      : '';
+    return `<div style="line-height:1.45"><a href="${esc(editLink(it.productId))}" target="_blank" style="color:${color}" title="SKC ${esc(skc || '-')} · 点开编辑">• ${nm}</a>${skcHtml}</div>`;
+  }).join('')}</div>`;
+}
+// 编辑页 parent/list 兜底抓到的扁平规格
+function skuSpecsHtml(specs) {
+  if (!Array.isArray(specs) || !specs.length) return '';
+  const names = specs.map((s) => esc((s.name || 'SKU').slice(0, 20))).join('、');
+  return `<div class="items" style="color:#1f2329">SKU规格（${specs.length}个）：${names}</div>`;
+}
+// pageQuery 里的多规格商品（真正可用的后台 SKU 数据源）
+function multiSkuHtml(products, pageSkuCount) {
+  if (!Array.isArray(products) || !products.length) {
+    if (typeof pageSkuCount === 'number' && pageSkuCount > 0) {
+      return `<div class="items" style="color:#8a9099">本页 SKU 共 ${pageSkuCount} 个（均为单规格）</div>`;
+    }
+    return '';
+  }
+  let html = `<div class="items" style="color:#1f2329">多规格商品（本页 ${products.length} 个` +
+    (typeof pageSkuCount === 'number' ? `，SKU 合计 ${pageSkuCount}` : '') + '）：</div>';
+  for (const p of products.slice(0, 8)) {
+    const names = (p.skus || []).map((s) => esc((s.name || s.skuId || '?').slice(0, 16))).join('、');
+    html += `<div class="items" style="margin-left:4px">` +
+      `<a href="${esc(editLink(p.productId))}" target="_blank" style="color:#1456f0" title="SKC ${esc(p.skc || '-')}">• ${esc((p.name || '商品').slice(0, 18))}</a>` +
+      `<span style="color:#8a9099"> ×${p.skuCount || (p.skus || []).length}</span>` +
+      (names ? `<div style="color:#5f6368;margin-left:10px;font-size:11px">${names}</div>` : '') +
+      `</div>`;
+  }
+  if (products.length > 8) {
+    html += `<div class="items" style="color:#8a9099">…还有 ${products.length - 8} 个多规格商品</div>`;
+  }
+  return html;
+}
+function frontProductHtml(storeName, frontData, productUrls) {
+  // frontData: { [url]: { title, price, variants, totalOptions, availableOptions, ts } }
+  // productUrls: { [store]: [url1, url2, ...] }
+  const urls = (productUrls && productUrls[storeName]) || [];
+  const entries = Object.entries(frontData || {});
+  if (!urls.length && !entries.length) return '';
+  let html = '<div style="margin-top:6px;padding-top:6px;border-top:1px dashed #eceef1;font-size:11px;">';
+  html += '<div style="color:#1456f0;font-weight:600;margin-bottom:3px;">📦 前台变体监测</div>';
+  for (const url of urls) {
+    const fd = frontData && frontData[url];
+    html += '<div style="margin:4px 0;padding:4px 6px;background:#f0f5ff;border-radius:4px;">';
+    html += '<a href="' + esc(url) + '" target="_blank" style="font-size:10px;color:#1456f0;">' + esc((fd && fd.title) || url.split('/').pop() || '商品页') + '</a>';
+    if (fd) {
+      html += '<span style="color:#8a9099;margin-left:6px;">' + esc(fmtTs(fd.ts)) + '</span>';
+      if (fd.price) html += ' <span style="color:#16a34a;font-weight:600;">' + esc(fd.price) + '</span>';
+      html += '<br>';
+      if (Array.isArray(fd.variants)) {
+        for (const g of fd.variants) {
+          const opts = (g.options || []).map((o) => {
+            const icon = o.disabled ? '⚫' : (o.selected ? '✅' : '⬜');
+            return icon + esc(o.name || '?');
+          }).join(' ');
+          html += '<span style="color:#1f2329;">' + esc(g.group || '选项') + '：</span>' + opts + '<br>';
+        }
+      }
+      html += '<span style="color:#8a9099;">共 ' + fd.totalOptions + ' 变体，可用 ' + fd.availableOptions + '</span>';
+    } else {
+      html += '<span style="color:#d97706;"> 待采集</span>';
+      html += ' <button class="frontChk" data-store="' + esc(storeName) + '" data-url="' + esc(url) + '" style="font-size:10px;padding:1px 6px;">检查</button>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+async function refresh() {
+  const s = await send('getStatus');
+  const cfg = (s && s.config) || {};
+  const stores = (s && s.stores) || {};
+
+  document.getElementById('cfg').textContent =
+    '飞书：' + (cfg.webhook ? (cfg.enabled ? '已启用' : '已停用') : '未配置')
+    + '　后台：' + (s && s.bgVersion ? s.bgVersion : '旧版·需关开插件');
+
+  const lc = s && s.lastCycle;
+  const mr = s && s.lastMustRemind;
+  const ci = document.getElementById('cycleInfo');
+  const parts = [];
+  let bad = false;
+  if (lc && lc.ts) {
+    const failed = /失败|没找到|打不开/.test(lc.summary || '');
+    if (failed) bad = true;
+    parts.push('上次轮巡：' + fmtTs(lc.ts) + (failed ? '（有异常，点轮巡重试）' : ''));
+  }
+  if (mr && mr.ts) {
+    if (mr.ok === false) bad = true;
+    parts.push('上次必提醒：' + fmtTs(mr.ts) + (mr.ok === false ? '（发送失败）' : ''));
+  }
+  const times = cfg.mustRemindEnabled === false
+    ? '已关'
+    : (Array.isArray(cfg.mustRemindTimes) && cfg.mustRemindTimes.length
+      ? cfg.mustRemindTimes.join('/')
+      : '09:30/16:30');
+  parts.push('必提醒：' + times);
+  // 前台变体轮巡状态
+  const fc = s && s.lastFrontCycle;
+  if (fc && fc.ts) {
+    parts.push('前台变体：' + fmtTs(fc.ts) + '（' + (fc.checked || '?') + '/' + (fc.total || '?') + '）');
+  }
+  const frontHours = cfg.frontCheckIntervalHours || 3;
+  parts.push('前台间隔：' + frontHours + 'h');
+  ci.textContent = parts.join(' · ');
+  ci.className = bad ? 'sub err' : 'sub';
+
+  const names = Object.keys(stores).sort();
+  const box = document.getElementById('stores');
+  if (names.length === 0) {
+    box.innerHTML = '<div class="empty">还没有数据。切到某个店的商品列表页（并点“立即检查”）即可开始监测该店。</div>';
+    return;
+  }
+  box.innerHTML = names.map((name) => {
+    const L = (stores[name] && stores[name].latest) || {};
+    return `<div class="store">
+      <div class="name"><span>🏬 ${esc(name)}</span><span class="r"><span class="t">${fmtTs(L.ts)}</span><span class="del" data-name="${esc(name)}" title="删除该店">✕</span></span></div>
+      <div class="kv">
+        <span>在售 <b>${num(L.onSale)}</b></span>
+        <span>流量待关注 <b>${num(L.trafficWatch)}</b></span>
+        <span>流量下降 <b style="${typeof L.trafficDecline === 'number' && L.trafficDecline > 0 ? 'color:#d92d20' : ''}">${typeof L.trafficDecline === 'number' ? L.trafficDecline : '—'}</b></span>
+        <span>总数 ${num(L.total)}</span>
+        <span>未发布/已下架 ${num(L.unpublished)}/${num(L.removed)}</span>
+      </div>
+      ${itemsHtml(L.watchItems, '限流商品：', '#d97706')}
+      ${itemsHtml(L.declineItems, '流量下降：', '#d92d20')}
+      ${multiSkuHtml(L.multiSkuProducts, L.pageSkuCount)}
+      ${skuSpecsHtml(L.skuSpecs)}
+      ${frontProductHtml(name, stores[name].frontLatest, cfg.productUrls)}
+    </div>`;
+  }).join('');
+  box.querySelectorAll('.del').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const name = el.getAttribute('data-name');
+      if (!confirm('确定删除「' + name + '」的监测数据？')) return;
+      const r = await send('deleteStore', { name });
+      setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+      refresh();
+    });
+  });
+  box.querySelectorAll('.frontChk').forEach((el) => {
+    el.addEventListener('click', async () => {
+      const store = el.getAttribute('data-store');
+      const url = el.getAttribute('data-url');
+      setMsg('正在检查前台商品页…');
+      const r = await send('checkFrontNow', { store, url });
+      setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+      setTimeout(refresh, 3000);
+    });
+  });
+}
+
+async function addStore() {
+  const input = document.getElementById('newStore');
+  const name = input.value.trim();
+  if (!name) { setMsg('请输入店铺名', 'err'); return; }
+  const r = await send('addStore', { name });
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  if (r && r.ok) { input.value = ''; refresh(); }
+}
+
+document.getElementById('add').addEventListener('click', addStore);
+document.getElementById('newStore').addEventListener('keydown', (e) => { if (e.key === 'Enter') addStore(); });
+
+document.getElementById('cycle').addEventListener('click', async () => {
+  setMsg('正在轮巡所有店（会切店，约 1-2 分钟，请勿操作页面）…');
+  const r = await send('cycleNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 1500);
+});
+document.getElementById('check').addEventListener('click', async () => {
+  setMsg('正在刷新后台页…');
+  const r = await send('checkNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 4000);
+});
+document.getElementById('test').addEventListener('click', async () => {
+  setMsg('正在发送测试…');
+  const r = await send('testFeishu');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+});
+document.getElementById('frontCycleAll').addEventListener('click', async () => {
+  setMsg('正在轮巡所有前台商品页…');
+  const r = await send('cycleFrontNow');
+  setMsg(r && r.msg, r && r.ok ? 'ok' : 'err');
+  setTimeout(refresh, 1500);
+});
+document.getElementById('opt').addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+});
+
+refresh();
+
+// ---- Log viewer ----
+var logVisible = false;
+var logTimer = null;
+
+function fetchAndRenderLogs() {
+  chrome.storage.local.get('logs', function (r) {
+    var logs = r.logs || [];
+    var recent = logs.slice(-100).reverse();
+    var listEl = document.getElementById('logList');
+    var countEl = document.getElementById('logCount');
+    countEl.textContent = logs.length + ' 条';
+
+    var html = '';
+    for (var i = 0; i < recent.length; i++) {
+      var e = recent[i];
+      var color = '#1f2329';
+      if (e.level === 'WARN')  color = '#d97706';
+      if (e.level === 'ERROR') color = '#d92d20';
+      html += '<div style="color:' + color + '">[' + esc(e.ts) + '] [' + esc(e.level) + '] ' + esc(e.msg) + '</div>';
+    }
+    if (!recent.length) {
+      html = '<div style="color:#8a9099">（暂无日志）</div>';
+    }
+    listEl.innerHTML = html;
+    if (logVisible) listEl.scrollTop = 0;
+  });
+}
+
+function toggleLogs() {
+  logVisible = !logVisible;
+  var listEl = document.getElementById('logList');
+  var exportBtn = document.getElementById('logExport');
+  var toggleBtn = document.getElementById('logToggle');
+
+  if (logVisible) {
+    listEl.style.display = 'block';
+    exportBtn.style.display = '';
+    toggleBtn.textContent = '📋 隐藏日志';
+    fetchAndRenderLogs();
+    logTimer = setInterval(fetchAndRenderLogs, 3000);
+  } else {
+    listEl.style.display = 'none';
+    exportBtn.style.display = 'none';
+    toggleBtn.textContent = '📋 日志';
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  }
+}
+
+function exportLogs() {
+  chrome.storage.local.get('logs', function (r) {
+    var logs = r.logs || [];
+    var text = '';
+    for (var i = 0; i < logs.length; i++) {
+      text += '[' + logs[i].ts + '] [' + logs[i].level + '] ' + logs[i].msg + '\n';
+    }
+    if (!text) text = '(no logs)\n';
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'temu-monitor-' + new Date().toISOString().slice(0, 10) + '.log';
+    a.click();
+    URL.revokeObjectURL(url);
+    LOG.info('Logs exported: ' + logs.length + ' entries');
+  });
+}
+
+document.getElementById('logToggle').addEventListener('click', toggleLogs);
+document.getElementById('logExport').addEventListener('click', exportLogs);

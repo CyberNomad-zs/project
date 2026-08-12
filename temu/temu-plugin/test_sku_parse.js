@@ -1,0 +1,169 @@
+// 本地单测：用真实 capture hit-068.json 验证 pageQuery SKU 解析 + parent/list 兜底
+// 运行：node test_sku_parse.js
+// 注意：文件名不能以下划线 _ 开头，Chrome 扩展目录保留 _* 给系统用，会导致「无法加载清单」
+const fs = require('fs');
+const path = require('path');
+
+const bg = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+function extractFn(src, name) {
+  const re = new RegExp('function ' + name + '\\s*\\(');
+  const m = re.exec(src);
+  if (!m) throw new Error('fn not found: ' + name);
+  const i = m.index;
+  const start = src.indexOf('{', i);
+  let depth = 0;
+  for (let j = start; j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}') {
+      depth--;
+      if (depth === 0) return src.slice(i, j + 1);
+    }
+  }
+  throw new Error('unclosed ' + name);
+}
+
+const names = [
+  'formatSkuSpecName',
+  'normalizeSku',
+  'extractSkusFromProduct',
+  'parsePageQuery',
+  'findSkuLikeArray',
+  'parseSkuSpecList',
+];
+let code = '';
+for (const n of names) code += extractFn(bg, n) + '\n';
+// log stub used inside parse*
+const log = {
+  warn: (...a) => console.warn('[log]', ...a),
+  info: (...a) => console.log('[log]', ...a),
+};
+// chrome stub for parseSkuSpecList storage writes
+global.chrome = {
+  storage: {
+    local: {
+      set: async () => {},
+    },
+  },
+};
+
+const fns = eval(
+  '(function(){ ' +
+    code +
+    '; return { formatSkuSpecName, normalizeSku, extractSkusFromProduct, parsePageQuery, findSkuLikeArray, parseSkuSpecList }; })()'
+);
+
+const hitPath = path.join(
+  __dirname,
+  '..',
+  'temu-monitor',
+  'capture',
+  'hit-068.json'
+);
+const hit = JSON.parse(fs.readFileSync(hitPath, 'utf8'));
+const body = typeof hit.body === 'string' ? hit.body : JSON.stringify(hit.body);
+const p = fns.parsePageQuery(body);
+
+console.log('=== parsePageQuery ===');
+console.log(
+  'total=',
+  p.total,
+  'products=',
+  p.products.length,
+  'pageSkuCount=',
+  p.pageSkuCount,
+  'multiSku=',
+  p.multiSkuProducts.length
+);
+console.log('multiSku samples:');
+for (const pr of p.multiSkuProducts.slice(0, 6)) {
+  console.log(
+    ' -',
+    pr.productId,
+    pr.name.slice(0, 30),
+    'skus=',
+    pr.skus.map((s) => s.name).join(' | ')
+  );
+}
+
+// 肩背包 4 色
+const bag = p.products.find((x) => x.productId === '3916729343');
+if (!bag) throw new Error('bag product missing');
+if (bag.skuCount !== 4) throw new Error('bag should have 4 skus, got ' + bag.skuCount);
+const namesBag = bag.skus.map((s) => s.name).sort().join(',');
+console.log('bag specs:', namesBag);
+if (!/Khaki/.test(namesBag) || !/Beige/.test(namesBag)) {
+  throw new Error('expected Khaki/Beige colors');
+}
+
+// 模拟 Beige 消失
+const prevMap = {};
+for (const pr of p.products) {
+  const skusObj = {};
+  for (const sk of pr.skus) if (sk.skuId) skusObj[sk.skuId] = { name: sk.name };
+  prevMap[pr.productId] = { name: pr.name, skc: pr.skc, skus: skusObj };
+}
+const nextProducts = p.products.map((pr) => {
+  if (pr.productId !== '3916729343') return pr;
+  const skus = pr.skus.filter((s) => s.name !== 'Beige');
+  return Object.assign({}, pr, { skus, skuCount: skus.length });
+});
+const removed = [];
+for (const pr of nextProducts) {
+  const prev = prevMap[pr.productId];
+  if (!prev) continue;
+  const currIds = new Set(pr.skus.map((s) => s.skuId));
+  for (const id of Object.keys(prev.skus)) {
+    if (!currIds.has(id)) {
+      removed.push({ productId: pr.productId, name: prev.skus[id].name, skuId: id });
+    }
+  }
+}
+console.log('=== simulated Beige removal ===');
+console.log(removed);
+if (removed.length !== 1 || removed[0].name !== 'Beige') {
+  throw new Error('expected 1 Beige removed');
+}
+
+// parent/list 形：result.productSkuSummaries
+const fakeParent = JSON.stringify({
+  success: true,
+  result: {
+    productSkuSummaries: bag.skus.map((s) => ({
+      productSkuId: s.skuId,
+      thumbUrl: s.img,
+      productSkuSpecList: [{ parentSpecName: '颜色', specName: s.name }],
+    })),
+  },
+});
+const p2 = fns.parseSkuSpecList(fakeParent);
+console.log(
+  '=== parseSkuSpecList nested productSkuSummaries ===',
+  p2 && p2.skuSpecCount,
+  p2 && p2.skuSpecs.map((s) => s.name).join(',')
+);
+if (!p2 || p2.skuSpecCount !== 4) throw new Error('parseSkuSpecList failed nested');
+
+// 深嵌套
+const deep = JSON.stringify({
+  result: {
+    foo: {
+      bar: {
+        list: [
+          { productSkuId: 1, productSkuSpecList: [{ specName: 'Pink' }] },
+          { productSkuId: 2, productSkuSpecList: [{ specName: 'Blue' }] },
+        ],
+      },
+    },
+  },
+});
+const p3 = fns.parseSkuSpecList(deep);
+console.log('=== deep find ===', p3 && p3.skuSpecs.map((s) => s.name).join(','));
+if (!p3 || p3.skuSpecCount !== 2) throw new Error('deep find failed');
+
+// 单规格商品也要能解析
+const single = p.products.find((x) => x.skuCount === 1);
+if (!single || !single.skus[0].skuId) throw new Error('single sku product missing id');
+console.log('single sample:', single.productId, single.skus[0].name, single.skus[0].skuId);
+
+console.log('\nALL TESTS PASSED');

@@ -1,0 +1,139 @@
+# TK 英区店铺广告数据自动化监测
+
+紫鸟浏览器 **卖家自研插件**（Chrome MV3 扩展）：在已登录的 TikTok 店铺环境中抓取广告核心字段，并写入飞书多维表格。
+
+## 抓取字段
+
+| 字段 | 说明 |
+|------|------|
+| 广告系列名称 | Campaign / 品名 |
+| 广告花费 | Spend / Cost（**美金 USD**，与广告后台一致） |
+| 销量 | Orders / Units |
+| ROI | ROI / ROAS |
+| 总收入 | GMV / Revenue / 销售额（**美金 USD**） |
+
+另附：业务日期、店铺、抓取时间、数据源 URL、状态。
+
+## 目录
+
+```
+extension/          # 插件源码（加载已解压 / 打包上传）
+docs/               # 飞书建表、安装上架、运维排障
+scripts/            # package-zip.ps1
+```
+
+## 快速开始
+
+### 1. 飞书
+
+按 [docs/飞书表格建表说明.md](docs/飞书表格建表说明.md) 建表并创建自建应用。
+
+### 2. 紫鸟调试加载
+
+1. 紫鸟中打开店铺窗口 → `chrome://extensions/` → 开发者模式  
+2. 「加载已解压的扩展程序」→ 选择 `extension` 目录  
+3. 扩展 **设置** 中填写飞书 App ID / Secret / app_token / table_id  
+4. 打开广告数据列表 → Popup **立即抓取**（建议先勾选干跑）
+
+详见 [docs/安装与上架指南.md](docs/安装与上架指南.md)。
+
+### 3. 打包上架
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-zip.ps1
+```
+
+将 `dist/tk-ad-scraper-v*.zip` 上传至紫鸟开放平台「卖家自研插件」，并在应用管理中分配给店铺账号。
+
+## 功能概览
+
+- 手动一键抓取 + 结果预览  
+- DOM 表头语义匹配（中英）+ 页面 fetch/XHR 报表兜底  
+- 飞书 `tenant_access_token` + 多维表批量写入（分批 500、失败重试）  
+- 每日定时（`chrome.alarms`，默认可设 07:30）  
+- 本地日志与 JSON 导出  
+
+## 启动器（推荐）
+
+双击其一即可（风格对齐海外仓 `美化启动器.bat`）：
+
+| 文件 | 说明 |
+|------|------|
+| **`美化启动器.bat`** | 打开图形界面 `gui.py`（按钮：预览/干跑/写飞书/装任务/日志） |
+| **`启动器.bat`** | 纯控制台菜单，不依赖 Python GUI |
+| **`安装环境.bat`** | 一键安装 Node.js LTS + ziniao-cli（可选填 API Key） |
+
+运营使用说明见 **[docs/美化启动器使用手册.md](docs/美化启动器使用手册.md)**（预览→干跑→写飞书、日报查看、17:20 任务、常见问题）。
+
+需本机已安装 Python 3（图形启动器）；控制台菜单只需 PowerShell。
+
+### 环境依赖（多店脚本）
+
+| 依赖 | 安装方式 |
+|------|----------|
+| **Node.js LTS** | `安装环境.bat` 或 `scripts\install-deps.ps1`（winget） |
+| **ziniao-cli** | 同上（`npm i -g @ziniao-open/cli`） |
+| **紫鸟桌面客户端** | 需自行安装并登录（脚本无法静默安装桌面端） |
+| **飞书配置** | `config\stores.config.json` |
+
+```powershell
+# 一键安装 + 自检（默认国内镜像：npmmirror Node 安装包 + npm registry）
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1
+
+# 顺带写入紫鸟 API Key（成员账号）
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -ApiKey "你的密钥"
+
+# 只用官方源（nodejs.org / registry.npmjs.org）
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -UseOfficialMirror
+
+# 只做环境自检
+powershell -ExecutionPolicy Bypass -File .\scripts\install-deps.ps1 -DoctorOnly
+```
+
+自动安装失败时，按 **[docs/手动安装环境.md](docs/手动安装环境.md)** 逐步装 Node / ziniao-cli / 紫鸟客户端。
+
+## 多店铺自动串行（店名会变也不怕）
+
+店铺列表**每次运行时从紫鸟动态拉取**，不写死数量：
+
+```powershell
+# 1. 复制并编辑配置（筛选规则 + 飞书 + 店名映射）
+copy config\stores.config.example.json config\stores.config.json
+
+# 2. 只看会抓哪些店
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -ListOnly
+
+# 3. 干跑（默认 config 里 dryRun=true）
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1
+
+# 4. 正式写入飞书
+powershell -ExecutionPolicy Bypass -File .\scripts\run-multi-store.ps1 -DryRun false
+```
+
+抓取结束后会自动生成 **日报总结分析**（总览、分店 KPI、亮点、低 ROI 风险、TOP 系列），统一放在项目根目录 **`日报/`**（`日报-日期.md` / `简报-日期.txt` / `最新日报.md`），说明见 [docs/日报分析说明.md](docs/日报分析说明.md)。抓取调试日志仍在 `logs/`。
+
+筛选示例见 `config/stores.config.example.json`：
+
+- `platformContains: ["TikTok"]` — 只要 TikTok 相关  
+- `requireIp: true` — 跳过未绑定设备（如你列表里的 TT-L）  
+- `excludeStoreIds` / `includeStoreIds` — 精确排除或只跑指定店  
+- `storeNameMap` — 紫鸟账号名 → 飞书「店铺」列展示名（如 `Tiktok_Shop2` → `Deal to deal`）
+
+新增店铺：只要在紫鸟里建好并绑定设备，且命中筛选规则，**下次运行自动纳入**，无需改代码。
+
+## 重要限制
+
+- 插件一键抓取：依赖当前已打开的店铺窗口。  
+- 多店串行：依赖本机 `ziniao-cli` + 紫鸟客户端在线，**一店一开一关**，勿并行狂开。  
+- 定时任务（扩展 alarms）在浏览器退出后不可靠；生产建议 Windows 任务计划调用 `run-multi-store.ps1`。  
+- TikTok 后台改版可能导致选择器失效，需按 [docs/运维与排障.md](docs/运维与排障.md) 更新别名。
+
+## 需求来源
+
+- `海外店铺数据抓取与自动化需求分析.docx`  
+- `TK广告数据抓取项目梳理.xmind`  
+- 开放平台：[卖家自研插件](https://open.ziniao.com/docSupport?docId=101)  
+
+## 许可与范围
+
+仅供企业内部使用（卖家自研插件）。勿将飞书密钥写入仓库。

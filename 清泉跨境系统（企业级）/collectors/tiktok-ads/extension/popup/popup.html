@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TK广告数据抓取</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <div>
+        <h1>TK广告数据抓取</h1>
+        <p class="sub">紫鸟 · 卖家自研插件</p>
+      </div>
+      <a href="../options/options.html" target="_blank" class="link">设置</a>
+    </header>
+
+    <section class="card">
+      <label class="row">
+        <span>日期</span>
+        <select id="dateMode">
+          <option value="yesterday">昨天</option>
+          <option value="today">今天</option>
+          <option value="custom">自定义</option>
+        </select>
+      </label>
+      <label class="row" id="customDateRow" hidden>
+        <span>自定义日期</span>
+        <input type="date" id="customDate" />
+      </label>
+      <label class="row check">
+        <input type="checkbox" id="dryRun" />
+        <span>干跑预览（不写飞书）</span>
+      </label>
+      <p class="hint">
+        请在紫鸟店铺窗口打开 TikTok 广告系列/报表列表后再抓取。定时任务需保持浏览器运行。
+      </p>
+    </section>
+
+    <section class="actions">
+      <button id="btnScrape" class="btn primary">立即抓取</button>
+      <button id="btnTest" class="btn">测试飞书</button>
+    </section>
+
+    <section class="card" id="statusCard">
+      <div class="status-line">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">就绪</span>
+      </div>
+      <pre id="preview" class="preview" hidden></pre>
+    </section>
+
+    <section class="card compact">
+      <div class="row between">
+        <strong>最近日志</strong>
+        <button id="btnExportLogs" class="btn tiny">导出</button>
+      </div>
+      <ul id="logList" class="log-list"></ul>
+    </section>
+
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

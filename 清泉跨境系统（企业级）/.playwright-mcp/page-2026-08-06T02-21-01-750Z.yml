@@ -1,0 +1,63 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e12]:
+    - generic [ref=e14]:
+      - textbox [ref=e22]:
+        - /placeholder: 搜索
+      - generic [ref=e28] [cursor=pointer]
+    - generic [ref=e35]:
+      - generic [ref=e36]: 仪表盘
+      - generic [ref=e47]: 产品利润表
+      - generic [ref=e56]: TK产品
+      - generic [ref=e68]: TT SHOP2
+      - generic [ref=e80]: pop店
+      - generic [ref=e92]: TK产品直播定价
+      - generic [ref=e104]: 送测分析表
+      - generic [ref=e116]: 达人统计表
+      - generic [ref=e128]: TK报销
+      - generic [ref=e140]: 示例
+      - generic [ref=e152]: 独立站定价
+      - generic [ref=e164]: wayfair
+      - generic [ref=e176]: 黑猫SUK
+      - generic [ref=e185]: 在库货物
+      - generic [ref=e197]: 在途货物
+      - generic [ref=e209]: 达人寄样跟踪表
+      - generic [ref=e218]: tk达人
+      - generic [ref=e230]: 视频制作任务管理
+      - generic [ref=e239]: 产品表
+      - generic [ref=e251]: 视频任务表
+      - generic [ref=e263]: 爆款视频拆解表
+      - generic [ref=e275]: 候选池
+      - generic [ref=e284]: 英国TikTok Shop选品池
+      - generic [ref=e296]: 数据标准
+      - generic [ref=e308]: 选品流程
+      - generic [ref=e320]: 英国合规清单
+      - generic [ref=e332]: 来源说明
+      - generic [ref=e344]: 总览看板
+      - generic [ref=e355]: AI-TK广告投流分析
+      - generic [ref=e364]: TK广告日报
+      - generic [ref=e376]: AI广告智能筛选分析表
+      - generic [ref=e388]: TikTok Shop 新品上架 SOP
+      - generic [ref=e399]: TikTok Shop UK 本土店运营 SOP & 风控规则
+  - generic [ref=e434]:
+    - generic [ref=e436] [cursor=pointer]
+    - generic [ref=e444]:
+      - generic [ref=e445]:
+        - generic [ref=e446]:
+          - generic [ref=e447]:
+            - generic [ref=e448]: 金猫智领未来(南京)信息科技有限公司
+            - generic [ref=e452]: 陈勇胜
+          - generic [ref=e456]: TK驾驶舱
+          - generic [ref=e460]: 外部
+          - button [ref=e462] [cursor=pointer]
+        - generic [ref=e466]:
+          - button [ref=e468] [cursor=pointer]
+          - generic [ref=e474]: "最近修改: 昨天 19:02"
+      - generic [ref=e476]:
+        - button "分享" [ref=e478] [cursor=pointer]
+        - button "自动化" [ref=e487] [cursor=pointer]
+        - button [ref=e495] [cursor=pointer]
+        - button [ref=e501] [cursor=pointer]
+        - button [ref=e510] [cursor=pointer]
+        - button [ref=e516] [cursor=pointer]
+        - button [ref=e520] [cursor=pointer]
+        - button [ref=e526] [cursor=pointer]

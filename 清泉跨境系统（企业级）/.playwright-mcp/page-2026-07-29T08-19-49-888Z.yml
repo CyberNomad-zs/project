@@ -1,0 +1,44 @@
+- generic [ref=e3]:
+  - generic [ref=e5]:
+    - link [ref=e7] [cursor=pointer]:
+      - /url: /account/register
+      - img "TikTok Shop Seller Log In | United Kingdom" [ref=e8]
+    - navigation [ref=e9]:
+      - menu [ref=e10] [cursor=pointer]:
+        - menuitem "Academy" [ref=e12]
+    - generic [ref=e13]:
+      - link "Contact us" [ref=e15] [cursor=pointer]:
+        - /url: https://seller.eu.tiktok.com/contact-us?lang=zh-CN
+      - button [ref=e21] [cursor=pointer]:
+        - paragraph [ref=e26]: 简体中文
+  - generic [ref=e30]:
+    - generic [ref=e33]: Don't have an account yet?Sign up
+    - generic [ref=e35]:
+      - generic [ref=e37]:
+        - generic [ref=e38]:
+          - generic [ref=e39]: 登录
+          - generic [ref=e40]:
+            - generic [ref=e41]:
+              - generic [ref=e42]: 手机号
+              - generic [ref=e43]:
+                - generic [ref=e47] [cursor=pointer]:
+                  - generic [ref=e48]: UK +44
+                  - img "Combined Shape" [ref=e50]
+                - textbox "请输入手机号" [ref=e58]
+              - generic [ref=e59] [cursor=pointer]: Log in with email
+            - generic [ref=e60]:
+              - generic [ref=e61]:
+                - text: 密码
+                - link "Forgot the password?" [ref=e62] [cursor=pointer]:
+                  - /url: javascript:;
+              - textbox "请输入密码" [ref=e63]
+              - generic [ref=e64] [cursor=pointer]: 
+            - generic [ref=e65]: 使用短信验证码登录
+            - generic [ref=e66]:
+              - button "登录" [ref=e67] [cursor=pointer]:  登录
+              - text: 
+        - text:          
+      - generic [ref=e68]:
+        - generic [ref=e69]: or
+        - button "Log in with TikTok account" [ref=e70] [cursor=pointer]
+        - button "Log in with Google" [ref=e73] [cursor=pointer]

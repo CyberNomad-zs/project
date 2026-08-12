@@ -1,0 +1,273 @@
+"""Outbox / 飞书同步 Worker（Phase0 简易轮询）。"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from sqlalchemy import text
+
+from app.adapters.feishu import bitable
+from app.config import get_settings
+from app.infra.db import SessionLocal
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("qingquan.worker")
+
+
+async def process_feishu_task_sync(task_id: str) -> None:
+    settings = get_settings()
+    if not settings.feishu_bitable_app_token or not settings.feishu_bitable_table_tasks:
+        logger.warning("feishu table not configured, skip task %s", task_id)
+        return
+
+    token = await bitable.get_tenant_access_token()
+    if not token:
+        logger.warning("feishu credentials missing, skip")
+        return
+
+    async with SessionLocal() as db:
+        row = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text, dedupe_key, status, platform, shop_id::text, anomaly_type,
+                           biz_id, title, owner_user_id::text, due_at, progress_note,
+                           created_at, updated_at, resolved_at
+                    FROM task WHERE id = :id
+                    """
+                ),
+                {"id": task_id},
+            )
+        ).mappings().first()
+        if not row:
+            return
+        task = dict(row)
+        fields = bitable.task_to_fields(task)
+        chash = bitable.content_hash(fields)
+
+        mapped = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text, record_id, content_hash
+                    FROM sync_feishu_map
+                    WHERE table_key = 'tasks' AND local_id = :lid
+                    """
+                ),
+                {"lid": task_id},
+            )
+        ).mappings().first()
+
+        app_token = settings.feishu_bitable_app_token
+        table_id = settings.feishu_bitable_table_tasks
+
+        if mapped and mapped["content_hash"] == chash:
+            logger.info("task %s unchanged, skip feishu", task_id)
+            return
+
+        if mapped:
+            await bitable.batch_update_records(
+                token, app_token, table_id, [(mapped["record_id"], fields)]
+            )
+            await db.execute(
+                text(
+                    """
+                    UPDATE sync_feishu_map
+                    SET content_hash = :h, synced_at = now()
+                    WHERE id = :id
+                    """
+                ),
+                {"h": chash, "id": mapped["id"]},
+            )
+            logger.info("updated feishu record for task %s", task_id)
+        else:
+            ids = await bitable.batch_create_records(token, app_token, table_id, [fields])
+            if not ids:
+                raise RuntimeError("batch_create returned empty")
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO sync_feishu_map (
+                        id, table_key, local_table, local_id, app_token, table_id,
+                        record_id, content_hash, synced_at
+                    ) VALUES (
+                        :id, 'tasks', 'task', :local_id, :app_token, :table_id,
+                        :record_id, :h, now()
+                    )
+                    """
+                ),
+                {
+                    "id": str(uuid4()),
+                    "local_id": task_id,
+                    "app_token": app_token,
+                    "table_id": table_id,
+                    "record_id": ids[0],
+                    "h": chash,
+                },
+            )
+            logger.info("created feishu record for task %s", task_id)
+        await db.commit()
+
+
+async def drain_outbox_once() -> int:
+    handled = 0
+    async with SessionLocal() as db:
+        rows = (
+            await db.execute(
+                text(
+                    """
+                    SELECT id::text, event_type, aggregate_id::text, payload
+                    FROM outbox_event
+                    WHERE status IN ('pending', 'failed')
+                      AND available_at <= now()
+                      AND attempts < 8
+                    ORDER BY created_at
+                    LIMIT 20
+                    FOR UPDATE SKIP LOCKED
+                    """
+                )
+            )
+        ).mappings().all()
+
+        for row in rows:
+            await db.execute(
+                text(
+                    """
+                    UPDATE outbox_event
+                    SET status = 'processing', attempts = attempts + 1
+                    WHERE id = :id
+                    """
+                ),
+                {"id": row["id"]},
+            )
+            await db.commit()
+            try:
+                if row["event_type"] in ("feishu.sync", "feishu.job"):
+                    if row["event_type"] == "feishu.sync":
+                        await process_feishu_task_sync(row["aggregate_id"])
+                    else:
+                        # 驾驶舱：sync_feishu_job.id = aggregate_id；按 table_key 分发
+                        async with SessionLocal() as db_job:
+                            meta = (
+                                await db_job.execute(
+                                    text(
+                                        """
+                                        SELECT table_key FROM sync_feishu_job
+                                        WHERE id = CAST(:id AS uuid)
+                                        """
+                                    ),
+                                    {"id": row["aggregate_id"]},
+                                )
+                            ).mappings().first()
+                            tkey = (meta or {}).get("table_key") or ""
+                            if tkey.startswith("tk_"):
+                                from app.jobs.tk_feishu_sync import run_feishu_job
+
+                                stats = await run_feishu_job(db_job, row["aggregate_id"])
+                            elif tkey.startswith("amz_"):
+                                from app.jobs.amz_feishu_sync import run_feishu_job
+
+                                stats = await run_feishu_job(db_job, row["aggregate_id"])
+                            elif tkey == "tasks":
+                                # 单任务走 feishu.sync；全表 tasks job 尚未实现 bulk runner
+                                await db_job.execute(
+                                    text(
+                                        """
+                                        UPDATE sync_feishu_job
+                                        SET status = 'success',
+                                            finished_at = now(),
+                                            error_message = NULL,
+                                            payload = payload || CAST(:stats AS jsonb)
+                                        WHERE id = CAST(:id AS uuid)
+                                        """
+                                    ),
+                                    {
+                                        "id": row["aggregate_id"],
+                                        "stats": json.dumps(
+                                            {
+                                                "result": {
+                                                    "status": "skipped",
+                                                    "reason": "tasks bulk export not implemented; use feishu.sync per task",
+                                                }
+                                            },
+                                            ensure_ascii=False,
+                                        ),
+                                    },
+                                )
+                                await db_job.commit()
+                                stats = {
+                                    "status": "skipped",
+                                    "reason": "tasks bulk export not implemented",
+                                }
+                            else:
+                                await db_job.execute(
+                                    text(
+                                        """
+                                        UPDATE sync_feishu_job
+                                        SET status = 'failed',
+                                            finished_at = now(),
+                                            error_message = :err
+                                        WHERE id = CAST(:id AS uuid)
+                                        """
+                                    ),
+                                    {
+                                        "id": row["aggregate_id"],
+                                        "err": f"unsupported table_key: {tkey}"[:2000],
+                                    },
+                                )
+                                await db_job.commit()
+                                raise ValueError(f"unsupported table_key: {tkey}")
+
+                            logger.info(
+                                "feishu.job %s (%s) done: %s",
+                                row["aggregate_id"],
+                                tkey,
+                                stats,
+                            )
+                async with SessionLocal() as db2:
+                    await db2.execute(
+                        text(
+                            """
+                            UPDATE outbox_event
+                            SET status = 'done', processed_at = now()
+                            WHERE id = :id
+                            """
+                        ),
+                        {"id": row["id"]},
+                    )
+                    await db2.commit()
+                handled += 1
+            except Exception:
+                logger.exception("outbox %s failed", row["id"])
+                async with SessionLocal() as db2:
+                    await db2.execute(
+                        text(
+                            """
+                            UPDATE outbox_event
+                            SET status = 'failed',
+                                available_at = now() + make_interval(secs => LEAST(300, attempts * 15))
+                            WHERE id = :id
+                            """
+                        ),
+                        {"id": row["id"]},
+                    )
+                    await db2.commit()
+    return handled
+
+
+async def main_loop() -> None:
+    logger.info("qingquan worker started at %s", datetime.now(timezone.utc).isoformat())
+    while True:
+        n = await drain_outbox_once()
+        if n == 0:
+            await asyncio.sleep(3)
+        else:
+            await asyncio.sleep(0.5)
+
+
+if __name__ == "__main__":
+    asyncio.run(main_loop())

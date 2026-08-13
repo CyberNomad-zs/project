@@ -49,7 +49,7 @@ try {
       Write-Host ("NOTE: no config.{0} - enter_center CTA path still required." -f $u)
     }
   }
-  Write-Host "NOTE: affiliate daily does NOT apply opsExcludeStoreIds (includes Pop/EU by design)."
+  Write-Host "NOTE: affiliate daily runs all selected TikTok stores (no Pop/EU special exclude)."
 } catch {
   Write-Host ("WARN: config self-check failed: {0}" -f $_)
 }

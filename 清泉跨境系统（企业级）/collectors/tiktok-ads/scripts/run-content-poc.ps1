@@ -309,7 +309,7 @@ if ($cfg.filter) {
   }
 }
 
-# 与 shop-modules 相同：欧盟 Pop 等 opsExclude
+# 与 shop-modules 相同：读取 opsExclude*（配置已清空，三店全跑）
 if ($cfg.modules) {
   $oex = @()
   if ($cfg.modules.opsExcludeStoreIds) { $oex += @($cfg.modules.opsExcludeStoreIds | ForEach-Object { [string]$_ }) }

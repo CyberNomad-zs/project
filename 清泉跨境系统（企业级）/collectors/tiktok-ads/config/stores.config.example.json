@@ -34,7 +34,8 @@
                                        ],
                    "excludeStoreIds":  [
 
-                                       ]
+                                       ],
+                   "_note":  "三店全跑（Deal / SHOP INOUT / Gardena-Pop）；不特殊排除欧盟 Pop。Nookora 等非目标店可在 excludeStoreIds 维护。"
                },
     "_filter_note":  "excludeStoreIds 示例：Nookora Home 核验未完成时填 \"27841084722470\"，核验通过后删掉。",
     "adsUrl":  {
@@ -162,19 +163,20 @@
                     "violation":  true,
                     "reviews":  true,
                     "opsExcludeStoreIds":  [
-                                               "27758103898326"
+
                                            ],
                     "opsExcludePlatformContains":  [
-                                                       "欧盟"
+
                                                    ],
                     "ordersExcludeStoreIds":  [
-                                                  "27758103898326"
+
                                               ],
                     "ordersExcludePlatformContains":  [
-                                                          "欧盟"
+
                                                       ],
-                    "_ops_exclude_note":  "欧盟 Pop：orders/products/shop-modules 共用 opsExclude*（兼容 ordersExclude*）；广告 dual 不读此列表，仍可采 Pop。不要把 Pop 放进 filter.excludeStoreIds，否则广告也会被排除。",
-                    "_note":  "ads→run-multi-store；orders/products/shop-modules→日更脚本。全店=includeStoreIds 空 + requireIp。"
+                    "_ops_exclude_note":  "opsExclude* 已清空：体验/健康/订单/商品等与广告一样三店全跑，不特殊对待 Pop。",
+                    "_note":  "三店全跑；opsExclude/ordersExclude 为空。",
+                    "_orders_note":  "订单模块与全店一致，三店全跑，不特殊排除 Pop。"
                 },
     "storeNameMap":  {
                          "Tiktok_Shop2":  "Deal to deal",

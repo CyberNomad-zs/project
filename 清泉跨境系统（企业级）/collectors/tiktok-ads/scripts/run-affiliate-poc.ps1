@@ -2,7 +2,7 @@
 # 默认只写 logs/affiliate-*-debug-*.json；P3.1 schema+ingest 已就绪，仍默认 -SkipIngest。
 # 显式 -SkipIngest:$false 时 performance 模块上报：
 #   tiktok_affiliate_daily（店级 KPI）+ tiktok_affiliate_creator（达人行，creator_id=handle）
-# 本轮含 Pop（欧盟），**不**应用 opsExcludeStoreIds。
+# 全店策略：三店含 Pop（欧盟），不应用 opsExclude 特殊排除。
 #
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\run-affiliate-poc.ps1
@@ -293,7 +293,7 @@ if (-not [string]::IsNullOrWhiteSpace($StoreIds)) {
 
 Write-Step '===== affiliate-poc multi-store START (P3.0 gate) ====='
 Write-Step ("config={0} modules={1} SkipIngest={2}" -f $ConfigPath, ($modList -join ','), [bool]$SkipIngest)
-Write-Step 'NOTE: POC does NOT create PG fact tables. Debug JSON only. opsExclude is NOT applied (Pop included).'
+Write-Step 'NOTE: POC does NOT create PG fact tables. Debug JSON only. All TikTok stores including Pop.'
 Initialize-ZiniaoCli
 $listOut = Invoke-Ziniao @('store', 'list')
 $storesObj = $listOut | ConvertFrom-Json
@@ -359,7 +359,7 @@ $incSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringCompar
 foreach ($id in $inc) { [void]$incSet.Add([string]$id) }
 $selected = @($selected | Where-Object { $incSet.Contains([string]$_.storeId) })
 
-# 故意不应用 opsExclude* —— P3 POC 要含欧盟 Pop
+# 全店策略：不应用 opsExclude* 特殊排除
 
 Write-Step ("stores selected: {0}" -f $selected.Count)
 foreach ($s in $selected) { Write-Step ("  - {0} | {1} | {2}" -f $s.storeId, $s.storeName, $s.platform) }

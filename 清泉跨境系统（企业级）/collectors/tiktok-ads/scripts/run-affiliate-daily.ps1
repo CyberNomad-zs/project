@@ -12,7 +12,7 @@
 # 安装计划任务（可选，业务批准后）:
 #   powershell -ExecutionPolicy Bypass -File .\scripts\install-affiliate-daily-task.ps1
 #
-# 注意：run-affiliate-poc **不**应用 opsExcludeStoreIds（含 Pop/EU）；与 shop-modules 排除策略不同。
+# 注意：全店策略 — 不特殊排除 Pop/EU；与 shop-modules 一致三店全跑。
 
 param(
   [string]$ConfigPath = "",

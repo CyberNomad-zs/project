@@ -27,11 +27,12 @@
                                    ],
                    "requireIp":  true,
                    "includeStoreIds":  [
-                                           "27758103898326"
+
                                        ],
                    "excludeStoreIds":  [
 
-                                       ]
+                                       ],
+                   "_note":  "三店全跑（Deal / SHOP INOUT / Gardena-Pop）；不特殊排除欧盟 Pop。Nookora 等非目标店可在 excludeStoreIds 维护。"
                },
     "adsUrl":  {
                    "default":  "https://seller-uk.tiktok.com/ads-creation/dashboard?shop_region=GB",
@@ -49,7 +50,21 @@
                  },
     "modules":  {
                     "ads":  true,
-                    "orders":  true
+                    "orders":  true,
+                    "opsExcludeStoreIds":  [
+
+                                           ],
+                    "opsExcludePlatformContains":  [
+
+                                                   ],
+                    "ordersExcludeStoreIds":  [
+
+                                              ],
+                    "ordersExcludePlatformContains":  [
+
+                                                      ],
+                    "_orders_note":  "订单模块与全店一致，三店全跑，不特殊排除 Pop。",
+                    "_ops_exclude_note":  "opsExclude* 已清空：体验/健康/订单/商品等与广告一样三店全跑，不特殊对待 Pop。"
                 },
     "storeNameMap":  {
                          "Tiktok_Shop2":  "Deal to deal",

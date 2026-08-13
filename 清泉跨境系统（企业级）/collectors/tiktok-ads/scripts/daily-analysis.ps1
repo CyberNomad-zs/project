@@ -23,7 +23,10 @@ function Build-DailyAnalysis {
     [int]$TopN = 5
   )
 
-  $rows = @($CampaignRows | Where-Object { $_ -and $_.campaign -and ($_.campaign -notmatch '汇总|分析|合计') })
+  # 只排除系统汇总行前缀；勿用裸词「分析」——真实系列名常含「数据分析 修改 优化」
+  $rows = @($CampaignRows | Where-Object {
+    $_ -and $_.campaign -and ([string]$_.campaign -notmatch '^\u3010(全店汇总|店铺汇总|日报分析)')
+  })
   $byStore = @{}
   foreach ($r in $rows) {
     $key = [string]$r.store

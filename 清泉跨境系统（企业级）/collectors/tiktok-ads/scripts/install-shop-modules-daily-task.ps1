@@ -1,4 +1,4 @@
-﻿# Install / update Windows Scheduled Task: daily shop-modules (KPI/health/finance)
+# Install / update Windows Scheduled Task: daily shop-modules (KPI/health/experience/finance/violation/reviews/creator_health)
 # Full-store via main config stores.config.json (same filter as ads).
 # Run on the Ziniao Windows collector PC.
 #
@@ -90,7 +90,7 @@ Write-Host ("  Name    : {0}" -f $TaskName)
 Write-Host ("  When    : every day {0} (local time)" -f $st)
 Write-Host ("  Run     : {0}" -f $wrapper)
 Write-Host ("  Config  : {0}" -f $mainConfig)
-Write-Host "  Modules : shop_daily, health_daily, finance_daily -> Qingquan Ingest only"
+Write-Host "  Modules : shop_daily, health_daily, experience_daily, finance_daily, violation, reviews, creator_health -> Qingquan Ingest only"
 Write-Host ""
 Write-Host "Prerequisites at run time:"
 Write-Host "  1) Windows user logged on (desktop session for Ziniao)"

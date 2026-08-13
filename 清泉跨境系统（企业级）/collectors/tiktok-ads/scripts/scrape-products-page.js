@@ -38,8 +38,27 @@
   }
   function extractProductId(text) {
     var s = cleanText(text);
-    var m = s.match(/ID\s*[:：]\s*(\d{10,22})/i) || s.match(/\b(17\d{15,20})\b/) || s.match(/\b(\d{15,22})\b/);
-    return m ? m[1] : '';
+    // 优先 ID: 标签与 17… 商品 ID；避免把订单号 57693… 当商品 ID
+    var m = s.match(/ID\s*[:：]\s*(\d{10,22})/i) || s.match(/\b(17\d{15,20})\b/);
+    if (m) return m[1];
+    // 裸长数字：仅当同段有可读英文/中文标题且非订单时间串时才接受
+    if (isOrderLikeProductText(s)) return '';
+    var bare = s.match(/\b(\d{15,22})\b/);
+    if (!bare) return '';
+    var hasTitle = /[A-Za-z]{4,}|[\u4e00-\u9fff]{2,}/.test(s.replace(bare[1], ' '));
+    return hasTitle ? bare[1] : '';
+  }
+  function isOrderLikeProductText(text) {
+    var s = cleanText(text);
+    if (!s) return false;
+    if (/件商品/.test(s)) return true;
+    if (/星期[一二三四五六日天]/.test(s)) return true;
+    if (/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i.test(s)) return true;
+    if (/\b(segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)\b/i.test(s)) return true;
+    // 纯「长数字 + 可选时间」
+    if (/^\d{14,22}(\s+\d{1,2}:\d{2}(:\d{2})?)?$/.test(s)) return true;
+    if (/^\d{14,22}.{0,12}\d{1,2}:\d{2}/.test(s) && !/[A-Za-z]{4,}/.test(s)) return true;
+    return false;
   }
   function sanitizeSellerSku(raw) {
     var sku = cleanText(raw);
@@ -103,13 +122,19 @@
   }
   function extractProductName(text) {
     var s = cleanText(text);
+    if (isOrderLikeProductText(s)) return '';
     if (isSkuExpandNoise(s) && !extractProductId(s)) return '';
     s = s.replace(/ID\s*[:：]\s*\d{10,22}/ig, ' ');
     s = s.replace(/(?:商家\s*)?SKU\s*[:：]\s*\S+/ig, ' ');
     // 去掉展开按钮尾巴
     s = s.replace(/\d+\s*个\s*SKU\s*展开?/gi, ' ');
     s = s.replace(/SKU\s*展开/gi, ' ');
-    return s.replace(/\s+/g, ' ').trim();
+    // 去掉状态旁粘连的星期/时间（订单列表特征）
+    s = s.replace(/星期[一二三四五六日天]\s*\d{1,2}:\d{2}(:\d{2})?/g, ' ');
+    s = s.replace(/\b\d{14,22}\b/g, ' ');
+    s = s.replace(/\s+/g, ' ').trim();
+    if (isOrderLikeProductText(s)) return '';
+    return s;
   }
   var HEADER_ALIASES = {
     product: ['商品', '商品名称', '产品名称', 'product', 'product name', 'title'],
@@ -204,6 +229,8 @@
       if (!sellerSkus.length) sellerSkus = extractAllSellerSkus(rowBlob);
       var sellerSku = sellerSkus.length ? sellerSkus[0] : extractSellerSku(productCell);
       var productName = extractProductName(productCell);
+      // 订单行误入（订单号+时间 / N 件商品）
+      if (isOrderLikeProductText(productCell) || isOrderLikeProductText(productName) || isOrderLikeProductText(rowBlob)) continue;
       // 整行都是展开噪声且无真实 ID → 丢弃
       if (!productId && (isSkuExpandNoise(productCell) || isSkuExpandNoise(productName) || isSkuExpandNoise(rowBlob))) continue;
       if (!productId) {
@@ -213,6 +240,7 @@
       if (!productId || seen[productId]) continue;
       // 跳过展开行 / 表头噪声（含 name:N个SKU展开）
       if (isSkuExpandNoise(productId) || isSkuExpandNoise(productName)) continue;
+      if (isOrderLikeProductText(productId + ' ' + productName)) continue;
       if (/SKU展开|展开全部|批量操作|\d+\s*个\s*SKU/.test(productId + ' ' + productName + ' ' + productCell)) continue;
       if (/^name:/.test(productId) && /SKU|展开|expand/i.test(productId)) continue;
       // 无真实平台 ID 且名称仍像 UI → 丢弃

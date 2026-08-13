@@ -1583,11 +1583,46 @@ async def _process_tiktok_order_lines(
 _SKU_EXPAND_NOISE_RE = re.compile(
     r"(?i)(\d+\s*个\s*SKU|SKU\s*展开|展开全部|展开\s*SKU|expand\s+\d+\s*sku|批量操作)"
 )
+# 订单列表误入商品：名称像「57693…星期五 22:26:25」、状态「1 件商品」
+_ORDERLIKE_PRODUCT_RE = re.compile(
+    r"(?i)("
+    r"件商品|"
+    r"星期[一二三四五六日天]|"
+    r"segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo|"
+    r"monday|tuesday|wednesday|thursday|friday|saturday|sunday"
+    r")"
+)
+_ORDERLIKE_NAME_ONLY_RE = re.compile(
+    r"^\d{14,22}(\s|$)|^\d{14,22}.{0,8}\d{1,2}:\d{2}"
+)
 
 
 def _is_sku_expand_noise(*parts: str | None) -> bool:
     blob = " ".join(str(p or "") for p in parts)
     return bool(blob and _SKU_EXPAND_NOISE_RE.search(blob))
+
+
+def _is_orderlike_product_row(
+    *,
+    product_id: str | None,
+    product_name: str | None,
+    status: str | None = None,
+) -> bool:
+    """拒收订单行误报为商品（名称=订单号+时间 / 状态含「件商品」）。"""
+    name = (product_name or "").strip()
+    st = (status or "").strip()
+    pid = (product_id or "").strip()
+    if st and ("件商品" in st or _ORDERLIKE_PRODUCT_RE.search(st)):
+        return True
+    if name and ("件商品" in name or _ORDERLIKE_NAME_ONLY_RE.search(name)):
+        return True
+    if name and _ORDERLIKE_PRODUCT_RE.search(name) and re.match(r"^\d{14,22}", name):
+        return True
+    # 纯长数字 ID 且无可读品名（订单号特征；真实商品 ID 常 17 开头且带英文标题）
+    if pid and re.fullmatch(r"\d{15,22}", pid) and not pid.startswith("17"):
+        if not name or name == pid or _ORDERLIKE_NAME_ONLY_RE.search(name or ""):
+            return True
+    return False
 
 
 async def _process_tiktok_products(
@@ -1602,6 +1637,7 @@ async def _process_tiktok_products(
     product_id = str(p.get("product_id") or p.get("productId") or "").strip()
     seller_sku = str(p.get("seller_sku") or p.get("sellerSku") or "").strip() or None
     product_name = str(p.get("product_name") or p.get("productName") or "").strip() or None
+    status_raw = str(p.get("status") or "").strip() or None
     seller_skus_raw = p.get("seller_skus") or p.get("sellerSkus") or []
     seller_skus: list[str] = []
     if isinstance(seller_skus_raw, str):
@@ -1618,6 +1654,10 @@ async def _process_tiktok_products(
         raise ValueError(f"tiktok_products 拒绝 SKU展开 噪声行: {product_id or product_name}")
     if product_id.startswith("name:") and re.search(r"(?i)SKU|展开|expand", product_id):
         raise ValueError(f"tiktok_products 拒绝 name: 噪声 product_id: {product_id}")
+    if _is_orderlike_product_row(product_id=product_id, product_name=product_name, status=status_raw):
+        raise ValueError(
+            f"tiktok_products 拒绝订单误入噪声: id={product_id} name={product_name!r} status={status_raw!r}"
+        )
 
     if not product_id:
         if seller_sku and not _is_sku_expand_noise(seller_sku):
@@ -1687,7 +1727,7 @@ async def _process_tiktok_products(
             "product_id": product_id,
             "product_name": product_name,
             "seller_sku": seller_sku,
-            "status": str(p.get("status") or "").strip() or None,
+            "status": status_raw,
             "stock_qty": _opt_float(p.get("stock_qty") if p.get("stock_qty") is not None else p.get("stockQty")),
             "price": _opt_float(p.get("price")),
             "currency": p.get("currency") or "GBP",

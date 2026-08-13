@@ -48,6 +48,23 @@ def test_classify_skip_null_and_deleted():
         )
         == []
     )
+
+
+def test_classify_skip_orderlike_product_name():
+    """订单号+时间 误入商品表时不应再生成断货任务。"""
+    assert (
+        classify_product_row(
+            {
+                "product_id": "576931007608887771",
+                "product_name": "576931007608887771星期五 22:26:25",
+                "stock_qty": 0,
+                "status": "1 件商品",
+            },
+            stockout_qty=0,
+            low_qty=10,
+        )
+        == []
+    )
     assert (
         classify_product_row(
             {"product_id": "p5", "stock_qty": 0, "status": "deleted"},

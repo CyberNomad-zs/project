@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal
@@ -28,6 +29,25 @@ _SKIP_STATUS = {
     "draft",
     "草稿",
 }
+
+# 订单列表误入商品表：名称「订单号+星期+时间」、状态「N 件商品」
+_ORDERLIKE_NAME_RE = re.compile(
+    r"(?i)(件商品|星期[一二三四五六日天]|^\d{14,22}(\s|$)|^\d{14,22}.{0,12}\d{1,2}:\d{2})"
+)
+
+
+def _is_orderlike_product(row: dict[str, Any]) -> bool:
+    name = str(row.get("product_name") or "").strip()
+    status = str(row.get("status") or "").strip()
+    pid = str(row.get("product_id") or "").strip()
+    if status and "件商品" in status:
+        return True
+    if name and _ORDERLIKE_NAME_RE.search(name):
+        return True
+    if pid and re.fullmatch(r"\d{15,22}", pid) and not pid.startswith("17"):
+        if not name or name == pid or _ORDERLIKE_NAME_RE.search(name):
+            return True
+    return False
 
 
 def _f(v: Any) -> float | None:
@@ -53,6 +73,8 @@ def classify_product_row(
 
     status = str(row.get("status") or "").strip().lower()
     if status in _SKIP_STATUS:
+        return []
+    if _is_orderlike_product(row):
         return []
 
     name = str(row.get("product_name") or row.get("product_id") or "").strip()

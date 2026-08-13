@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -458,6 +459,19 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     boss = row.get("needs_boss_decision")
     if boss is None:
         boss = str(row.get("priority") or "").upper() == "P0"
+    # 产品列：过滤「订单号+星期时间」噪声，避免飞书展示错乱
+    product_name = str(row.get("product_name") or "").strip()
+    if obj_type == "content":
+        # 内容域对象是视频，标题已在摘要/说明，产品列置空
+        product_name = ""
+    elif product_name and (
+        "件商品" in product_name
+        or re.search(r"星期[一二三四五六日天]", product_name)
+        or re.match(r"^\d{14,22}(\s|$)", product_name)
+        or re.match(r"^\d{14,22}.{0,12}\d{1,2}:\d{2}", product_name)
+    ):
+        product_name = ""
+    product_name_cn = str(row.get("product_name_cn") or "").strip()
     return _omit_none(
         {
             # —— 与 AMZ 同名列（运营对照）——
@@ -466,8 +480,8 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
             "日期": _feishu_date(row.get("biz_date")),
             "店铺": row.get("shop_name") or "",
             "ASIN": product_id,  # 兼容 AMZ 表头；值=TK product_id 或 content_id
-            "产品": row.get("product_name") or "",
-            "中文名称": row.get("product_name_cn") or "",
+            "产品": product_name,
+            "中文名称": product_name_cn,
             "异常类型": type_cn,
             "等级": _tk_level_from_row(row),
             "指标摘要": metric or summary,

@@ -461,6 +461,11 @@ async def create_anomaly_task(
                     metric_snapshot = COALESCE(:metric, metric_snapshot),
                     priority = :priority,
                     level_code = :level_code,
+                    -- 描述列只回填不覆盖：新值为空时保留旧值
+                    seller_sku = COALESCE(NULLIF(btrim(:seller_sku), ''), seller_sku),
+                    product_name = COALESCE(NULLIF(btrim(:product_name), ''), product_name),
+                    product_name_cn = COALESCE(NULLIF(btrim(:product_name_cn), ''), product_name_cn),
+                    shop_name = COALESCE(NULLIF(btrim(:shop_name), ''), shop_name),
                     current_value = COALESCE(:current_value, current_value),
                     current_value_label = COALESCE(:current_value_label, current_value_label),
                     compare_value = COALESCE(:compare_value, compare_value),
@@ -471,6 +476,7 @@ async def create_anomaly_task(
                     needs_boss_decision = :needs_boss_decision,
                     description = COALESCE(:description, description),
                     next_action = COALESCE(:next_action, next_action),
+                    collected_at = now(),
                     updated_at = now()
                 WHERE id = :id
                 """
@@ -482,6 +488,10 @@ async def create_anomaly_task(
                 "metric": metric_snapshot,
                 "priority": pri,
                 "level_code": lvl,
+                "seller_sku": seller_sku or "",
+                "product_name": product_name or "",
+                "product_name_cn": product_name_cn or "",
+                "shop_name": shop_nm or "",
                 "current_value": current_value,
                 "current_value_label": (current_value_label or "").strip() or None,
                 "compare_value": compare_value,
@@ -536,7 +546,7 @@ async def create_anomaly_task(
                 streak_count, needs_boss_decision, description,
                 next_action, reviewer_name,
                 center_task_id, dedupe_key,
-                source_url, row_status, created_at, updated_at
+                source_url, row_status, collected_at, created_at, updated_at
             ) VALUES (
                 :id, :task_key, :biz_date, CAST(:shop_id AS uuid), :shop_external_id, :shop_name,
                 :product_id, :seller_sku, :product_name, :product_name_cn,
@@ -549,7 +559,7 @@ async def create_anomaly_task(
                 :streak_count, :needs_boss_decision, :description,
                 :next_action, :reviewer_name,
                 CAST(:center_task_id AS uuid), :dedupe_key,
-                :source_url, 'success', now(), now()
+                :source_url, 'success', now(), now(), now()
             )
             """
         ),

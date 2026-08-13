@@ -472,7 +472,7 @@ async def evaluate_content_anomalies(
                     object_ref=object_ref,
                     object_type="content",
                     product_id=row.get("product_id"),
-                    product_name=row.get("content_title"),
+                    product_name="",  # 内容域：对象是视频，产品列置空（标题已在 summary/说明）
                     priority=hit["priority"],
                     progress_note=hit["detail"],
                     metric_snapshot=hit["metric_snapshot"],

@@ -440,13 +440,15 @@ def load_store_table_mapping(path_str: str) -> dict[str, Any]:
 
     返回:
       {
-        "by_slug": { slug: {"name", "aliases": set[str], "tables": {table_key: table_id}} },
+        "by_slug": { slug: {"name", "aliases": set[str], "external_ids": set[str], "tables": {...}} },
         "alias_to_slug": { lower_alias: slug },
+        "eid_to_slug": { external_shop_id: slug },
       }
     """
     data = json.loads(Path(path_str).read_text(encoding="utf-8"))
     by_slug: dict[str, dict[str, Any]] = {}
     alias_to_slug: dict[str, str] = {}
+    eid_to_slug: dict[str, str] = {}
     tables_root = data.get("tables") or {}
     for st in data.get("stores") or []:
         name = (st.get("name") or "").strip()
@@ -455,15 +457,19 @@ def load_store_table_mapping(path_str: str) -> dict[str, Any]:
             continue
         aliases = {str(a).strip() for a in (st.get("aliases") or []) if str(a).strip()}
         aliases.add(name)
+        eids = {str(x).strip() for x in (st.get("external_ids") or []) if str(x).strip()}
         store_tables = tables_root.get(name) or {}
         by_slug[slug] = {
             "name": name,
             "aliases": aliases,
+            "external_ids": eids,
             "tables": {k: str(v).strip() for k, v in store_tables.items() if v},
         }
         for a in aliases:
             alias_to_slug[a.casefold()] = slug
-    return {"by_slug": by_slug, "alias_to_slug": alias_to_slug}
+        for eid in eids:
+            eid_to_slug[eid] = slug
+    return {"by_slug": by_slug, "alias_to_slug": alias_to_slug, "eid_to_slug": eid_to_slug}
 
 
 def get_store_table_mapping(settings: Settings | None = None) -> dict[str, Any] | None:
@@ -486,11 +492,59 @@ def match_store_slug(shop_name: str | None, mapping: dict[str, Any]) -> str | No
     return (mapping.get("alias_to_slug") or {}).get(key)
 
 
+def match_store_slug_from_row(row: dict[str, Any] | Any, mapping: dict[str, Any]) -> str | None:
+    """分店 fan-out：优先 shop_external_id，避免 shop_name 主数据漂移（如 ID=SHOP INOUT 却名=Gardena）。"""
+    if row is None:
+        return None
+    try:
+        r = dict(row)
+    except Exception:
+        r = row if isinstance(row, dict) else {}
+    eid = str(r.get("shop_external_id") or "").strip()
+    if eid:
+        slug = (mapping.get("eid_to_slug") or {}).get(eid)
+        if slug:
+            return slug
+    return match_store_slug(r.get("shop_name"), mapping)
+
+
 def map_key_for(table_key: str, store_slug: str | None = None) -> str:
     """sync_feishu_map.table_key：总表用原 key，分店表用 table_key::slug。"""
     if store_slug:
         return f"{table_key}::{store_slug}"
     return table_key
+
+
+async def _list_table_field_names(token: str, app_token: str, table_id: str) -> set[str]:
+    """飞书表现存字段名；用于写入前过滤，避免 FieldNameNotFound。"""
+    names: set[str] = set()
+    page_token: str | None = None
+    import httpx
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        while True:
+            url = f"https://open.feishu.cn/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}/fields?page_size=100"
+            if page_token:
+                url += f"&page_token={page_token}"
+            resp = await client.get(url, headers={"Authorization": f"Bearer {token}"})
+            data = resp.json()
+            if data.get("code") != 0:
+                logger.warning("list fields failed table=%s: %s", table_id, data.get("msg"))
+                break
+            for it in (data.get("data") or {}).get("items") or []:
+                n = (it.get("field_name") or "").strip()
+                if n:
+                    names.add(n)
+            if not (data.get("data") or {}).get("has_more"):
+                break
+            page_token = (data.get("data") or {}).get("page_token")
+    return names
+
+
+def _filter_fields_to_table(fields: dict[str, Any], allowed: set[str] | None) -> dict[str, Any]:
+    if not allowed:
+        return fields
+    return {k: v for k, v in fields.items() if k in allowed}
 
 
 async def _upsert_rows_to_feishu(
@@ -506,10 +560,13 @@ async def _upsert_rows_to_feishu(
 ) -> dict[str, Any]:
     created = updated = unchanged = failed = 0
     errors: list[str] = []
+    allowed_fields = await _list_table_field_names(token, app_token, table_id)
+    if allowed_fields:
+        logger.info("table %s writable fields=%s", table_id, len(allowed_fields))
 
     for row in rows:
         local_id = row["id"]
-        fields = mapper(dict(row))
+        fields = _filter_fields_to_table(mapper(dict(row)), allowed_fields or None)
         chash = bitable.content_hash(fields)
         try:
             mapped = (
@@ -696,7 +753,7 @@ async def sync_table(
             for t in store_targets:
                 n = 0
                 for r in rows:
-                    if match_store_slug(r.get("shop_name"), store_mapping) == t["slug"]:
+                    if match_store_slug_from_row(r, store_mapping) == t["slug"]:
                         n += 1
                 by_store[t["slug"]] = n
         return {
@@ -739,7 +796,7 @@ async def sync_table(
             filtered = [
                 r
                 for r in rows
-                if match_store_slug(r.get("shop_name"), store_mapping) == t["slug"]
+                if match_store_slug_from_row(r, store_mapping) == t["slug"]
             ]
             st = await _upsert_rows_to_feishu(
                 db,

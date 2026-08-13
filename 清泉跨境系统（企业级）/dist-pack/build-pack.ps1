@@ -1,4 +1,4 @@
-# Build TK collector zip WITH secrets (stores.config.json + .env)
+﻿# Build TK collector zip WITH secrets (stores.config.json + .env)
 $ErrorActionPreference = 'Stop'
 $stamp = Get-Date -Format 'yyyyMMdd-HHmm'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -121,13 +121,16 @@ if (Test-Path -LiteralPath $zipPath) {
   cmd.exe /c "del /f /q `"$zipPath`""
 }
 
-Push-Location $stage
+# 用 .NET ZipFile 打包（tar 在此机脚本上下文静默失败；GNU tar 会把 E:\ 当远程主机）
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$zip = [System.IO.Compression.ZipFile]::Open($zipPath, 'Create')
 try {
-  # 必须用 Windows 自带 bsdtar；Git Bash 的 GNU tar 会把 E:\ 当远程主机
-  & "$env:SystemRoot\System32\tar.exe" -a -cf $zipPath *
-  if ($LASTEXITCODE -ne 0) { throw "tar failed: $LASTEXITCODE" }
+  Get-ChildItem -LiteralPath $stage -Recurse -File -Force | ForEach-Object {
+    $rel = $_.FullName.Substring($stage.Length + 1).Replace('\', '/')
+    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $rel) | Out-Null
+  }
 } finally {
-  Pop-Location
+  $zip.Dispose()
 }
 
 if (-not (Test-Path -LiteralPath $zipPath)) { throw "zip not created" }
@@ -136,7 +139,12 @@ $sizeMb = (Get-Item -LiteralPath $zipPath).Length / 1MB
 Write-Host ("ZIP sizeMB={0:N2}" -f $sizeMb)
 Write-Host "ZIP=$zipPath"
 Write-Host '--- verify ---'
-& "$env:SystemRoot\System32\tar.exe" -tf $zipPath | Select-String -Pattern 'stores\.config\.json$|\.env$|gui\.py$|feishu-tk-store|tk-p0-post|tblRI8j|LzTAbQ|README'
+$z = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+try {
+  $z.Entries | ForEach-Object { $_.FullName } | Select-String -Pattern 'stores\.config\.json$|\.env$|gui\.py$|feishu-tk-store|tk-p0-post|README'
+} finally {
+  $z.Dispose()
+}
 
 cmd.exe /c "rd /s /q `"$stage`""
 Write-Host 'DONE'

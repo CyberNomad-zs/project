@@ -1,0 +1,331 @@
+﻿[
+    {
+        "id":  "fldAcUeerq",
+        "name":  "日期",
+        "type":  5,
+        "primary":  true,
+        "options":  ""
+    },
+    {
+        "id":  "fldEf0Z5El",
+        "name":  "主键",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldAg3AU1U",
+        "name":  "异常编号",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldwl8rO0i",
+        "name":  "店铺",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldOkrYz5E",
+        "name":  "店铺ID",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldZkyuKVo",
+        "name":  "商品ID",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "flde0ZgnbJ",
+        "name":  "SKU",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld85CgISG",
+        "name":  "产品",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld7RPFjHX",
+        "name":  "中文名称",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldH1FH2o1",
+        "name":  "对象",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldBVfqgLL",
+        "name":  "对象类型",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldI4iUpOz",
+        "name":  "异常类型",
+        "type":  3,
+        "primary":  false,
+        "options":  "optHHmlpCM=广告ROI过低|optxFhVaqk=广告空耗|optvY0XAhy=广告预算将尽|optb6rTLv2=广告下单成本高|opt8FGHgpz=广告计划异常|optkH24Ft1=商品断货|optjUzH5Vw=商品库存不足|opthchf5EY=商品库存积压|optmazSoXT=商品销量骤降|optkDise72=商品持续零销|optYFxXVbD=商品下架异常|optt6ZcgDj=商品价格异常|optzKOYUKV=店铺GMV骤降|opt4AEF8gx=店铺订单骤降|optToaz00a=店铺退款异常|optzvGFRIS=店铺健康分低|opt7uRcQUL=延迟发货率高|optGAENLaD=负面反馈率高|optWK6h40r=待结算积压|optsy4hfHH=财务退款偏高|optbtY2Qtn=其它|optQc6z3Q7=广告CPA过高|optNm3BOgk=视频归因GMV骤降|optnwmaXX8=视频播放/曝光崩|optXWSRVmm=视频有曝无单|opt35BKDo7=店铺体验分下降|optMOwzenH=店铺体验分项变差"
+    },
+    {
+        "id":  "fldeZF0DCd",
+        "name":  "异常码",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldZ1ksXkz",
+        "name":  "优先级",
+        "type":  3,
+        "primary":  false,
+        "options":  "opt9SbGMqk=P0|optdIWpN2T=P1|optPAMV6Q0=P2"
+    },
+    {
+        "id":  "fldttH5o5o",
+        "name":  "摘要",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldZOshq6x",
+        "name":  "指标快照",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldhj1lOqJ",
+        "name":  "状态",
+        "type":  3,
+        "primary":  false,
+        "options":  "optuRePfY9=未处理|optxCXlsEB=处理中|opt9mgWo28=已闭环|optEELeHff=已取消|optL21uWF0=忽略"
+    },
+    {
+        "id":  "fld8Ai4Wb0",
+        "name":  "进度",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "flduxE01jw",
+        "name":  "关联任务ID",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldYngjWaV",
+        "name":  "去重键",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldteV4k6P",
+        "name":  "更新时间",
+        "type":  5,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldi1f2mqt",
+        "name":  "抓取时间",
+        "type":  5,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldJcgtubH",
+        "name":  "本地ID",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldXIY75BV",
+        "name":  "指标摘要",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldB3GmA4O",
+        "name":  "当前值",
+        "type":  2,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldTkK8bQC",
+        "name":  "当前值含义",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldqKgLrSd",
+        "name":  "对比值",
+        "type":  2,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldjy5q19M",
+        "name":  "对比值含义",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld6WBpsTp",
+        "name":  "变化幅度",
+        "type":  2,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldkpWuxaa",
+        "name":  "变化幅度含义",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldxIMFPzZ",
+        "name":  "连续异常次数",
+        "type":  2,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldbscSf5x",
+        "name":  "需要老板决策",
+        "type":  7,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldDVbmLra",
+        "name":  "说明",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldhLoLw3f",
+        "name":  "是否属实",
+        "type":  3,
+        "primary":  false,
+        "options":  "opt2w5mPuG=属实|optmeIliJa=不符"
+    },
+    {
+        "id":  "fldjOSxkto",
+        "name":  "判断依据",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldDqwZVT6",
+        "name":  "审核人",
+        "type":  11,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldTOanR4W",
+        "name":  "负责人",
+        "type":  11,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldrmSgZOe",
+        "name":  "采取动作",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld399d2wX",
+        "name":  "执行日期_系统",
+        "type":  5,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldd6rFZpI",
+        "name":  "动作前数据",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldLEi7Zx7",
+        "name":  "动作后数据",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldm6kz7gu",
+        "name":  "是否有效",
+        "type":  3,
+        "primary":  false,
+        "options":  "optPs0BkA3=有效|optnXeRAtI=无效"
+    },
+    {
+        "id":  "fldtYUslfl",
+        "name":  "需审核事项",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld0YjPTFw",
+        "name":  "复查日期",
+        "type":  5,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "flds9wYHUY",
+        "name":  "下一步动作",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fldjIMC3P5",
+        "name":  "ASIN",
+        "type":  1,
+        "primary":  false,
+        "options":  ""
+    },
+    {
+        "id":  "fld2FBBhEV",
+        "name":  "截止时间",
+        "type":  5,
+        "primary":  false,
+        "options":  ""
+    }
+]

@@ -288,11 +288,59 @@ export function editLink(editBaseUrl, parentIdOrProductId) {
   return `${base}/goods/edit?from=productList&productId=${parentIdOrProductId}`;
 }
 
-function itemBullet(it, editBaseUrl) {
+/** 单条 SKU 展示行（缩进挂在 SKC 下） */
+export function formatSkuSubLine(sku) {
+  if (!sku) return '';
+  const parts = [];
+  if (sku.skuId) parts.push(`SKU ${sku.skuId}`);
+  if (sku.specName) parts.push(String(sku.specName).replace(/\s+/g, ' '));
+  const code = sku.extCode || sku.commoditySku;
+  if (code) parts.push(`货号 ${code}`);
+  if (sku.stockQuantity !== '' && sku.stockQuantity != null) {
+    parts.push(`库存 ${sku.stockQuantity}`);
+  }
+  if (sku.name) {
+    const nm = String(sku.name).replace(/[[\]]/g, '').slice(0, 24);
+    if (nm) parts.push(nm);
+  }
+  if (!parts.length) return '';
+  return `  ◦ ${parts.join(' · ')}`;
+}
+
+/**
+ * SKC 主行 + 可选 SKU 子行
+ * @param {object} it
+ * @param {string} [editBaseUrl]
+ * @returns {string[]}
+ */
+export function itemBulletLines(it, editBaseUrl) {
   const nm = String(it.name || '商品').replace(/[[\]]/g, '').slice(0, 36);
   const pid = it.parentId || it.skcId;
   const st = it.selectStatus ? ` status=${it.selectStatus}` : '';
-  return `• [${nm}](${editLink(editBaseUrl, pid)})  SKC ${it.skcId || '-'}${st}`;
+  const lines = [
+    `• [${nm}](${editLink(editBaseUrl, pid)})  SKC ${it.skcId || '-'}${st}`,
+  ];
+  const skus = Array.isArray(it.skus) ? it.skus : [];
+  if (!skus.length) {
+    // 已尝试补拉但无明细时给一句说明（parentId 缺失则不提）
+    if (it.skusAttempted) {
+      lines.push('  ◦ _未查到 SKU 明细（getChildInfo 空或失败）_');
+    }
+    return lines;
+  }
+  const maxSku = 8;
+  for (const s of skus.slice(0, maxSku)) {
+    const sub = formatSkuSubLine(s);
+    if (sub) lines.push(sub);
+  }
+  if (skus.length > maxSku) {
+    lines.push(`  ◦ _…另有 ${skus.length - maxSku} 个 SKU_`);
+  }
+  return lines;
+}
+
+function itemBullet(it, editBaseUrl) {
+  return itemBulletLines(it, editBaseUrl)[0];
 }
 
 /**
@@ -302,7 +350,7 @@ function itemBullet(it, editBaseUrl) {
  * @param {{ editBaseUrl?: string }} [opts]
  */
 export function formatChangeLines(storeName, events, { editBaseUrl } = {}) {
-  const lines = [`**🏬 ${storeName}**（赛狐 OpenAPI · selectStatus=12）`];
+  const lines = [`**🏬 ${storeName}**（赛狐 OpenAPI · selectStatus=12 · SKU 明细 getChildInfo）`];
   let any = false;
   let fromTo = null;
   let nDelist = 0;
@@ -317,7 +365,9 @@ export function formatChangeLines(storeName, events, { editBaseUrl } = {}) {
         fromTo = { from: ev.from, to: ev.to };
       }
       lines.push(`📉 在售商品**下架** ${ev.items.length} 个（离开 selectStatus=12）：`);
-      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      for (const it of ev.items.slice(0, 40)) {
+        lines.push(...itemBulletLines(it, editBaseUrl));
+      }
       if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
     }
     if (ev.type === 'onshelf' && ev.items?.length) {
@@ -329,7 +379,9 @@ export function formatChangeLines(storeName, events, { editBaseUrl } = {}) {
       lines.push(
         `📈 在售商品**上架** ${ev.items.length} 个（连续两轮 selectStatus=12，已确认）：`,
       );
-      for (const it of ev.items.slice(0, 40)) lines.push(itemBullet(it, editBaseUrl));
+      for (const it of ev.items.slice(0, 40)) {
+        lines.push(...itemBulletLines(it, editBaseUrl));
+      }
       if (ev.items.length > 40) lines.push(`_…另有 ${ev.items.length - 40} 个未列出_`);
     }
   }

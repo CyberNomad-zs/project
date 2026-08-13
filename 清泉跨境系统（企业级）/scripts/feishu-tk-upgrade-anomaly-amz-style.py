@@ -2,7 +2,7 @@
 """补齐 TK「异常任务」飞书列与视图，对齐 AMZ ASIN健康度监控·异常任务。
 
 AMZ 参考: TkW0bXEAAa3Fo3sdKagcL9fTn2b / tblXnUm9VSmyQ2AC
-TK 表: 清泉 Base LzTAbQsThaPOzis2lFvciDMlnyh / 异常任务 tblgDbCXVfdbp0oS
+TK 表: 清泉 Base LzTAbQsThaPOzis2lFvciDMlnyh / 异常任务 tblO1uGlWccuaiZF
 （旧金猫 C1iHbw…/tblstt4… 仅历史参考，勿再写）
 
 幂等：字段/视图按名 skip。不删旧列。
@@ -129,7 +129,7 @@ def main() -> int:
     )
     tid = (
         (env.get("FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK") or "").strip()
-        or "tblgDbCXVfdbp0oS"  # 清泉 Base 异常任务（2026-08-10）
+        or "tblO1uGlWccuaiZF"  # 清泉 Base 异常任务（2026-08-10）
     )
 
     if not all([app_id, app_secret, app_token]):

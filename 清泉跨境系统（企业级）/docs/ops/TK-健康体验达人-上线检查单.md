@@ -19,9 +19,9 @@ docker exec qingquan-db-1 psql -U qingquan -d qingquan -v ON_ERROR_STOP=1 -f /tm
 ## 2. 环境变量（生产 `.env`，勿提交 git）
 
 - [x] `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（已 SET）
-- [ ] `FEISHU_IM_RECEIVE_ID` = 宋敏 open_id（**仍 EMPTY** → 私信通道未通）
-- [x] `FEISHU_BOT_WEBHOOK_TK_HEALTH` 已 SET（群通道可用）
-- [x] `TK_NOTIFY_WEBHOOK=true`、`TK_NOTIFY_IM=true` 已追加
+- [x] **决策变更（2026-08-11）**：**不做 IM 私信**，仅群发 → `TK_NOTIFY_IM=false`
+- [x] `FEISHU_BOT_WEBHOOK_TK_HEALTH` 已 SET（群通道）
+- [x] `TK_NOTIFY_WEBHOOK=true`
 - [x] `FEISHU_BITABLE_APP_TOKEN_TK` 已有
 - [x] `FEISHU_BITABLE_TABLE_TK_EXPERIENCE_DAILY=tbl9CYd8vb4DJaGN`（生产 Base 建表；勿用本机 Base 的 tblSyTlj…）
 

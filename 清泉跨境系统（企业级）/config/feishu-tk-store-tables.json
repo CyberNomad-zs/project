@@ -6,14 +6,21 @@
     {
       "name": "Deal to deal",
       "slug": "deal-to-deal",
+      "external_ids": [
+        "27501502216807"
+      ],
       "aliases": [
         "Deal to deal",
-        "Deal to Deal"
+        "Deal to Deal",
+        "Tiktok_Shop2"
       ]
     },
     {
       "name": "Gardena",
       "slug": "gardena",
+      "external_ids": [
+        "27758103898326"
+      ],
       "aliases": [
         "Gardena",
         "TikTok - Pop",
@@ -24,6 +31,9 @@
     {
       "name": "SHOP INOUT",
       "slug": "shop-inout",
+      "external_ids": [
+        "27328767468273"
+      ],
       "aliases": [
         "SHOP INOUT",
         "Tiktok - KK Seagull",

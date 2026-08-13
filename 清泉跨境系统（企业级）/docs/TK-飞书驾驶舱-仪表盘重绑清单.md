@@ -1,7 +1,7 @@
 # TK 驾驶舱 · 仪表盘组件重绑清单（T1/T2 + 异常任务）
 
 > 日期：2026-08-04  
-> Base：`C1iHbw6TVad6rUsbZnbc2gSDnHg`  
+> Base：`LzTAbQsThaPOzis2lFvciDMlnyh`（清泉组织新 Base）  
 > 现象：仪表盘多处「配置数据发生变更，请重新配置」——表结构/字段曾变更，组件数据源断联。  
 > 整体计划：[TK-整体开发计划](./TK-整体开发计划.md) · P0 验收：[TK-P0验收清单](./TK-P0验收清单.md)
 
@@ -11,15 +11,15 @@
 
 | 表名 | table_id | PG 来源 | 用途 |
 |------|----------|---------|------|
-| **店铺日经营**（T1） | `tblwh7EVeAFPfvuy` | `tk.fact_tiktok_shop_daily`（空时用广告 rollup） | 多店对比、店日 KPI |
-| **广告活动日明细**（T2） | `tblXaQ871ZcrrTPL` | `tk.fact_ads_campaign_daily` | 活动花费/ROI/盈亏 |
-| **异常任务** | `tblstt4IVNJihCd3` | `tk.fact_tk_anomaly_task` | 未闭环异常协作 |
-| **内容日**（T6） | `tbleuAjZFdrkLBu6` | `tk.fact_tiktok_content_daily` | **D3 视频内容** |
-| **达人日**（T7） | `tblsoAKtF05YyyWd` | `tk.fact_tiktok_affiliate_creator_daily` | **D4 联盟达人** ✅ |
+| **店铺日经营**（T1） | `tblrpFX6gWaf7KPX` | `tk.fact_tiktok_shop_daily`（空时用广告 rollup） | 多店对比、店日 KPI |
+| **广告活动日明细**（T2） | `tblgLifLVW91v5Bk` | `tk.fact_ads_campaign_daily` | 活动花费/ROI/盈亏 |
+| **异常任务** | `tblO1uGlWccuaiZF` | `tk.fact_tk_anomaly_task` | 未闭环异常协作 |
+| **内容日**（T6） | `tblgFISW9sJzoZzm` | `tk.fact_tiktok_content_daily` | **D3 视频内容** |
+| **达人日**（T7） | `tbleJkhx0cTtG3Y6` | `tk.fact_tiktok_affiliate_creator_daily` | **D4 联盟达人** ✅ |
 | ~~TK广告日报~~ | `tblmr3ayTmWF3G7J` | 历史/插件直写 | **勿再绑新组件**；展示以 T2 为准 |
 | ~~AI广告智能筛选分析表~~ | `tblYpFKSJyIimUZ3` | — | **已砍（2026-08-06）**；禁止绑任何经营组件；表/页可删 |
 
-**现网页号（2026-08-07）：** D1 多店对比 ✅ · D2 广告投放 ✅ · D3 视频内容 ✅ · D4 联盟达人 ✅  
+**现网页号（2026-08-07）：** D1 多店对比 ✅ · D2 广告投放 ✅ · D3 视频内容 ✅ · D4 联盟达人 ✅ · D5 异常任务台 ✅  
 （旧文档 D4=视频 / D5=达人 **作废**；AI 旧 D3 号段已给视频。）
 
 同步命令（仓库根）：
@@ -96,9 +96,9 @@ powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -Ano
 ## 4. 异常任务表（新建）
 
 - 表名：`异常任务`  
-- table_id：`tblstt4IVNJihCd3`  
-- 打开：[异常任务](https://dcnkj1up67d5.feishu.cn/base/C1iHbw6TVad6rUsbZnbc2gSDnHg?table=tblstt4IVNJihCd3)  
-- `.env`：`FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK=tblstt4IVNJihCd3`  
+- table_id：`tblO1uGlWccuaiZF`  
+- 打开：[异常任务](https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh?table=tblO1uGlWccuaiZF)  
+- `.env`：`FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK=tblO1uGlWccuaiZF`  
 - 2026-08-04 已同步 **19** 条自 PG
 
 建议视图：

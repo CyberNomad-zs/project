@@ -80,3 +80,35 @@ powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -Ano
 - `scripts/feishu-tk-upgrade-anomaly-amz-style.py`  
 - `backend/migrations/015_tk_anomaly_amz_ops_fields.sql`  
 - 字段权威说明：[`TK-异常任务-PG建表说明.md`](./TK-异常任务-PG建表说明.md)  
+
+---
+
+## 7. 热修：SKU/描述列回填 + 抓取时间（2026-08-12）
+
+**问题 1**：飞书「异常任务」SKU 列大量为空。根因：`create_anomaly_task` 的去重更新路径
+（同 dedupe 再命中）只刷指标/优先级，`seller_sku` / `product_name` / `product_name_cn` /
+`shop_name` 一旦首建为空就永久为空；且仅商品域规则传 SKU（店/广告级异常无 SKU 属正常）。
+
+**改动 1**（`backend/app/domain/tk_anomaly.py` UPDATE 分支，热修未走完整 SOP）：
+
+```sql
+seller_sku      = COALESCE(NULLIF(btrim(:seller_sku), ''), seller_sku),
+product_name    = COALESCE(NULLIF(btrim(:product_name), ''), product_name),
+product_name_cn = COALESCE(NULLIF(btrim(:product_name_cn), ''), product_name_cn),
+shop_name       = COALESCE(NULLIF(btrim(:shop_name), ''), shop_name),
+```
+
+语义：**只回填不覆盖**——再命中带新值才补，空串保留旧值。存量空单随规则再命中自动补齐，
+无需回填脚本。
+
+**问题 2**：「抓取时间」列全空。根因：`create_anomaly_task` 的 INSERT 根本没写
+`collected_at`（该列只有 ingest API 路径会填），规则出单的任务永远 NULL；同步与映射
+（`tk_feishu_sync.py` SELECT / `bitable.py:514`）本身没问题。
+
+**改动 2**（同文件）：INSERT 列清单加 `collected_at = now()`；UPDATE 分支加
+`collected_at = now()`（再命中视为数据刷新）。语义：规则任务的抓取时间 ≈ 任务生成/刷新
+时间（规则紧随采集执行）。
+
+**验证**：本机无可用 PG（`.pgdata` 空、无 Docker），`test_tk_anomaly_tasks.py` 未跑；
+待有库环境执行 `pytest backend/tests/test_tk_anomaly_tasks.py` + 观察再命中任务 SKU/抓取时间列。
+发版同第 4 节（api 镜像含 `tk_anomaly.py`）。

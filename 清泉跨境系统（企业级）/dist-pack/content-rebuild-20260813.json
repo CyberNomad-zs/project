@@ -1,0 +1,16 @@
+{
+  "old_table_id": "tbl9NVOxwfA24tyw",
+  "old_table_archived_as": "内容日_归档_20260813",
+  "new_table_id": "tblgFISW9sJzoZzm",
+  "new_table_name": "内容日",
+  "system_primary": [
+    [
+      "日期",
+      5
+    ]
+  ],
+  "本地ID_is_primary": false,
+  "field_count": 22,
+  "url": "https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh?table=tblgFISW9sJzoZzm",
+  "env_line": "FEISHU_BITABLE_TABLE_TK_CONTENT_DAILY=tblgFISW9sJzoZzm"
+}

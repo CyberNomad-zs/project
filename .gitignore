@@ -1,6 +1,7 @@
 ﻿# other local folders under E:\project
 日报/
 _migrate_ai_sessions_*/
+_update_work/
 .grok/
 *.tmp
 

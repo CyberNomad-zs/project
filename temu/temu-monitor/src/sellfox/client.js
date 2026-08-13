@@ -148,7 +148,19 @@ export function createSellfoxClient(opts) {
     return post('/api/multiplatform/temu/product/getParentPageList.json', body);
   }
 
-  return { post, getToken, temuCrossParentPage, baseUrl, clientId };
+  /**
+   * Temu 跨境店在线产品子体（SKU）——按 parentId。
+   * 实调 2026-08-12：返回数组，字段含 skuId/specName/extCode/stockQuantity 等；
+   * 无 selectStatus（上下架仍看父体 getParentPageList）。
+   * @param {string} parentId
+   */
+  async function temuCrossChildInfo(parentId) {
+    return post('/api/multiplatform/temu/product/getChildInfo.json', {
+      parentId: String(parentId),
+    });
+  }
+
+  return { post, getToken, temuCrossParentPage, temuCrossChildInfo, baseUrl, clientId };
 }
 
 function ymd(d) {

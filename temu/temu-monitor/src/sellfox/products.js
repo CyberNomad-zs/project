@@ -121,6 +121,89 @@ export function normalizeParent(r) {
   };
 }
 
+/**
+ * 规范化 getChildInfo 单条 SKU
+ * @param {object} r
+ */
+export function normalizeChildSku(r) {
+  if (!r || typeof r !== 'object') return null;
+  const skuId = r.skuId != null ? String(r.skuId) : (r.productSkuId != null ? String(r.productSkuId) : '');
+  if (!skuId && !r.specName && !r.extCode) return null;
+  return {
+    parentId: r.parentId != null ? String(r.parentId) : '',
+    skuId,
+    specName: String(r.specName || '').trim(),
+    name: String(r.name || '').trim(),
+    extCode: String(r.extCode || '').trim(),
+    commoditySku: String(r.commoditySku || '').trim(),
+    stockQuantity: r.stockQuantity != null && r.stockQuantity !== '' ? String(r.stockQuantity) : '',
+    supplyPrice: r.supplyPrice != null ? String(r.supplyPrice) : '',
+    supplyCurrency: String(r.supplyCurrency || '').trim(),
+  };
+}
+
+/**
+ * 解析 getChildInfo 响应为 SKU 数组
+ * @param {unknown} data
+ * @returns {Array<object>}
+ */
+export function parseChildInfo(data) {
+  let rows = [];
+  if (Array.isArray(data)) rows = data;
+  else if (data && typeof data === 'object') {
+    rows = data.rows || data.list || data.skuList || data.children || [];
+    if (!Array.isArray(rows) && data.skuId) rows = [data];
+  }
+  if (!Array.isArray(rows)) return [];
+  return rows.map(normalizeChildSku).filter(Boolean);
+}
+
+/**
+ * 仅对变动的 parentId 补拉 getChildInfo（控制 40019 限流）。
+ * @param {{ temuCrossChildInfo: (parentId: string) => Promise<unknown> }} client
+ * @param {string[]} parentIds
+ * @param {{ delayMs?: number, onError?: (pid: string, err: Error) => void }} [opts]
+ * @returns {Promise<Record<string, object[]>>} parentId → skus[]
+ */
+export async function fetchChildrenByParentIds(client, parentIds, opts = {}) {
+  const delayMs = typeof opts.delayMs === 'number' ? opts.delayMs : 450;
+  const uniq = [...new Set((parentIds || []).map(String).filter(Boolean))];
+  const out = {};
+  for (let i = 0; i < uniq.length; i++) {
+    const pid = uniq[i];
+    try {
+      const raw = await client.temuCrossChildInfo(pid);
+      out[pid] = parseChildInfo(raw);
+    } catch (e) {
+      out[pid] = [];
+      if (typeof opts.onError === 'function') opts.onError(pid, e);
+    }
+    if (i < uniq.length - 1 && delayMs > 0) {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+  return out;
+}
+
+/**
+ * 把 SKU 明细挂到告警 items 上（就地修改）
+ * @param {Array} alertEvents
+ * @param {Record<string, object[]>} childMap
+ */
+export function attachSkusToAlertEvents(alertEvents, childMap) {
+  const map = childMap || {};
+  for (const ev of alertEvents || []) {
+    if (!ev || !Array.isArray(ev.items)) continue;
+    for (const it of ev.items) {
+      if (!it) continue;
+      const pid = String(it.parentId || '');
+      const skus = pid && map[pid] ? map[pid] : [];
+      it.skus = skus;
+    }
+  }
+  return alertEvents;
+}
+
 /** 按店分组；onSale = selectStatus === 12 */
 export function groupByShop(items, shopNameMap = {}) {
   const shops = {};

@@ -79,10 +79,15 @@ export function loadSellfoxConfig() {
       delist: raw.alerts?.delist !== false,
       // 上架：本轮 selectStatus=12 且上轮不在在售集合
       onshelf: raw.alerts?.onshelf !== false,
+      // SKU 基线 diff（getChildInfo 清单多/少）
+      skuDelist: raw.alerts?.skuDelist !== false,
+      skuOnshelf: raw.alerts?.skuOnshelf !== false,
     },
     feishuWebhooks,
     feishuSecret: raw.feishuSecret || main.feishuSecret || '',
     stateFile: resolve(ROOT, raw.stateFile || 'data/sellfox-state.json'),
+    // 在售 SKC→SKU 基线库（JSON）
+    skuDbFile: resolve(ROOT, raw.skuDbFile || 'data/sellfox-sku-db.json'),
   };
 }
 

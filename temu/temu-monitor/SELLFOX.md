@@ -19,7 +19,14 @@
 - **上架**：本轮在售集合里有、上轮没有，且 **连续两轮仍为 12** 才告警（首轮进 `pendingOnshelf`，次轮确认；抖动自动丢弃）  
 - **防误报**：若本轮全量 unique / 本店 allCount 骤降，或在售 SKC 从结果中「失踪」（漏拉），**跳过本轮、不告警、不改坏基准**  
   （2026-07-30 实锤：unique 954→918 导致 HomeCove 假下架 5 + 假上架 5）  
-  （2026-08-05 实锤：HomeCove 单轮 +4 上架，同事只上 1 个、后台仍 15；改为上架二次确认）
+  （2026-08-05 实锤：HomeCove 单轮 +4 上架，同事只上 1 个、后台仍 15；改为上架二次确认）  
+- **SKU 基线库（2026-08-12）**：`data/sellfox-sku-db.json` 按店存「在售 SKC → SKU 清单」。  
+  每轮对**确认在售** SKC 调 `getChildInfo`，与库 diff：  
+  - 清单**少了**的 skuId → **SKU 下架**  
+  - 清单**多了**的 skuId → **SKU 上架**  
+  - 父体离开 `selectStatus=12` → 该 SKC 下原 SKU 全部下架并删库  
+  首轮只 seed 不告警；`getChildInfo` 失败/未拉到则**保留旧基线**（防空结果误清空）。  
+  子体接口本身无 `selectStatus`，所以「SKU 上下架」= **清单 diff**，不是平台状态码。
 
 实调：Agnis 在售 13 与后台 countStatus 一致。
 
@@ -88,14 +95,16 @@ sudo systemctl enable --now temu-sellfox
 
 ## 接口与约束
 
-- `POST /api/multiplatform/temu/product/getParentPageList.json`
+- `POST /api/multiplatform/temu/product/getParentPageList.json` — 父体 SKC + `selectStatus`
+- `POST /api/multiplatform/temu/product/getChildInfo.json` — 子体 SKU（body: `{ parentId }`）
 - `dateType` 建议 **`updateDate`**（比 createDate 覆盖全）
 - 起止日期间隔 **≤ 30 天**（代码自动滑窗）
 - **IP 白名单**：填服务器固定公网出口；可与 sellfox-bridge 共用 client，白名单做并集
 
 ## 状态
 
-`data/sellfox-state.json`：按 `shopId` 存 `onSaleMap`。删掉即重置基准（下一轮重新建基准、不告警）。
+`data/sellfox-state.json`：按 `shopId` 存父体 `onSaleMap`。删掉即重置 SKC 基准（下一轮重新建基准、不告警）。  
+`data/sellfox-sku-db.json`：按店存在售 SKC→SKU 基线。删掉即重置 SKU 基准（下一轮 seed、不告警）。
 
 ## 与插件 / Partner
 

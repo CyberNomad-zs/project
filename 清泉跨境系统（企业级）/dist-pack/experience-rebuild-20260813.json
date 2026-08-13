@@ -1,0 +1,15 @@
+{
+  "old_table_id": "tblSyTljO6C6tRaY",
+  "old_table_archived_as": "体验分日_归档_20260813",
+  "new_table_id": "tbld6A91n8MQWkS2",
+  "new_table_name": "体验分日",
+  "system_primary": [
+    [
+      "日期",
+      5
+    ]
+  ],
+  "field_count": 12,
+  "url": "https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh?table=tbld6A91n8MQWkS2",
+  "env_line": "FEISHU_BITABLE_TABLE_TK_EXPERIENCE_DAILY=tbld6A91n8MQWkS2"
+}

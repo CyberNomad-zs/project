@@ -1,0 +1,13 @@
+{
+  "old_table_id": "tblgDbCXVfdbp0oS",
+  "old_table_archived_as": "异常任务_归档_20260813",
+  "new_table_id": "tblO1uGlWccuaiZF",
+  "new_table_name": "异常任务",
+  "system_primary": [
+    "日期"
+  ],
+  "主键_is_primary": false,
+  "field_count": 45,
+  "url": "https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh?table=tblO1uGlWccuaiZF",
+  "env_line": "FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK=tblO1uGlWccuaiZF"
+}

@@ -65,7 +65,7 @@ KINDS: list[dict[str, str]] = [
     {
         "key": "tk_anomaly_task",
         "env": "FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK",
-        "default_tid": "tblgDbCXVfdbp0oS",
+        "default_tid": "tblO1uGlWccuaiZF",
         "prefix": "异常任务",
     },
     {

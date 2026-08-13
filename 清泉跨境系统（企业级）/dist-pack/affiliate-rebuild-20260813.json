@@ -1,0 +1,16 @@
+{
+  "old_table_id": "tblDTIwDWHGlJ9qf",
+  "old_table_archived_as": "达人日_归档_20260813",
+  "new_table_id": "tbleJkhx0cTtG3Y6",
+  "new_table_name": "达人日",
+  "system_primary": [
+    [
+      "日期",
+      5
+    ]
+  ],
+  "本地ID_is_primary": false,
+  "field_count": 24,
+  "url": "https://dn86p8pyqr.feishu.cn/base/LzTAbQsThaPOzis2lFvciDMlnyh?table=tbleJkhx0cTtG3Y6",
+  "env_line": "FEISHU_BITABLE_TABLE_TK_AFFILIATE_CREATOR_DAILY=tbleJkhx0cTtG3Y6"
+}

@@ -1,7 +1,7 @@
 # TK 驾驶舱 · 飞书 AI 仪表盘搭建提示词
 
 > 日期：2026-08-05  
-> Base：`C1iHbw6TVad6rUsbZnbc2gSDnHg`  
+> Base：`LzTAbQsThaPOzis2lFvciDMlnyh`（清泉组织新 Base）  
 > 依据：[TK-飞书驾驶舱仪表盘搭法](./TK-飞书驾驶舱仪表盘搭法.md) · [TK-飞书驾驶舱建表方案](./TK-飞书驾驶舱建表方案.md) · [仪表盘重绑清单](./TK-飞书驾驶舱-仪表盘重绑清单.md)
 
 ---
@@ -22,16 +22,17 @@
 | **D2 广告投放** | T2 | ✅ 已搭 |
 | **D3 视频内容** | T6 | ✅ 已搭（旧文称 D4；AI 素材旧 D3 已砍） |
 | **D4 联盟达人** | **仅 T7** | ✅ 已搭（2026-08-07；旧文称 D5） |
+| **D5 异常任务台** | 异常任务 | ✅ 已搭（见 [异常任务台提示词](./TK-飞书仪表盘-异常任务台-AI搭建提示词.md)） |
 
 ### 正式数据源（只绑这些）
 
 | 表 | table_id | 用途 |
 |----|----------|------|
-| **店铺日经营**（T1） | `tblwh7EVeAFPfvuy` | D1 多店对比 |
-| **广告活动日明细**（T2） | `tblXaQ871ZcrrTPL` | D2 广告投放 |
-| **异常任务** | `tblstt4IVNJihCd3` | D2/D3/D4 可选挂表 |
-| **内容日**（T6） | `tbleuAjZFdrkLBu6` | **D3** 视频内容 |
-| **达人日**（T7） | `tblsoAKtF05YyyWd` | **D4** 联盟达人 |
+| **店铺日经营**（T1） | `tblrpFX6gWaf7KPX` | D1 多店对比 |
+| **广告活动日明细**（T2） | `tblgLifLVW91v5Bk` | D2 广告投放 |
+| **异常任务** | `tblO1uGlWccuaiZF` | D2/D3/D4 可选挂表 / D5 主数据源 |
+| **内容日**（T6） | `tblgFISW9sJzoZzm` | **D3** 视频内容 |
+| **达人日**（T7） | `tbleJkhx0cTtG3Y6` | **D4** 联盟达人 |
 
 **禁止**新组件再绑：旧表「TK广告日报」（`tblmr3ayTmWF3G7J`）、**已砍**的「AI广告智能筛选分析表」（`tblYpFKSJyIimUZ3`）。
 

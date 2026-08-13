@@ -3,6 +3,7 @@
  * 运行：node src/sellfox/diff.selftest.js
  */
 import { diffOnSale, formatChangeLines } from './diff.js';
+import { parseChildInfo, attachSkusToAlertEvents } from './products.js';
 
 function assert(cond, msg) {
   if (!cond) throw new Error('FAIL: ' + msg);
@@ -268,6 +269,54 @@ console.log('6) 文案：下架行不再写 15→17，合计单独一行');
   assert(!/下架.*在售 15/.test(text), 'delist line has no 在售 from→to');
   assert(text.includes('赛狐确认在售：**15 → 13**'), 'summary line');
   assert(text.includes('连续两轮'), 'onshelf says 两轮确认');
+}
+
+console.log('7) 文案：SKU 子行 + getChildInfo 解析');
+{
+  const raw = [
+    {
+      parentId: 'p1',
+      skuId: '9011356554',
+      specName: '[8H-100 PACK]',
+      extCode: '',
+      stockQuantity: '219',
+      name: '茶蜡100',
+    },
+    {
+      parentId: 'p1',
+      skuId: '51150109252',
+      specName: '[8H-99 PACK]',
+      stockQuantity: '262',
+    },
+  ];
+  const skus = parseChildInfo(raw);
+  assert(skus.length === 2, 'parse 2 skus');
+  assert(skus[0].skuId === '9011356554', 'skuId');
+  const events = [
+    {
+      type: 'delist',
+      severity: 'alert',
+      from: 13,
+      to: 12,
+      items: [
+        {
+          skcId: '7636599333',
+          parentId: 'p1',
+          name: '茶蜡',
+          selectStatus: '10',
+        },
+      ],
+    },
+  ];
+  attachSkusToAlertEvents(events, { p1: skus });
+  events[0].items[0].skusAttempted = true;
+  const lines = formatChangeLines('Twilight Cove', events);
+  const text = lines.join('\n');
+  assert(text.includes('SKU 9011356554'), 'sku id in card');
+  assert(text.includes('[8H-100 PACK]') || text.includes('8H-100'), 'spec in card');
+  assert(text.includes('库存 219'), 'stock in card');
+  assert(text.includes('SKC 7636599333'), 'skc still shown');
+  assert(text.includes('getChildInfo'), 'header mentions child api');
 }
 
 console.log('\nAll selftests passed.');

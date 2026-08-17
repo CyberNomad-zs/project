@@ -63,12 +63,23 @@ curl -sS http://127.0.0.1:8000/health
 ### 生产飞书 TK 切清泉组织新 Base（2026-08-12）
 
 - 新 Base `LzTAbQsThaPOzis2lFvciDMlnyh`（清泉组织副本，2026-08-10 建）；旧金猫 `C1iHbw6TVad6rUsbZnbc2gSDnHg` 保留不删
-- 生产 `/opt/qingquan/.env`：`FEISHU_APP_ID/SECRET` 切 `cli_aaf3f14a863bdbc3`，`FEISHU_BITABLE_APP_TOKEN(_TK)` 切新 Base，TK 六表 ID 全换（shop `tblrpFX6gWaf7KPX` / ads `tblgLifLVW91v5Bk` / anomaly `tblgDbCXVfdbp0oS` / content `tbl9NVOxwfA24tyw` / affiliate `tblDTIwDWHGlJ9qf` / experience `tblSyTljO6C6tRaY`）；切换前自动备份 `.env.bak.*`
+- 生产 `/opt/qingquan/.env`：`FEISHU_APP_ID/SECRET` 切 `cli_aaf3f14a863bdbc3`，`FEISHU_BITABLE_APP_TOKEN(_TK)` 切新 Base，TK 六表 ID 全换（shop `tblrpFX6gWaf7KPX` / ads `tblgLifLVW91v5Bk` / anomaly `tblO1uGlWccuaiZF` / content `tblgFISW9sJzoZzm` / affiliate `tbleJkhx0cTtG3Y6` / experience `tbld6A91n8MQWkS2`）；切换前自动备份 `.env.bak.*`
 - 影响面：`get_tenant_access_token` 仅 TK 同步 / AMZ（未配置表，空转）/ worker tasks（空转）/ IM（`TK_NOTIFY_IM=false`）使用；采购/Temu 独立凭据不受影响
 - `config/feishu-tk-store-tables.json`（分店表映射，已指向新 Base）scp 到 `/opt/qingquan/config/`；容器无挂载，rebuild 后需 `docker cp` 到 `qingquan-api-1`/`qingquan-worker-1`。**注意**：容器内 `_REPO_ROOT=/`（`parents[3]`），相对路径解析为 `/config/feishu-tk-store-tables.json`（不是 `/app/config/`），文件必须放 `/config/`
 - rebuild api/worker 前已校验容器内 py 与宿主机 `/opt/qingquan/backend` 完全一致（md5 全等），rebuild 不丢热修
 - 重推：清 `sync_feishu_map` 旧表映射 → `scripts/_prod_exp_resync_new_base.sh`（体验分）+ `scripts/_prod_tk_full_resync_new_base.sh`（T1/T2/异常/T6/T7，lookback 30d）
 - 注意：Git Bash ssh 读不了 ed25519 密钥（libcrypto unsupported），须用 `C:\Windows\System32\OpenSSH\ssh.exe`
+
+### TK 异常任务负责人列改版 + TK 路由修复（2026-08-17）
+
+- **负责人列改版**：4 张异常表（总表 `tblO1uGlWccuaiZF` + 分店 Deal `tblExYubQqCwteW3` / Gardena `tblIUs71slVjMroo` / SHOP INOUT `tblUZ58M0DKpZRU7`）的负责人列由 `负责人`+`第一负责人`（双写文本、User 列实为空）改为 `负责人（助理）`+`负责人（运营）`（User, multiple）。全局统一：助理=郭芷杨 `ou_5ad532b7518f5e47dc9a7ce26c41d849`、运营=宋敏 `ou_967f12892b9becbd14ba85c6e3275735`
+- `.env` 新增 `FEISHU_TK_OWNER_ASSISTANT_OPENID` / `FEISHU_TK_OWNER_OPERATOR_OPENID`；`config.py` 加对应字段；`bitable.py` `tk_anomaly_task_to_fields` 改为读 settings 写 `[{"id":openid}]`（空则不提供字段，保留人工指派）
+- 旧 User 列在 4 表已删（main/deal/gardena 各 2 个，inout 原无 User 列）；新列 field_id：main `fldQ8RNjq8`/`fldBqZST2L`、deal `flduxEnaOP`/`fldQODLuLJ`、gardena `fldm4TfBBZ`/`fldavyuRfS`、inout `fldbuhKySi`/`fldKktrytx`
+- 回填：PG-driven `--anomaly-only` 只覆盖 PG 内 72 行；飞书分店表另有 53 条 PG 已删的孤儿记录，用 `scripts/_backfill_anomaly_owners_direct.py` 按 record_id 直补，4 表共 195 条全部填上两人
+- **store-tables external_ids 缺失修复**：服务器宿主机 `config/feishu-tk-store-tables.json` 曾是旧版（缺 `external_ids`），导致分店 fan-out 靠 shop_name 匹配，而 anomaly 行 shop_name 漂移（同 ID 多名），fan-out 失效。已把 dev 新版（含 external_ids）scp 到 `/opt/qingquan/config/` + `docker cp` 到两容器 `/config/`。fan-out 现按 `shop_external_id` 归属：27501502216807→deal、27758103898326→gardena、27328767468273→shop-inout
+- **TK HTTP 路由修复（独立旧问题，非本次引入）**：服务器宿主机 `main.py` 曾是旧版，未 import/include `tk_ops`/`tk_anomaly_tasks`，rebuild 后 OpenAPI 缺 `/api/v1/tk/*`（17 路由全丢，任务台 TK 页 404）。已就地 patch main.py 加 `tk_anomaly_tasks`/`tk_ops` 两行 import + 两行 `include_router`（保留原有 amazon_sync/procurement），同时 scp dev 新版 `tk_ops.py`（宿主机旧版 md5 5a72a2… → dev 58def5…），rebuild 后 tk 路由恢复 17 个、总 path 37
+- 注意：dev 仓库 `main.py` 与服务器版互缺（dev 缺 amazon_sync/procurement、服务器曾缺 tk）——分叉待统一
+- 仪表盘 D5 异常任务台若绑旧 `负责人`/`第一负责人` 列，需在飞书 UI 重绑到新两列（组件无写 API，人工）
 
 ## 迁移（已有库）
 
@@ -180,3 +191,45 @@ docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
 - 批末自动评估：ingest 成功后 `_maybe_auto_eval_after_ingest`
 - 热修注意：`docker compose up --force-recreate api` 后需再 `docker cp` 相关 py（镜像未 rebuild 时）
 - 迁移：`psql … -f backend/migrations/020_tk_violation_review.sql`
+
+### TK产品表 赛狐→PG→飞书同步（2026-08-17）
+
+- 表：飞书 TK产品表 `tbl69GJ8cAAhizmj`（28 列；13 列为 Formula 飞书自算，6 可写列由本 job 灌，9 列手填）
+- 数据链：赛狐 OpenAPI → `tk_sellfox_sync`（刷新 PG）→ 本 job（PG → 飞书）
+- 灌入 6 列：货源 / 品名 / SKUID / 上架状态 / 售价（含VAT）（平台活动价） / 采购 GBP
+- **不灌**：13 Formula 列（API 写不进，飞书自算）、采购CNY/头程CNY/亚马逊售价/黑猫RM/服务费/操作费/配送费（手填）、SKU（与 SKUID 重复）
+- 采购 GBP 口径：profit_sku `raw_extra.purchaseFee` 取 `abs()`（赛狐利润扣除口径为负 → 飞书列正数）
+- 关联：拆 `seller_sku` 的 `|` 多规格，join `fact_sellfox_tk_profit_sku` ON `sku_key = seller_sku_part`，取 `period_end` 最大一期
+- 在售过滤：`fact_tiktok_product.status ∈ (在售/active/在线)`
+- 覆盖策略：`--full`（首次全量：覆盖已有行 6 列 + 新建缺行） / 默认（只新增：已有行不动）
+- 缺数据：赛狐无 profit_sku 的在售 SKU → 推 `FEISHU_BOT_WEBHOOK_TK_HEALTH`（仅 SKU 列表，**无金额**），webhook 空只落日志
+- 运行记录：写 `tk.sellfox_sync_run`（modules=`["product_feishu"]`）
+
+**前置**：先确保 PG 有赛狐数据
+
+```bash
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python -m app.jobs.tk_sellfox_sync --days 1
+```
+
+**触发**（手动，无 cron）：
+
+```bash
+# 预览（不实写，打印将 create/update 的行）
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python -m app.jobs.tk_sellfox_product_feishu_sync --dry-run
+
+# 首次全量（覆盖已有行 6 可写列 + 新建缺行）
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python -m app.jobs.tk_sellfox_product_feishu_sync --full
+
+# 只新增（已有行不动；幂等重跑用）
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python -m app.jobs.tk_sellfox_product_feishu_sync
+```
+
+- `.env`：`FEISHU_BITABLE_TABLE_TK_PRODUCT=tbl69GJ8cAAhizmj` / `FEISHU_BITABLE_APP_TOKEN_TK` / `FEISHU_BOT_WEBHOOK_TK_HEALTH`
+- 首跑建议：`--dry-run` 预览 → `--full` 全量 → 抽检飞书 3 行（6 可写列有赛狐值、13 公式列已重算、手填列保留）→ 再跑无 `--full` 确认幂等
+- 单测：`backend/.venv/Scripts/python.exe -m pytest backend/tests/test_tk_sellfox_product_feishu_sync.py -v`
+- 部署：改代码需 rebuild api/worker 镜像（代码内嵌）；`.env` 加 `FEISHU_BITABLE_TABLE_TK_PRODUCT` 后 `docker cp` 或重启容器生效
+- Spec 链：`docs/specs/SPEC-20260817-tk-sellfox-product-sync.md`（含 ARCH/EXPLORE/PLAN/FINDINGS/ACCEPTANCE）

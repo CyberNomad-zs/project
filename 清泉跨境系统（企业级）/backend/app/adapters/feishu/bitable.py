@@ -446,7 +446,13 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     obj_type_cn = _TK_OBJECT_TYPE_CN.get(obj_type, obj_type)
     task_key = row.get("task_key") or ""
     st_cn = _TK_TASK_STATUS_CN.get(str(st), str(st))
-    owner = row.get("owner_name") or ""
+    # 负责人（助理）/ 负责人（运营）：全局统一从 settings 取 open_id 写入人员列；
+    # 未配置则不提供该字段（保留飞书侧人工指派，不覆盖）。
+    settings = get_settings()
+    assistant_oid = (settings.feishu_tk_owner_assistant_openid or "").strip()
+    operator_oid = (settings.feishu_tk_owner_operator_openid or "").strip()
+    owner_assistant = [{"id": assistant_oid}] if assistant_oid else ""
+    owner_operator = [{"id": operator_oid}] if operator_oid else ""
     metric = row.get("metric_snapshot") or ""
     summary = row.get("summary") or ""
     description = row.get("description") or ""
@@ -459,10 +465,9 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     boss = row.get("needs_boss_decision")
     if boss is None:
         boss = str(row.get("priority") or "").upper() == "P0"
-    # 产品列：过滤「订单号+星期时间」噪声，避免飞书展示错乱
+    # 产品列：仅商品异常显示产品名；店铺/广告/达人/内容等对象名已在「店铺」「对象」「摘要」列，置空避免串味
     product_name = str(row.get("product_name") or "").strip()
-    if obj_type == "content":
-        # 内容域对象是视频，标题已在摘要/说明，产品列置空
+    if obj_type != "product":
         product_name = ""
     elif product_name and (
         "件商品" in product_name
@@ -472,7 +477,7 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     ):
         product_name = ""
     product_name_cn = str(row.get("product_name_cn") or "").strip()
-    return _omit_none(
+    fields = _omit_none(
         {
             # —— 与 AMZ 同名列（运营对照）——
             "主键": task_key,
@@ -491,8 +496,8 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
             "对比值含义": row.get("compare_value_label") or "",
             "变化幅度": _num(row.get("change_magnitude")),
             "变化幅度含义": row.get("change_magnitude_label") or "",
-            "负责人": owner,
-            "第一负责人": owner,  # TK 历史列名，双写
+            "负责人（助理）": owner_assistant,
+            "负责人（运营）": owner_operator,
             "审核人": row.get("reviewer_name") or "",
             "状态": st_cn,
             "截止时间": _feishu_date(row.get("due_at")),
@@ -529,6 +534,10 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
             "本地ID": str(row.get("id") or ""),
         }
     )
+    if "产品" not in fields:
+        # 非商品对象：显式置空，确保飞书旧值（店铺名/达人名等）被清掉（batch_update 不更新未提供的字段）
+        fields["产品"] = ""
+    return fields
 
 
 def tk_content_daily_to_fields(row: dict[str, Any]) -> dict[str, Any]:
@@ -661,5 +670,51 @@ def tk_affiliate_creator_daily_to_fields(row: dict[str, Any]) -> dict[str, Any]:
             "抓取时间": _feishu_date(row.get("collected_at")),
             "数据源URL": row.get("source_url") or "",
             "本地ID": str(row.get("id") or ""),
+        }
+    )
+
+
+def tk_product_to_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """PG 在售商品（fact_tiktok_product + fact_sellfox_tk_profit_sku 关联）→ 飞书 TK产品表。
+
+    赛狐能准确灌的列（实现期核实，见 EXPLORE-20260817 §3 / FINDINGS §意外发现）：
+      主数据 5 列：货源 / 品名 / SKUID / 上架状态 / 售价（含VAT）（平台活动价）
+      成本 1 列：采购 GBP（profit_sku.raw_extra purchaseFee 取绝对值）
+
+    **不灌的列（9 列白名单是唯一防线，见 FINDINGS）：**
+      13 个 Formula 列（平台价格/售价不含VAT/平台佣金/头程GBP/商品总成本GBP/毛利润/
+        毛利润率/退款率/达人佣金/广告费/利润/利润率/保本单量）—— API 写不进 Formula 类型，
+        由飞书表内公式从入参自算；_filter_fields_to_table 不挡 Formula（list_fields 返回其名），
+        故 mapper 必须自己 omit。
+      采购 CNY / 头程 CNY / 黑猫RM附加费 / 亚马逊同款售价1 / 亚马逊同款售价2 —— 赛狐无/手填
+      服务费GBP / 操作费GBP / 配送费GBP —— 赛狐多键拆分无法对齐飞书聚合口径（actualShippingFeeAmount/
+        logisticsFee/dtHandlingFeeAmount 现网全 0），保留手填
+      SKU —— 飞书表多为 null，与 SKUID 重复，不灌
+
+    row 期望键（job 组装）：
+      product_id, product_name, seller_sku, status, price_include_vat,
+      purchase_fee_gbp（已 abs 的正数 float，或 None）
+    """
+    # 状态枚举映射（PG status → 飞书表展示）
+    status_map = {
+        "在售": "已上架",
+        "active": "已上架",
+        "已下架": "已下架",
+        "inactive": "已下架",
+        "在线": "已上架",
+        "草稿": "未上架",
+        "draft": "未上架",
+    }
+    raw_status = str(row.get("status") or "").strip()
+    shelf_status = status_map.get(raw_status, raw_status or "")
+
+    return _omit_none(
+        {
+            "货源": str(row.get("product_id") or "").strip(),
+            "品名": str(row.get("product_name") or "").strip(),
+            "SKUID": str(row.get("seller_sku") or "").strip(),
+            "上架状态": shelf_status,
+            "售价（含VAT）（平台活动价）": _num(row.get("price_include_vat")),
+            "采购 GBP": _num(row.get("purchase_fee_gbp")),
         }
     )

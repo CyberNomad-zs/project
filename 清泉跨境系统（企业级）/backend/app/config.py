@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     feishu_bitable_table_tk_affiliate_creator_daily: str = ""
     # 店铺体验分日（fact_tiktok_experience_daily → TK Base 新表）
     feishu_bitable_table_tk_experience_daily: str = ""
+    # TK产品表（tbl69GJ8cAAhizmj · 运营手动导入 Excel 起步；
+    # 赛狐→PG→飞书同步 job 用，灌在售商品主数据 + 采购GBP；13 公式列飞书自算）
+    feishu_bitable_table_tk_product: str = ""
     # 分店铺表映射 JSON（相对仓库根或绝对路径）；由 scripts/feishu-tk-create-store-tables.py 生成
     # 有则同步时除总表外再按店写入对应 table_id
     feishu_tk_store_tables_json: str = "config/feishu-tk-store-tables.json"
@@ -54,6 +57,10 @@ class Settings(BaseSettings):
     feishu_im_receive_id: str = ""
     feishu_im_user_id_songmin: str = ""  # 别名，优先 feishu_im_receive_id
     feishu_im_receive_id_type: str = "open_id"  # open_id | user_id | union_id
+    # TK 异常任务表「负责人（助理）/ 负责人（运营）」两列的固定人员 open_id
+    # 全局统一：所有异常任务都指派这两人；空则该列留空
+    feishu_tk_owner_assistant_openid: str = ""
+    feishu_tk_owner_operator_openid: str = ""
     tk_notify_webhook: bool = True
     tk_notify_im: bool = True
     default_task_due_days: int = 3

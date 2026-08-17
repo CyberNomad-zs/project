@@ -101,6 +101,19 @@ powershell -ExecutionPolicy Bypass -File .\scripts\feishu-tk-daily-sync.ps1 -Ano
 - `.env`：`FEISHU_BITABLE_TABLE_TK_ANOMALY_TASK=tblO1uGlWccuaiZF`  
 - 2026-08-04 已同步 **19** 条自 PG
 
+### 负责人列（2026-08-17 改版）
+
+异常任务表（总表 + 3 张分店表 Deal/Gardena/SHOP INOUT）的负责人列由原 `负责人`+`第一负责人`（双写同一文本，User 列实际一直为空）改为两列：
+
+- **负责人（助理）**：郭芷杨（open_id `ou_5ad532b7518f5e47dc9a7ce26c41d849`）
+- **负责人（运营）**：宋敏（open_id `ou_967f12892b9becbd14ba85c6e3275735`）
+
+规则：**全局统一**，所有异常任务都指派这两人；open_id 由 `.env` `FEISHU_TK_OWNER_ASSISTANT_OPENID` / `FEISHU_TK_OWNER_OPERATOR_OPENID` 注入（`bitable.py` `tk_anomaly_task_to_fields` 读取，空则不覆盖人工指派）。换人改 env + rebuild api/worker 即可。
+
+分店 fan-out 依赖 `config/feishu-tk-store-tables.json` 每个 store 的 `external_ids`（以 `shop_external_id` 匹配，避免 shop_name 主数据漂移）；2026-08-17 同步补齐了服务器侧该字段的缺失。
+
+> 仪表盘 D5 异常任务台若有组件绑旧 `负责人`/`第一负责人` 列，删列后需在飞书 UI 重绑到 `负责人（助理）`/`负责人（运营）`（飞书仪表盘组件无写 API，必须人工）。
+
 建议视图：
 
 - `未闭环`：状态 = 未处理 / 处理中  

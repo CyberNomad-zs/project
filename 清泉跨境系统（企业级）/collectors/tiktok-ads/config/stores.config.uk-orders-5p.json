@@ -10,7 +10,7 @@
     "qingquan":  {
                      "enabled":  true,
                      "baseUrl":  "https://qingquan.jmzlai.com",
-                     "apiKey":  "2badba5de266ed9c749307ddb252b8a5",
+                     "apiKey":  "381637a4210ce1df3eea8f6568255427ddbfb2e42ee0a8b8",
                      "source":  "tiktok_ads",
                      "failOpen":  true,
                      "timeoutSec":  30

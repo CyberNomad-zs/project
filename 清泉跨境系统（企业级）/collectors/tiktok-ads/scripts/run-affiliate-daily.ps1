@@ -65,7 +65,7 @@ $argParts = @(
   '-ConfigPath', "`"$ConfigPath`"",
   '-DryRun', 'false',
   '-Modules', "`"$Modules`"",
-  '-SkipIngest:$false'
+  '-SkipIngest', 'false'
 )
 if ($StoreIds -and $StoreIds.Trim() -ne '') {
   $argParts += @('-StoreIds', "`"$StoreIds`"")

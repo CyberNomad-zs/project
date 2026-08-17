@@ -14,7 +14,10 @@ _extract/
 **/secrets*
 **/*secret*
 *.local.json
+*.local.md
 config/stores.config.json
+config/stores.config.*.json
+!config/stores.config.example.json
 logs/
 
 # OS / editor

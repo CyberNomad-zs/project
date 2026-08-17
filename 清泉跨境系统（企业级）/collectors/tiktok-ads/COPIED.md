@@ -32,7 +32,7 @@
 3. **中心库**：`003_tiktok_ads_p1_fields.sql`；**订单** `005_tiktok_orders.sql`  
 4. **API 常驻脚本**（仓库根）：`scripts/start-api.ps1` 等  
 5. **整站 P2a 骨架**：`scrape-orders-page.js` + `run-orders.ps1` + ingest `tiktok_orders`  
-6. **飞书**：运营表「TK广告日报」`tblmr3ayTmWF3G7J`（本机 config，勿提交）
+6. **飞书**：运营表「TK广告日报」`tblRI8j92JuAtVDx`（本机 config，勿提交）
 
 ### 已知阻塞
 

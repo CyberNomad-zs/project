@@ -13,7 +13,7 @@
 
 **账号健康/体验分提醒需求（`TikTok shop需求.docx`，2026-08-11）：** 账号健康分/店铺体验分/达人健康评分下降、新增 1–2🌟 差评、达人新增违规 → 飞书提醒；体验分三模块（商品满意度/履约物流/客户服务 + 子指标）入飞书多维表。  
 **通知通道决策（2026-08-12 用户确认）：只群发 webhook，不私发**（docx 原文「企业应用私信宋敏」不执行；`TK_NOTIFY_IM=false` 维持）。  
-落地状态：采集/规则/飞书表均已上线（迁移 024，`shop_health_drop` / `shop_experience_drop` / `shop_experience_metric_worse` / `shop_bad_review` / `creator_health_drop` / `creator_violation`；体验分 T 表 `tblSyTljO6C6tRaY`）；达人为多账号采集（切换账号面板，`creatorHealthMaxAccounts` 默认 12）。子指标含差评率需采集包 ≥20260812-1756（旧包 scrape 未抓 `bad_review_rate_60d`）。
+落地状态：采集/规则/飞书表均已上线（迁移 024，`shop_health_drop` / `shop_experience_drop` / `shop_experience_metric_worse` / `shop_bad_review` / `creator_health_drop` / `creator_violation`；体验分 T 表 `tbld6A91n8MQWkS2`）；达人为多账号采集（切换账号面板，`creatorHealthMaxAccounts` 默认 12）。子指标含差评率需采集包 ≥20260812-1756（旧包 scrape 未抓 `bad_review_rate_60d`）。
 
 当前主要空洞：**(1) 店日日更未连续攒满、生产异常任务表未齐；(2) 无内容/短视频与多渠道 CTR·CVR 事实层；(3) 广告仍停在系列日，缺创意/组/素材及与内容关联；(4) 无达人/联盟「投入→是否成交」事实层；(5) 飞书仪表盘组件需 UI 重绑。**  
 本计划按「先把已有链路跑满 → 再扩域采集 → 最后深钻看板」分期，**数据必须经 PostgreSQL**，飞书/任务台只读中心。

@@ -149,6 +149,8 @@ class ProductEvalStats:
     hit_stock_low: int = 0
     created_or_updated: int = 0
     skipped: int = 0
+    notified: int = 0
+    notify_skipped: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[dict[str, Any]] = field(default_factory=list)
 
@@ -159,9 +161,28 @@ class ProductEvalStats:
             "hit_stock_low": self.hit_stock_low,
             "created_or_updated": self.created_or_updated,
             "skipped": self.skipped,
+            "notified": self.notified,
+            "notify_skipped": self.notify_skipped,
             "errors": self.errors[:20],
             "samples": self.samples[:10],
         }
+
+
+async def _open_exists(db: AsyncSession, dedupe_key: str) -> bool:
+    """同一 dedupe_key 是否已有未闭环任务——通知去重用（照 violation/review 同款）。"""
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT 1 FROM tk.fact_tk_anomaly_task
+                WHERE dedupe_key = :dk AND status IN ('open', 'in_progress')
+                LIMIT 1
+                """
+            ),
+            {"dk": dedupe_key},
+        )
+    ).first()
+    return bool(row)
 
 
 async def fetch_product_rows(
@@ -199,11 +220,13 @@ async def evaluate_product_anomalies(
     shop_external_id: str | None = None,
     project_center_task: bool = True,
     dry_run: bool = False,
+    notify: bool = True,
     settings: Settings | None = None,
     biz_date: date | None = None,
 ) -> dict[str, Any]:
     cfg = settings or get_settings()
     day = biz_date or datetime.now(timezone.utc).date()
+    notify_enabled = bool(notify) and bool(getattr(cfg, "tk_health_notify_feishu", True))
     stats = ProductEvalStats()
     rows = await fetch_product_rows(db, shop_external_id=shop_external_id)
     stats.scanned = len(rows)
@@ -228,6 +251,27 @@ async def evaluate_product_anomalies(
             else:
                 stats.hit_stock_low += 1
 
+            dedupe = f"tiktok:{object_ref}:{code}"
+            # 通知去重：未闭环同键已存在则不重复推群（照 violation/review 同款）
+            already = await _open_exists(db, dedupe)
+            do_notify = notify_enabled and not already
+
+            shop_name = str(row.get("shop_name") or shop_ext or "").strip()
+            stock = _f(row.get("stock_qty"))
+            threshold = stockout_qty if code == "product_stockout" else low_qty
+            title = f"📦 商品{'断货' if code == 'product_stockout' else '库存不足'} · {shop_name}"
+            notify_lines = [
+                f"店铺：{shop_name}（{shop_ext}）",
+                f"商品：{row.get('product_name') or '-'}",
+                f"商品ID：{pid or '-'}",  # 负责人用此 ID 去后台定位商品
+                f"SKU：{row.get('seller_sku') or '-'}",
+                f"可售库存：{stock:.0f}" if stock is not None else "可售库存：-",
+                f"阈值：{threshold:.0f}",
+                f"等级：{hit['priority']}",
+                f"日期：{day}",
+                f"链接：{row.get('source_url') or '-'}",
+            ]
+
             sample = {
                 "product_id": pid,
                 "product_name": row.get("product_name"),
@@ -235,10 +279,15 @@ async def evaluate_product_anomalies(
                 "anomaly_code": code,
                 "priority": hit["priority"],
                 "metric_snapshot": hit["metric_snapshot"],
+                "will_notify": do_notify,
             }
             if dry_run:
                 stats.samples.append(sample)
                 stats.created_or_updated += 1
+                if do_notify:
+                    stats.notified += 1
+                else:
+                    stats.notify_skipped += 1
                 continue
 
             try:
@@ -258,7 +307,7 @@ async def evaluate_product_anomalies(
                     progress_note=hit["detail"],
                     metric_snapshot=hit["metric_snapshot"],
                     biz_date=day,
-                    dedupe_key=f"tiktok:{object_ref}:{code}",
+                    dedupe_key=dedupe,
                     source_url=row.get("source_url"),
                     project_center_task=project_center_task,
                     current_value=hit.get("current_value"),
@@ -275,6 +324,26 @@ async def evaluate_product_anomalies(
                 sample["status"] = task.get("status")
                 stats.samples.append(sample)
                 stats.created_or_updated += 1
+
+                if do_notify:
+                    try:
+                        from app.domain.notify_dual import notify_dual
+
+                        res = await notify_dual(
+                            title=title,
+                            lines=notify_lines,
+                            settings=cfg,
+                            dry_run=False,
+                        )
+                        if res.get("any_sent"):
+                            stats.notified += 1
+                        else:
+                            stats.notify_skipped += 1
+                    except Exception as nexc:  # noqa: BLE001
+                        stats.notify_skipped += 1
+                        stats.errors.append(f"notify {pid}/{code}: {nexc}")
+                else:
+                    stats.notify_skipped += 1
             except Exception as exc:  # noqa: BLE001
                 stats.errors.append(f"{pid}/{code}: {exc}")
 

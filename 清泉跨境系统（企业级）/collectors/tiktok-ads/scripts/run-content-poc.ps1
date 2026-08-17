@@ -17,7 +17,7 @@ param(
   [string]$DryRun = "",
   [string]$DateMode = "",
   [string]$Modules = "content_overview,product_traffic",
-  [switch]$SkipIngest = $true
+  [string]$SkipIngest = "true"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -263,8 +263,11 @@ foreach ($m in $modList) {
   if (-not (Test-Path $scriptMap[$m])) { throw "Missing scrape script: $($scriptMap[$m])" }
 }
 
+$skipParsed = Convert-DryRunFlag $SkipIngest
+$useSkipIngest = if ($null -ne $skipParsed) { [bool]$skipParsed } else { $true }
+
 Write-Step '===== content-poc multi-store START (P2.0 gate) ====='
-Write-Step ("config={0} modules={1} SkipIngest={2}" -f $ConfigPath, ($modList -join ','), [bool]$SkipIngest)
+Write-Step ("config={0} modules={1} SkipIngest={2}" -f $ConfigPath, ($modList -join ','), $useSkipIngest)
 Write-Step 'NOTE: POC does not create PG fact tables. Debug JSON only unless you opt into raw dump.'
 Initialize-ZiniaoCli
 $listOut = Invoke-Ziniao @('store', 'list')
@@ -505,7 +508,7 @@ foreach ($store in $selected) {
           Write-Step ("  contentIdCount={0}" -f $cidN)
         }
 
-        if (-not $SkipIngest) {
+        if (-not $useSkipIngest) {
           if ($mod -eq 'product_traffic' -and (Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue) -and $cfg.qingquan -and $cfg.qingquan.enabled) {
             $collectedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
             $qqItems = ConvertTo-QingquanProductTrafficIngestItems -Payload $payload -CollectedAt $collectedAt `

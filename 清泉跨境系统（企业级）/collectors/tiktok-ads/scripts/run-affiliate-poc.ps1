@@ -22,7 +22,7 @@ param(
   [string]$DateMode = "",
   [string]$Modules = "affiliate_enter_center,affiliate_probe,affiliate_performance",
   [string]$StoreIds = "",
-  [switch]$SkipIngest = $true
+  [string]$SkipIngest = "true"
 )
 
 $ErrorActionPreference = 'Stop'
@@ -291,8 +291,11 @@ if (-not [string]::IsNullOrWhiteSpace($StoreIds)) {
   [string[]]$cliStoreIds = @($StoreIds.Split(',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 }
 
+$skipParsed = Convert-DryRunFlag $SkipIngest
+$useSkipIngest = if ($null -ne $skipParsed) { [bool]$skipParsed } else { $true }
+
 Write-Step '===== affiliate-poc multi-store START (P3.0 gate) ====='
-Write-Step ("config={0} modules={1} SkipIngest={2}" -f $ConfigPath, ($modList -join ','), [bool]$SkipIngest)
+Write-Step ("config={0} modules={1} SkipIngest={2}" -f $ConfigPath, ($modList -join ','), $useSkipIngest)
 Write-Step 'NOTE: POC does NOT create PG fact tables. Debug JSON only. All TikTok stores including Pop.'
 Initialize-ZiniaoCli
 $listOut = Invoke-Ziniao @('store', 'list')
@@ -685,7 +688,7 @@ foreach ($store in $selected) {
           Write-Step ("  cta candidates={0}" -f @($payload.candidates).Count)
         }
 
-        if (-not $SkipIngest) {
+        if (-not $useSkipIngest) {
           if ($mod -eq 'affiliate_performance' -and (Get-Command Send-QingquanIngest -ErrorAction SilentlyContinue) -and $cfg.qingquan -and $cfg.qingquan.enabled) {
             $collectedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss+00:00')
             $pageCur = 'GBP'

@@ -3427,6 +3427,7 @@ async def _maybe_auto_eval_after_ingest(
                         shop_external_id=shop_ext,
                         project_center_task=project,
                         dry_run=False,
+                        notify=bool(settings.tk_health_notify_feishu),
                         settings=settings,
                         biz_date=biz_date,
                     )

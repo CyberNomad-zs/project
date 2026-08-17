@@ -63,7 +63,7 @@ $psi.Arguments = @(
   '-ConfigPath', "`"$ConfigPath`"",
   '-DryRun', 'false',
   '-Modules', "`"$Modules`"",
-  '-SkipIngest:$false'
+  '-SkipIngest', 'false'
 ) -join ' '
 $psi.WorkingDirectory = $root
 $psi.UseShellExecute = $false

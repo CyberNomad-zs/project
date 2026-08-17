@@ -243,8 +243,8 @@ python probe_tiktok.py --config config\config.g2-3shops.yaml --only report --sta
 
 1. `SellfoxClient` TK 方法 → 已在 bridge 客户端（本轮）  
 2. 清泉 backend 只读同步 Job（或 ingest adapter）写：  
-   - `tk.fact_tiktok_product`（标记 `source=sellfox`）  
-   - `tk.fact_tiktok_finance_daily` / 新财务费用表  
+   - `tk.fact_tiktok_product`（**2026-08-17 核实修正**：实际实现**无 `source` 列**；`tk_sellfox_sync.sync_products` 用 `ON CONFLICT DO UPDATE` + `COALESCE(EXCLUDED.x, table.x)` 不覆盖已有值。现网 314 行 raw_extra 无赛狐特有键（productId/tkStatus/shopId），是 TK 采集器先 ingest、赛狐后被 COALESCE 挡住。但 `product_id` 值两边一致（同源 TikTok productId），不影响飞书货源列灌值）  
+   - `tk.fact_tiktok_finance_daily` / 新财务费用表（实际落 `tk.fact_sellfox_tk_profit_shop/sku/statement` 三表，非 finance_daily）  
 3. **不** 用赛狐覆盖 `fact_ads_campaign_daily` / content / health  
 4. 飞书：T1 增加「赛狐结算/毛利」列或独立财务表，避免和 GMV 币种混加  
 5. 店铺白名单与 Temu 发货 bridge **隔离**
@@ -285,3 +285,28 @@ python probe_tiktok.py --config config\config.g2-3shops.yaml --only report --sta
 | 2026-08-05 | 初版：文档核实 TK 12 接口；对照 T1/T2/T3/订单/内容；probe_tiktok.py + client 方法 |
 | 2026-08-06 | 运营截图：三店自运营 + Shop Code；**业务确认 Shop Code=shopId**；client/probe 取消强制 int |
 | 2026-08-06 | **业务确认** KK Seagull/`2732…`=SHOP INOUT（`GBLCAW729L`）；Pop/`2775…`=Gardena（`HKGBCB8LQLRC`）；Deal=`GBLCJGQ23Q`/`2750…` |
+| 2026-08-17 | **核实修正**：① §4.3 规划写「`fact_tiktok_product` 标记 source=sellfox」与实现不符——实际无 source 列，`sync_products` 用 COALESCE 不覆盖；现网 314 行 raw_extra 无赛狐键（TK 采集先入）。② 赛狐能力核对：`client.py` 封装 7/12 接口（授权1+商品2自营店铺+利润4），未用 4 个为全球/全托商品（三店自营店铺模式不需要）、2 个为按业务员/开发员利润（可扩展未接）、订单/包裹发货有意不接。③ 飞书 TK产品表货源列=赛狐 productId 能拿（见下节）。 |
+
+---
+
+## 8. 货源列来源厘清（2026-08-17）
+
+> 起因：问「飞书 TK产品表（`tbl69GJ8cAAhizmj`）货源列能否用赛狐 API 拿」——答 **能，且已在灌**。
+
+**数据链：**
+
+```text
+赛狐 getParentPageList → productId（19位 TikTok 商品ID）
+  → tk_sellfox_sync.sync_products INSERT fact_tiktok_product.product_id（COALESCE 不覆盖）
+  → tk_sellfox_product_feishu_sync job 读 PG product_id
+  → bitable.tk_product_to_fields mapper "货源": product_id
+  → 飞书 TK产品表 货源列
+```
+
+**关键区分（避免误判）：**
+
+- `product_id` / 品名 / SKUID / 上架状态 / 售价含VAT —— **赛狐和 TK 采集都能给**（同源 TikTok 后台），非赛狐独有。现网 PG 314 行实为 TK 采集器先 ingest，赛狐 sync_products 跑时被 COALESCE 挡住没覆盖 raw_extra，但 `product_id` 值两边一致。
+- `采购 GBP`（purchaseFee abs）—— **只有赛狐能给**（利润报 SKU 粒度费用拆分），TK 采集拿不到。这才是赛狐的不可替代价值。
+- 飞书货源列灌的 150 个值，源头是 TikTok productId；赛狐接口能提供同值，但 job 读 PG（TK 采集 + 赛狐合并后的 SoT），不区分来源。
+
+**所以**：说「货源列用赛狐拿」属实（赛狐 productId = 该值），但更精确是「product_id 由 TK 采集/赛狐任一可给，job 从 PG 读」；赛狐的独特价值在采购 GBP 等利润报费用列，不在货源列。

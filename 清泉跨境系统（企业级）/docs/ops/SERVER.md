@@ -184,8 +184,12 @@ docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
   python -m app.jobs.tk_violation_anomaly_eval
 docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
   python -m app.jobs.tk_review_anomaly_eval
+docker exec -e PYTHONPATH=/app -w /app qingquan-api-1 \
+  python -m app.jobs.tk_product_anomaly_eval
 # 仅统计：加 --dry-run；不推群：加 --no-notify
 ```
+
+- 商品断货/库存通知（2026-08-17 新增）：`tk_product_rules.evaluate_product_anomalies` 接 `notify_dual`，通知 lines 含 `商品ID：{product_id}`（负责人用此 ID 去后台定位商品）+ 库存/阈值/链接；去重照 violation/review 同款（`_open_exists` 未闭环同键已存在则不重复推）。ingest 批末自动评估已传 `notify`。稳态下历史断货任务不重复推，仅新断货触发。
 
 - `.env`：`FEISHU_BOT_WEBHOOK_TK_HEALTH` / `TK_HEALTH_*` / `TK_VIOLATION_*` / `TK_REVIEW_*`
 - 批末自动评估：ingest 成功后 `_maybe_auto_eval_after_ingest`

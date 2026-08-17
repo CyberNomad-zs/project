@@ -435,6 +435,10 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     object_ref = row.get("object_ref") or product_id or ""
     if obj_type == "content" and not product_id and object_ref:
         product_id = str(object_ref)
+    # 货源列：只认真实商品 product_id（object_type=product 且 PG 原始 product_id 非空）。
+    # 不能用上面被 content 改写后的 product_id——content 异常会把 content_id 塞进去，
+    # 填进货源列就串味（视频 ID 不是商品货源）。
+    huoyuan = str(row.get("product_id") or "") if obj_type == "product" else ""
     type_raw = (row.get("anomaly_type") or "").strip()
     code = (row.get("anomaly_code") or "").strip()
     type_cn = (
@@ -519,6 +523,9 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
             # —— TK 扩展（系统/去重）——
             "店铺ID": row.get("shop_external_id") or "",
             "商品ID": product_id,
+            # 货源列：与 TK产品表同源——值=TK product_id（19位 TikTok 商品ID）。
+            # 仅商品异常有真实 product_id；content 异常的 product_id 实为 content_id，不可当货源。
+            "货源": huoyuan,
             "SKU": row.get("seller_sku") or "",
             "对象": object_ref or product_id or "",
             "对象类型": obj_type_cn,
@@ -537,6 +544,9 @@ def tk_anomaly_task_to_fields(row: dict[str, Any]) -> dict[str, Any]:
     if "产品" not in fields:
         # 非商品对象：显式置空，确保飞书旧值（店铺名/达人名等）被清掉（batch_update 不更新未提供的字段）
         fields["产品"] = ""
+    if "货源" not in fields:
+        # 非商品对象无 product_id：同样显式置空，避免飞书旧货源残留
+        fields["货源"] = ""
     return fields
 
 
